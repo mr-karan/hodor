@@ -1,8 +1,10 @@
 """Core agent loop for PR review."""
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 import json
 import logging
+from threading import Lock
 from typing import Any, Literal
 from urllib.parse import urlparse
 
@@ -19,11 +21,120 @@ load_dotenv()
 # Drop unsupported params for models that don't support them
 litellm.drop_params = True
 
+
+def configure_litellm_logging(verbose: bool = False) -> None:
+    """Keep LiteLLM chatter under control unless the user asks for it."""
+    try:
+        litellm.suppress_debug_info = not verbose
+    except AttributeError:
+        # Older LiteLLM versions may not expose this flag.
+        pass
+
+    litellm_logger = logging.getLogger("LiteLLM")
+    litellm_logger.setLevel(logging.INFO if verbose else logging.WARNING)
+
+
+# Default to quiet logging at import time
+configure_litellm_logging(False)
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 Platform = Literal["github", "gitlab"]
+
+
+@dataclass
+class ReviewContext:
+    """State shared across tool calls to enforce coverage guarantees."""
+
+    owner: str
+    repo: str
+    pr_number: int
+    files_to_cover: set[str] = field(default_factory=set)
+    diffed_files: set[str] = field(default_factory=set)
+    lock: Lock = field(default_factory=Lock, repr=False)
+
+    def update_files_from_tool(self, tool_result: dict[str, Any]) -> None:
+        """Extract filenames that need diff coverage."""
+        files = tool_result.get("files") if isinstance(tool_result, dict) else None
+        if not files:
+            return
+
+        tracked: set[str] = set()
+        for file_entry in files:
+            filename = file_entry.get("filename")
+            if not filename:
+                continue
+            if self._is_reviewable_file(file_entry):
+                tracked.add(filename)
+                previous = file_entry.get("previous_filename")
+                if previous:
+                    tracked.add(previous)
+
+        if not tracked:
+            return
+
+        with self.lock:
+            if self.files_to_cover:
+                self.files_to_cover.update(tracked)
+            else:
+                self.files_to_cover = tracked
+
+    @staticmethod
+    def _is_reviewable_file(file_entry: dict[str, Any]) -> bool:
+        """Heuristic: only track files with text patches (skip binaries/docs)."""
+        patch = file_entry.get("patch")
+        if patch:
+            return True
+
+        filename = (file_entry.get("filename") or "").lower()
+        skip_suffixes = (
+            ".md",
+            ".rst",
+            ".txt",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".svg",
+            ".ico",
+            ".pdf",
+            ".lock",
+        )
+        return not filename.endswith(skip_suffixes)
+
+    def mark_diffed(self, file_path: str | None, tool_result: dict[str, Any] | None = None) -> None:
+        """Record that we have inspected a file's diff."""
+        if not file_path:
+            return
+
+        with self.lock:
+            self.diffed_files.add(file_path)
+            if tool_result and isinstance(tool_result, dict):
+                previous = tool_result.get("previous_filename")
+                if previous:
+                    self.diffed_files.add(previous)
+
+    def missing_files(self) -> set[str]:
+        with self.lock:
+            return set(self.files_to_cover) - set(self.diffed_files)
+
+    def is_known_file(self, file_path: str | None) -> bool:
+        if not file_path:
+            return False
+        with self.lock:
+            if not self.files_to_cover:
+                return True
+            return file_path in self.files_to_cover
+
+    def process_tool_result(self, tool_name: str, arguments: dict[str, Any], result: dict[str, Any]) -> None:
+        """Update context based on tool output."""
+        if tool_name == "fetch_pr_files" and isinstance(result, dict):
+            self.update_files_from_tool(result)
+        elif tool_name == "fetch_file_diff" and isinstance(result, dict) and "error" not in result:
+            file_path = result.get("filename") or arguments.get("file_path")
+            self.mark_diffed(file_path, result)
 
 
 def detect_platform(pr_url: str) -> Platform:
@@ -129,11 +240,18 @@ def parse_pr_url(pr_url: str) -> tuple[str, str, int]:
         pr_number = int(path_parts[3])
         return owner, repo, pr_number
 
-    # GitLab format: /owner/repo/-/merge_requests/123
-    elif len(path_parts) >= 5 and path_parts[2] == "-" and path_parts[3] == "merge_requests":
-        owner = path_parts[0]
-        repo = path_parts[1]
-        pr_number = int(path_parts[4])
+    # GitLab format: /group/subgroup/repo/-/merge_requests/123
+    elif "merge_requests" in path_parts:
+        mr_index = path_parts.index("merge_requests")
+        if mr_index < 2 or mr_index + 1 >= len(path_parts):
+            raise ValueError(f"Invalid GitLab MR URL format: {pr_url}. Expected .../-/merge_requests/<number>")
+        if path_parts[mr_index - 1] != "-":
+            raise ValueError(f"Invalid GitLab MR URL format: {pr_url}. Missing '/-/' segment before merge_requests.")
+
+        repo = path_parts[mr_index - 2]
+        owner_parts = path_parts[: mr_index - 2]
+        owner = "/".join(owner_parts) if owner_parts else path_parts[0]
+        pr_number = int(path_parts[mr_index + 1])
         return owner, repo, pr_number
 
     else:
@@ -143,7 +261,12 @@ def parse_pr_url(pr_url: str) -> tuple[str, str, int]:
 
 
 def execute_tools_parallel(
-    tool_calls: list, platform: Platform, token: str | None, gitlab_url: str | None = None, max_workers: int = 15
+    tool_calls: list,
+    platform: Platform,
+    token: str | None,
+    gitlab_url: str | None = None,
+    max_workers: int = 15,
+    review_context: ReviewContext | None = None,
 ) -> list[dict[str, Any]]:
     """
     Execute multiple tool calls in parallel using ThreadPoolExecutor.
@@ -163,7 +286,45 @@ def execute_tools_parallel(
         """Execute a single tool call and return the result."""
         try:
             arguments = json.loads(tool_call.function.arguments)
+            tool_name = tool_call.function.name
+
+            if review_context:
+                default_args = {
+                    "owner": review_context.owner,
+                    "repo": review_context.repo,
+                    "pr_number": review_context.pr_number,
+                }
+                if tool_name in {"search_tests", "fetch_file_content", "list_repo_tree"}:
+                    for key, value in default_args.items():
+                        arguments.setdefault(key, value)
+                elif tool_name in {
+                    "fetch_pr_metadata",
+                    "fetch_pr_files",
+                    "fetch_file_diff",
+                    "fetch_pr_commits",
+                    "fetch_ci_status",
+                }:
+                    arguments.setdefault("owner", review_context.owner)
+                    arguments.setdefault("repo", review_context.repo)
+                    arguments.setdefault("pr_number", review_context.pr_number)
+
+            if review_context and tool_name == "fetch_file_diff":
+                file_path = arguments.get("file_path")
+                if file_path and not review_context.is_known_file(file_path):
+                    missing = review_context.missing_files()
+                    hint = ", ".join(sorted(list(missing))[:5]) if missing else "unknown"
+                    warning = {
+                        "error": (
+                            f"File {file_path} is not part of the tracked PR files. "
+                            f"Known files include: {hint}. Re-run fetch_pr_files if needed."
+                        )
+                    }
+                    return {"role": "tool", "tool_call_id": tool_call.id, "content": json.dumps(warning, indent=2)}
+
             result = execute_tool(tool_call.function.name, arguments, platform, token, gitlab_url)
+
+            if review_context and isinstance(result, dict):
+                review_context.process_tool_result(tool_call.function.name, arguments, result)
 
             return {"role": "tool", "tool_call_id": tool_call.id, "content": json.dumps(result, indent=2)}
         except Exception as e:
@@ -181,7 +342,9 @@ def execute_tools_parallel(
     return results
 
 
-def post_review_comment(pr_url: str, review_text: str, token: str | None = None, model: str | None = None) -> dict[str, Any]:
+def post_review_comment(
+    pr_url: str, review_text: str, token: str | None = None, model: str | None = None
+) -> dict[str, Any]:
     """
     Post a review comment on a GitHub PR or GitLab MR.
 
@@ -228,7 +391,12 @@ def post_review_comment(pr_url: str, review_text: str, token: str | None = None,
             from .tools import gitlab_tools
 
             result = gitlab_tools.post_mr_comment(
-                owner=owner, repo=repo, mr_number=pr_number, comment_body=review_text_with_footer, github_token=token, gitlab_url=gitlab_url
+                owner=owner,
+                repo=repo,
+                mr_number=pr_number,
+                comment_body=review_text_with_footer,
+                github_token=token,
+                gitlab_url=gitlab_url,
             )
         else:
             return {"success": False, "error": f"Unsupported platform: {platform}"}
@@ -248,7 +416,7 @@ def review_pr(
     custom_prompt: str | None = None,
     prompt_file: str | None = None,
     reasoning_effort: str | None = None,
-    **litellm_config
+    **litellm_config,
 ) -> str:
     """
     Review a GitHub or GitLab pull request using AI.
@@ -288,42 +456,53 @@ def review_pr(
     except ValueError as e:
         return f"Error: {str(e)}"
 
-    # Set default litellm config
-    # Use Responses API for GPT-5 models (recommended by LiteLLM)
+    review_context = ReviewContext(owner, repo, pr_number)
+
+    # Warm up file list so we can track coverage and cache responses.
+    initial_files_args = {"owner": owner, "repo": repo, "pr_number": pr_number}
+    try:
+        initial_files = execute_tool("fetch_pr_files", initial_files_args, platform, token, gitlab_url)
+        if isinstance(initial_files, dict):
+            review_context.process_tool_result("fetch_pr_files", initial_files_args, initial_files)
+    except Exception as exc:
+        logger.warning(f"Prefetching PR files failed: {exc}")
+
+    # Set default litellm config and apply user overrides first.
     llm_params = {
         "model": "openai/responses/gpt-5",
         "tools": TOOLS,
         "parallel_tool_calls": True,
     }
+    user_overrides = dict(litellm_config)
+    llm_params.update(user_overrides)
 
-    # Get the model (with user override if provided)
-    model = litellm_config.get("model", llm_params["model"])
-
-    # Use Responses API for latest OpenAI models (GPT-5, o3-mini, etc.)
-    # https://docs.litellm.ai/docs/providers/openai/responses_api
+    # Normalize model names so GPT-5/o3 use the Responses API path
+    model = llm_params.get("model", "openai/responses/gpt-5")
     if not model.startswith("openai/responses/"):
         model_lower = model.lower()
-        if "gpt-5" in model_lower or "o3-mini" in model_lower or "o3" == model_lower:
+        if "gpt-5" in model_lower or "o3-mini" in model_lower or model_lower == "o3":
             logger.info(f"Using Responses API for model: {model}")
             model = f"openai/responses/{model}"
-            llm_params["model"] = model
+    llm_params["model"] = model
 
-    # Add temperature based on model (GPT-5 and o3 don't support temperature=0)
-    if "gpt-5" not in model.lower() and "o3" not in model.lower():
+    # Add deterministic temperature only when user hasn't supplied one
+    if (
+        "temperature" not in user_overrides
+        and "gpt-5" not in model.lower()
+        and "o3" not in model.lower()
+        and "temperature" not in llm_params
+    ):
         llm_params["temperature"] = 0.0
 
-    # Enable reasoning for supported models
+    # Enable reasoning for supported models (respect user overrides)
     try:
-        if litellm.supports_reasoning(model):
-            # Use user-specified effort, or default to 'high'
-            effort = reasoning_effort or 'high'
-            logger.info(f"Enabling {effort} reasoning effort for model {model}")
-            llm_params["reasoning_effort"] = effort
+        if reasoning_effort:
+            llm_params["reasoning_effort"] = reasoning_effort
+        elif "reasoning_effort" not in llm_params and litellm.supports_reasoning(model):
+            logger.info(f"Enabling high reasoning effort for model {model}")
+            llm_params["reasoning_effort"] = "high"
     except Exception as e:
         logger.debug(f"Could not check reasoning support: {e}")
-
-    # Override with user-provided config
-    llm_params.update(litellm_config)
 
     # Load system prompt (priority: custom_prompt > prompt_file > default)
     if custom_prompt:
@@ -332,7 +511,7 @@ def review_pr(
     elif prompt_file:
         logger.info(f"Loading prompt from file: {prompt_file}")
         try:
-            with open(prompt_file, 'r', encoding='utf-8') as f:
+            with open(prompt_file, "r", encoding="utf-8") as f:
                 system_prompt = f.read()
         except Exception as e:
             logger.error(f"Failed to load prompt file: {e}")
@@ -345,8 +524,11 @@ def review_pr(
 - `fetch_pr_metadata`: Get PR title, description, author
 - `fetch_pr_files`: List all changed files
 - `fetch_file_diff`: Get unified diff for a file (USE THIS TO READ ACTUAL CODE)
+- `fetch_file_content`: Fetch full file contents from the PR head or a provided ref
+- `list_repo_tree`: Inspect repository layout (optionally scoped to a directory)
 - `fetch_pr_commits`: Get commit history
 - `fetch_ci_status`: Check test status
+- `search_tests`: Pass `owner`, `repo`, `pr_number`, and `file_path` to locate related tests
 
 # Review Process
 1. Call `fetch_pr_metadata` and `fetch_pr_files` in parallel
@@ -465,7 +647,9 @@ Begin."""
                 logger.info(f"Executing {len(message.tool_calls)} tool calls in parallel...")
 
                 # Execute tools in parallel
-                tool_results = execute_tools_parallel(message.tool_calls, platform, token, gitlab_url, max_workers)
+                tool_results = execute_tools_parallel(
+                    message.tool_calls, platform, token, gitlab_url, max_workers, review_context
+                )
 
                 # Add tool results to messages
                 messages.extend(tool_results)
@@ -488,6 +672,20 @@ Begin."""
 
                 if not response_text:
                     return "Review completed (no content)"
+
+                if review_context and review_context.files_to_cover:
+                    missing = review_context.missing_files()
+                    if missing:
+                        sample_missing = ", ".join(sorted(list(missing))[:5])
+                        if len(missing) > 5:
+                            sample_missing += ", ..."
+                        reminder_text = (
+                            "You must inspect the diff for every changed code file before finishing. "
+                            f"Still missing {len(missing)} file(s): {sample_missing}. "
+                            "Call `fetch_file_diff` for each remaining file."
+                        )
+                        messages.append({"role": "user", "content": reminder_text})
+                        continue
 
                 # Try to parse as JSON and format as markdown
                 try:

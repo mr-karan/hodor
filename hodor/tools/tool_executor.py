@@ -64,6 +64,10 @@ def execute_tool(
         return module.fetch_ci_status(**tool_args)
     elif tool_name == "search_tests":
         return module.search_tests(**tool_args)
+    elif tool_name == "fetch_file_content":
+        return module.fetch_file_content(**tool_args)
+    elif tool_name == "list_repo_tree":
+        return module.list_repo_tree(**tool_args)
     else:
         raise ValueError(f"Unknown tool: {tool_name}")
 

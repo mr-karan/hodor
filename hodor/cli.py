@@ -9,7 +9,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from .agent import review_pr, post_review_comment, detect_platform
+from .agent import review_pr, post_review_comment, detect_platform, configure_litellm_logging
 
 console = Console()
 
@@ -42,9 +42,7 @@ def parse_llm_args(ctx, param, value):
 @click.argument("pr_url")
 @click.option("--max-iterations", default=20, type=int, help="Maximum number of agentic loop iterations")
 @click.option("--max-workers", default=15, type=int, help="Maximum number of parallel tool calls")
-@click.option(
-    "--token", default=None, help="GitHub/GitLab API token (or set GITHUB_TOKEN/GITLAB_TOKEN env var)"
-)
+@click.option("--token", default=None, help="GitHub/GitLab API token (or set GITHUB_TOKEN/GITLAB_TOKEN env var)")
 @click.option("--model", default="gpt-5", help="LLM model to use")
 @click.option("--temperature", default=0.0, type=float, help="LLM temperature (0.0-2.0)")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
@@ -52,8 +50,26 @@ def parse_llm_args(ctx, param, value):
 @click.option("--post-comment", is_flag=True, help="Post the review as a comment on the PR/MR (useful for CI/CD)")
 @click.option("--prompt", default=None, help="Custom inline prompt text (overrides default)")
 @click.option("--prompt-file", default=None, type=click.Path(exists=True), help="Path to file containing custom prompt")
-@click.option("--reasoning-effort", type=click.Choice(['low', 'medium', 'high'], case_sensitive=False), default=None, help="Reasoning effort level (default: high)")
-def main(pr_url, max_iterations, max_workers, token, model, temperature, verbose, llm, post_comment, prompt, prompt_file, reasoning_effort):
+@click.option(
+    "--reasoning-effort",
+    type=click.Choice(["low", "medium", "high"], case_sensitive=False),
+    default=None,
+    help="Reasoning effort level (default: high)",
+)
+def main(
+    pr_url,
+    max_iterations,
+    max_workers,
+    token,
+    model,
+    temperature,
+    verbose,
+    llm,
+    post_comment,
+    prompt,
+    prompt_file,
+    reasoning_effort,
+):
     """
     Review a GitHub pull request or GitLab merge request using AI.
 
@@ -89,6 +105,8 @@ def main(pr_url, max_iterations, max_workers, token, model, temperature, verbose
     else:
         logging.basicConfig(level=logging.WARNING, format="%(message)s")
 
+    configure_litellm_logging(verbose)
+
     # Auto-detect token from environment variables if not provided
     if token is None:
         token = os.getenv("GITLAB_TOKEN") or os.getenv("GITHUB_TOKEN")
@@ -100,9 +118,13 @@ def main(pr_url, max_iterations, max_workers, token, model, temperature, verbose
         github_token = os.getenv("GITHUB_TOKEN")
 
         if platform == "gitlab" and github_token and not gitlab_token:
-            console.print("[yellow]⚠️  Warning: Detected GitLab URL but only GITHUB_TOKEN is set. You may need to set GITLAB_TOKEN instead.[/yellow]")
+            console.print(
+                "[yellow]⚠️  Warning: Detected GitLab URL but only GITHUB_TOKEN is set. You may need to set GITLAB_TOKEN instead.[/yellow]"
+            )
         elif platform == "github" and gitlab_token and not github_token:
-            console.print("[yellow]⚠️  Warning: Detected GitHub URL but only GITLAB_TOKEN is set. You may need to set GITHUB_TOKEN instead.[/yellow]")
+            console.print(
+                "[yellow]⚠️  Warning: Detected GitHub URL but only GITLAB_TOKEN is set. You may need to set GITHUB_TOKEN instead.[/yellow]"
+            )
 
     # Parse additional LLM arguments
     llm_config = parse_llm_args(None, None, llm)
@@ -128,7 +150,7 @@ def main(pr_url, max_iterations, max_workers, token, model, temperature, verbose
                 custom_prompt=prompt,
                 prompt_file=prompt_file,
                 reasoning_effort=reasoning_effort,
-                **llm_config
+                **llm_config,
             )
 
             progress.stop()
