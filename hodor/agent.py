@@ -407,50 +407,52 @@ def review_pr(
         logger.info(f"Review complete ({len(review_content)} chars)")
 
         # Always print metrics (not just in verbose mode)
+        # Access metrics via conversation.conversation_stats (SDK API)
         if hasattr(conversation, "conversation_stats"):
-            stats = conversation.conversation_stats
-            combined = stats.get_combined_metrics()
+            try:
+                combined = conversation.conversation_stats.get_combined_metrics()
 
-            if combined:
-                # Token usage breakdown
-                usage = combined.get("accumulated_token_usage", {})
-                prompt_tokens = usage.get("prompt_tokens", 0)
-                completion_tokens = usage.get("completion_tokens", 0)
-                cache_read_tokens = usage.get("cache_read_input_tokens", 0)
-                cache_write_tokens = usage.get("cache_creation_input_tokens", 0)
-                reasoning_tokens = usage.get("reasoning_tokens", 0)
-                total_tokens = usage.get("total_tokens", 0)
+                if combined and combined.accumulated_token_usage:
+                    # Token usage breakdown from Metrics object
+                    usage = combined.accumulated_token_usage
+                    prompt_tokens = usage.prompt_tokens or 0
+                    completion_tokens = usage.completion_tokens or 0
+                    cache_read_tokens = usage.cache_read_tokens or 0
+                    cache_write_tokens = usage.cache_write_tokens or 0
+                    reasoning_tokens = usage.reasoning_tokens or 0
+                    total_tokens = prompt_tokens + completion_tokens + cache_read_tokens + reasoning_tokens
 
-                # Cost estimate
-                cost = combined.get("accumulated_cost", 0)
+                    # Cost estimate
+                    cost = combined.accumulated_cost or 0
 
-                # Calculate cache hit rate
-                cache_hit_rate = 0
-                if cache_read_tokens > 0 and (prompt_tokens + cache_read_tokens) > 0:
-                    cache_hit_rate = (cache_read_tokens / (prompt_tokens + cache_read_tokens)) * 100
+                    # Calculate cache hit rate
+                    cache_hit_rate = 0
+                    if cache_read_tokens > 0 and (prompt_tokens + cache_read_tokens) > 0:
+                        cache_hit_rate = (cache_read_tokens / (prompt_tokens + cache_read_tokens)) * 100
 
-                # Print metrics (always, not just verbose)
-                print("\n" + "=" * 60)
-                print("📊 Token Usage Metrics:")
-                print(f"  • Input tokens:       {prompt_tokens:,}")
-                print(f"  • Output tokens:      {completion_tokens:,}")
-                if cache_read_tokens > 0:
-                    print(f"  • Cache hits:         {cache_read_tokens:,} ({cache_hit_rate:.1f}%)")
-                if reasoning_tokens > 0:
-                    print(f"  • Reasoning tokens:   {reasoning_tokens:,}")
-                print(f"  • Total tokens:       {total_tokens:,}")
-                print(f"\n💰 Cost Estimate:      ${cost:.4f}")
-                print(f"⏱️  Review Time:        {review_time_str}")
-                print("=" * 60 + "\n")
+                    # Print metrics (always, not just verbose)
+                    print("\n" + "=" * 60)
+                    print("📊 Token Usage Metrics:")
+                    print(f"  • Input tokens:       {prompt_tokens:,}")
+                    print(f"  • Output tokens:      {completion_tokens:,}")
+                    if cache_read_tokens > 0:
+                        print(f"  • Cache hits:         {cache_read_tokens:,} ({cache_hit_rate:.1f}%)")
+                    if reasoning_tokens > 0:
+                        print(f"  • Reasoning tokens:   {reasoning_tokens:,}")
+                    print(f"  • Total tokens:       {total_tokens:,}")
+                    print(f"\n💰 Cost Estimate:      ${cost:.4f}")
+                    print(f"⏱️  Review Time:        {review_time_str}")
+                    print("=" * 60 + "\n")
 
-                # Verbose mode: additional details
-                if verbose:
-                    if cache_write_tokens > 0:
-                        logger.info(f"  • Cache writes:       {cache_write_tokens:,}")
-                    latencies = combined.get("response_latencies", [])
-                    if latencies:
-                        avg_latency = sum(latencies) / len(latencies)
-                        logger.info(f"  • Avg API latency:    {avg_latency:.2f}s")
+                    # Verbose mode: additional details
+                    if verbose:
+                        if cache_write_tokens > 0:
+                            logger.info(f"  • Cache writes:       {cache_write_tokens:,}")
+                        if combined.response_latencies:
+                            avg_latency = sum(combined.response_latencies) / len(combined.response_latencies)
+                            logger.info(f"  • Avg API latency:    {avg_latency:.2f}s")
+            except Exception as e:
+                logger.warning(f"Failed to get metrics: {e}")
 
         return review_content
 
