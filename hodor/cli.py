@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import _tty as _terminal_safety  # noqa: F401
+
 import click
 from rich.console import Console
 from rich.markdown import Markdown

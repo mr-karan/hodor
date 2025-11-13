@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
 
+from . import _tty as _terminal_safety  # noqa: F401
+
 from dotenv import load_dotenv
 from openhands.sdk import Conversation
 from openhands.sdk.conversation import get_agent_final_response
@@ -410,24 +412,8 @@ def review_pr(
         raise RuntimeError(f"Review failed: {e}") from e
 
     finally:
-        # Reset terminal to prevent corruption from PTY
-        # The subprocess terminal can leave escape sequences that corrupt the parent shell
-        try:
-            import sys
-            import subprocess as sp
-
-            # Reset terminal attributes if we're in a TTY (without clearing screen)
-            if sys.stdin.isatty():
-                # Use stty sane to reset terminal to sensible defaults
-                sp.run(
-                    ["stty", "sane"],
-                    stdin=sys.stdin,
-                    stdout=sp.DEVNULL,
-                    stderr=sp.DEVNULL,
-                    check=False,
-                )
-        except Exception:
-            pass  # Silently ignore if terminal reset fails
+        # Reset terminal by draining leftover control-sequence replies
+        _terminal_safety.restore_terminal_state()
 
         # Clean up workspace
         if workspace and cleanup:
