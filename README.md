@@ -280,10 +280,14 @@ See [AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md) for advanced workflows (
 
 | Variable | Purpose | Required |
 |----------|---------|----------|
-| `LLM_API_KEY` (or `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) | LLM provider authentication | ✅ Yes |
+| `LLM_API_KEY` | LLM provider authentication (recommended) | ✅ Yes (see note) |
+| `ANTHROPIC_API_KEY` | Claude API key (backward compatibility) | Alternative to above |
+| `OPENAI_API_KEY` | OpenAI API key (backward compatibility) | Alternative to above |
 | `GITHUB_TOKEN` / `GITLAB_TOKEN` | Post comments to PRs/MRs | Only with `--post` |
 | `GITLAB_HOST` | Self-hosted GitLab instance (extracted from URL automatically) | Optional |
 | `LLM_BASE_URL` | Custom OpenAI-compatible gateway | Optional |
+
+**Note**: Hodor checks API keys in order: `LLM_API_KEY` → `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` (uses first found).
 
 **CI Detection**
 
