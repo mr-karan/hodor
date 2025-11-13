@@ -305,7 +305,7 @@ See [AGENTS.md](./AGENTS.md) for architecture details and contribution guideline
 - **[Skills System](https://docs.openhands.dev/sdk/guides/skill)** - Creating and applying context to agents
 - **[Tool System](https://docs.openhands.dev/sdk/arch/tool-system)** - Built-in tools and custom tool development
 - **[Workspace Management](https://docs.openhands.dev/sdk/arch/workspace)** - Sandboxed execution environments
-- **[PR Review Example](https://docs.openhands.dev/sdk/examples/github-workflows/pr-review)** - Official OpenHands PR review workflow
+- **[PR Review Example](https://docs.openhands.dev/sdk/guides/github-workflows/pr-review)** - Official OpenHands PR review workflow
 
 ### Contributing
 Found a bug? Want to add a feature? See [CONTRIBUTING.md](./CONTRIBUTING.md) for development setup and guidelines.

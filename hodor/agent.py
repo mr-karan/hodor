@@ -329,17 +329,17 @@ def review_pr(
         logger.info("Creating OpenHands conversation...")
         # Use LocalWorkspace for better integration with OpenHands SDK
         workspace_obj = LocalWorkspace(working_dir=str(workspace))
-        conversation = Conversation(agent=agent, workspace=workspace_obj)
+        # Register event callback for real-time monitoring if verbose
+        conversation = Conversation(
+            agent=agent,
+            workspace=workspace_obj,
+            callbacks=[on_event] if verbose else None,
+        )
 
         logger.info("Sending prompt to agent...")
         conversation.send_message(prompt)
 
         logger.info("Running agent review (this may take several minutes)...")
-
-        # Run with event streaming if verbose
-        if verbose:
-            # Register event callback for real-time monitoring
-            conversation._state.on_event = on_event
 
         conversation.run()
 

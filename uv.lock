@@ -1068,8 +1068,8 @@ requires-dist = [
     { name = "ipython", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "lizard", specifier = ">=1.17.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.5.0" },
-    { name = "openhands-sdk", git = "https://github.com/OpenHands/agent-sdk.git?subdirectory=openhands-sdk&rev=main" },
-    { name = "openhands-tools", git = "https://github.com/OpenHands/agent-sdk.git?subdirectory=openhands-tools&rev=main" },
+    { name = "openhands-sdk", git = "https://github.com/mr-karan/software-agent-sdk.git?subdirectory=openhands-sdk&rev=main" },
+    { name = "openhands-tools", git = "https://github.com/mr-karan/software-agent-sdk.git?subdirectory=openhands-tools&rev=main" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },
@@ -1794,7 +1794,7 @@ wheels = [
 [[package]]
 name = "openhands-sdk"
 version = "1.1.0"
-source = { git = "https://github.com/OpenHands/agent-sdk.git?subdirectory=openhands-sdk&rev=main#6a28b38974dd29e7a79f40b821d3e68521adce47" }
+source = { git = "https://github.com/mr-karan/software-agent-sdk.git?subdirectory=openhands-sdk&rev=main#218aa869b8977dea6ab9d13db7030686aa16d5b7" }
 dependencies = [
     { name = "fastmcp" },
     { name = "httpx" },
@@ -1810,7 +1810,7 @@ dependencies = [
 [[package]]
 name = "openhands-tools"
 version = "1.1.0"
-source = { git = "https://github.com/OpenHands/agent-sdk.git?subdirectory=openhands-tools&rev=main#6a28b38974dd29e7a79f40b821d3e68521adce47" }
+source = { git = "https://github.com/mr-karan/software-agent-sdk.git?subdirectory=openhands-tools&rev=main#218aa869b8977dea6ab9d13db7030686aa16d5b7" }
 dependencies = [
     { name = "bashlex" },
     { name = "binaryornot" },
