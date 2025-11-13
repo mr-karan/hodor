@@ -12,6 +12,7 @@ from . import _tty as _terminal_safety  # noqa: F401
 from dotenv import load_dotenv
 from openhands.sdk import Conversation
 from openhands.sdk.conversation import get_agent_final_response
+from openhands.sdk.event import Event
 from openhands.sdk.workspace import LocalWorkspace
 
 from .llm import create_hodor_agent, get_api_key
@@ -294,9 +295,7 @@ def review_pr(
         event_type = type(event).__name__
 
         # Log LLM API calls (for detailed token/cost tracking)
-        from openhands.events.event import LLMConvertibleEvent
-
-        if isinstance(event, LLMConvertibleEvent):
+        if isinstance(event, Event):
             # This captures raw LLM messages for detailed analysis
             # Useful for debugging prompt engineering or cost optimization
             logger.debug(f"🤖 LLM Event: {event_type}")
