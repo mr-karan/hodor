@@ -6,6 +6,9 @@ using OpenHands' bash-based tool system instead of custom API tools.
 
 import logging
 from pathlib import Path
+from typing import Any
+
+from ..gitlab import summarize_gitlab_notes
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +25,7 @@ def build_pr_review_prompt(
     platform: str,
     target_branch: str = "main",
     diff_base_sha: str | None = None,
+    mr_metadata: dict[str, Any] | None = None,
     custom_instructions: str | None = None,
     custom_prompt_file: Path | None = None,
 ) -> str:
@@ -107,6 +111,8 @@ def build_pr_review_prompt(
         )
 
     # Step 3: Interpolate template variables
+    mr_context_section, mr_notes_section, mr_alert_section = _build_mr_sections(mr_metadata)
+
     try:
         prompt = template_text.format(
             pr_url=pr_url,
@@ -114,6 +120,9 @@ def build_pr_review_prompt(
             git_diff_cmd=git_diff_cmd,
             target_branch=target_branch,
             diff_explanation=diff_explanation,
+            mr_context_section=mr_context_section,
+            mr_notes_section=mr_notes_section,
+            mr_alert_section=mr_alert_section,
         )
         logger.info("Successfully interpolated template")
     except KeyError as e:
@@ -128,3 +137,89 @@ def build_pr_review_prompt(
         logger.info("Appended custom instructions to prompt")
 
     return prompt
+
+
+def _build_mr_sections(mr_metadata: dict[str, Any] | None) -> tuple[str, str, str]:
+    if not mr_metadata:
+        return "", "", ""
+
+    context_lines: list[str] = []
+    title = mr_metadata.get("title")
+    if title:
+        context_lines.append(f"- Title: {title}")
+
+    author = mr_metadata.get("author", {}).get("username") or mr_metadata.get("author", {}).get("name")
+    if author:
+        context_lines.append(f"- Author: @{author}")
+
+    source_branch = mr_metadata.get("source_branch")
+    target_branch = mr_metadata.get("target_branch")
+    if source_branch and target_branch:
+        context_lines.append(f"- Branches: {source_branch} → {target_branch}")
+
+    changes = mr_metadata.get("changes_count")
+    if changes:
+        context_lines.append(f"- Files changed: {changes}")
+
+    pipeline = mr_metadata.get("pipeline") or {}
+    pipeline_status = pipeline.get("status")
+    pipeline_url = pipeline.get("web_url")
+    if pipeline_status:
+        status_text = pipeline_status.replace("_", " ")
+        if pipeline_url:
+            context_lines.append(f"- Pipeline: {status_text} ({pipeline_url})")
+        else:
+            context_lines.append(f"- Pipeline: {status_text}")
+
+    labels = mr_metadata.get("labels")
+    if labels:
+        label_names = ", ".join(label.get("name", "") for label in labels if label.get("name"))
+        if label_names:
+            context_lines.append(f"- Labels: {label_names}")
+
+    description = mr_metadata.get("description", "").strip()
+    description_section = ""
+    if description:
+        description_section = "**Author Description:**\n" + _truncate_block(description, 800)
+
+    context_section = ""
+    if context_lines or description_section:
+        context_section = "## MR Context\n" + "\n".join(context_lines)
+        if description_section:
+            context_section += "\n\n" + description_section
+        context_section += "\n"
+
+    notes_section = ""
+    notes = mr_metadata.get("Notes")
+    notes_summary = summarize_gitlab_notes(notes)
+    if notes_summary:
+        notes_section = f"## Existing MR Notes\n{notes_summary}\n"
+
+    alert_section = ""
+    if _contains_hodor_review(notes):
+        alert_section = (
+            "## Hodor Review Reminder\n"
+            "A previous `@hodor-bot` review already reported the findings above."
+            " Only report **new** production bugs that were not mentioned earlier,"
+            " or explain why an existing note is now outdated.\n"
+        )
+
+    return context_section, notes_section, alert_section
+
+
+def _truncate_block(text: str, limit: int) -> str:
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _contains_hodor_review(notes: list[dict[str, Any]] | None) -> bool:
+    if not notes:
+        return False
+    for note in notes:
+        author = note.get("author", {})
+        username = (author.get("username") or author.get("name") or "").lower()
+        if "hodor" in username:
+            return True
+    return False

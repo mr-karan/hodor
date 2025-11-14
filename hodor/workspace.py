@@ -10,6 +10,8 @@ import tempfile
 from pathlib import Path
 from typing import Literal
 
+from .gitlab import GitLabAPIError, fetch_gitlab_mr_info
+
 logger = logging.getLogger(__name__)
 
 Platform = Literal["github", "gitlab"]
@@ -368,30 +370,9 @@ def _setup_gitlab_workspace(workspace: Path, owner: str, repo: str, pr_number: s
         # Get MR info to find the source branch
         # Specify repo explicitly to avoid ambiguity
         try:
-            # Prepare clean environment without GLAMOUR_STYLE (causes deprecation warnings in stdout)
-            glab_env = os.environ.copy()
-            glab_env["GITLAB_HOST"] = gitlab_host
-            glab_env.pop("GLAMOUR_STYLE", None)  # Remove if present to avoid warnings
-
-            result = subprocess.run(
-                [
-                    "glab",
-                    "mr",
-                    "view",
-                    pr_number,
-                    "--repo",
-                    repo_full_path,
-                    "-F",
-                    "json",  # glab uses -F json or --output json, not --json
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                env=glab_env,
-            )
-        except subprocess.CalledProcessError as e:
-            error_msg = e.stderr if hasattr(e, "stderr") and e.stderr else "No error details available"
-            logger.error(f"glab mr view failed: {error_msg}")
+            mr_info = fetch_gitlab_mr_info(owner, repo, pr_number, gitlab_host)
+        except GitLabAPIError as e:
+            error_msg = str(e)
             raise WorkspaceError(
                 f"Failed to fetch MR info for !{pr_number} from {gitlab_host}/{repo_full_path}\n"
                 f"Command: glab mr view {pr_number} --repo {repo_full_path} -F json\n"
@@ -401,24 +382,6 @@ def _setup_gitlab_workspace(workspace: Path, owner: str, repo: str, pr_number: s
                 f"  2. Check authentication: glab auth status\n"
                 f"  3. Verify GITLAB_TOKEN is set for {gitlab_host}"
             ) from e
-
-        import json
-
-        try:
-            # Parse JSON output, skipping any warning lines
-            # glab might still print warnings before JSON despite our env cleanup
-            output = result.stdout.strip()
-
-            # Find the first line that starts with '{' (JSON start)
-            json_start = output.find("{")
-            if json_start > 0:
-                logger.debug(f"Skipping non-JSON prefix in glab output: {output[:json_start]}")
-                output = output[json_start:]
-
-            mr_info = json.loads(output)
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse glab output: {result.stdout[:200]}")
-            raise WorkspaceError(f"glab returned invalid JSON: {e}") from e
 
         source_branch = mr_info.get("source_branch")
         target_branch = mr_info.get("target_branch")
