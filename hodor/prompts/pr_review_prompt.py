@@ -28,6 +28,7 @@ def build_pr_review_prompt(
     mr_metadata: dict[str, Any] | None = None,
     custom_instructions: str | None = None,
     custom_prompt_file: Path | None = None,
+    output_format: str = "markdown",
 ) -> str:
     """Build a PR review prompt for OpenHands agent.
 
@@ -41,18 +42,22 @@ def build_pr_review_prompt(
         diff_base_sha: GitLab's calculated merge base SHA (most reliable for GitLab CI)
         custom_instructions: Optional additional instructions to append to template
         custom_prompt_file: Optional path to custom template file (replaces base template)
+        output_format: Output format - "markdown" or "json" (default: "markdown")
 
     Returns:
         Complete prompt for OpenHands agent
     """
     # Step 1: Determine which template to use
-    # custom_prompt_file = full replacement, otherwise use base template
+    # custom_prompt_file = full replacement, otherwise use format-specific template
     if custom_prompt_file:
         template_file = custom_prompt_file
         logger.info(f"Using custom prompt file: {template_file}")
+    elif output_format == "json":
+        template_file = TEMPLATES_DIR / "json_review.md"
+        logger.info("Using JSON review template")
     else:
         template_file = TEMPLATES_DIR / "default_review.md"
-        logger.info("Using default template")
+        logger.info("Using default markdown template")
 
     # Step 2: Load template
     logger.info(f"Loading template from: {template_file}")
@@ -68,16 +73,11 @@ def build_pr_review_prompt(
 
     # Prepare platform-specific commands and explanations for interpolation
     if platform == "github":
-        cli_tool = "gh"
-        pr_view_cmd = f"gh pr view {pr_number}"
         # Use git diff --name-only instead of gh pr diff to avoid dumping full diff
         pr_diff_cmd = f"git --no-pager diff origin/{target_branch}...HEAD --name-only"
-        pr_checks_cmd = f"gh pr checks {pr_number}"
         # GitHub specific diff command (base)
         git_diff_cmd = f"git --no-pager diff origin/{target_branch}...HEAD"
     else:  # gitlab
-        cli_tool = "glab"
-        pr_view_cmd = f"glab mr view {pr_number}"
         # GitLab specific diff command - use diff_base_sha if available (most reliable)
         if diff_base_sha:
             # Use git diff --name-only to list files first, not full diff
@@ -87,7 +87,6 @@ def build_pr_review_prompt(
         else:
             pr_diff_cmd = f"git --no-pager diff origin/{target_branch}...HEAD --name-only"
             git_diff_cmd = f"git --no-pager diff origin/{target_branch}...HEAD"
-        pr_checks_cmd = f"glab ci view"
 
     # Prepare diff explanation based on platform and available SHA
     if diff_base_sha:
@@ -171,11 +170,11 @@ def _build_mr_sections(mr_metadata: dict[str, Any] | None) -> tuple[str, str, st
         else:
             context_lines.append(f"- Pipeline: {status_text}")
 
-    labels = mr_metadata.get("labels")
-    if labels:
-        label_names = ", ".join(label.get("name", "") for label in labels if label.get("name"))
-        if label_names:
-            context_lines.append(f"- Labels: {label_names}")
+    label_names = _normalize_label_names(mr_metadata.get("label_details"))
+    if not label_names:
+        label_names = _normalize_label_names(mr_metadata.get("labels"))
+    if label_names:
+        context_lines.append(f"- Labels: {', '.join(label_names)}")
 
     description = mr_metadata.get("description", "").strip()
     description_section = ""
@@ -212,6 +211,36 @@ def _truncate_block(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1].rstrip() + "…"
+
+
+def _normalize_label_names(raw_labels: Any) -> list[str]:
+    """Convert assorted GitLab label payloads into user-facing strings."""
+    if not raw_labels:
+        return []
+
+    # GitLab REST returns strings, python-gitlab may expose dicts, keep both.
+    label_names: list[str] = []
+
+    def add_label(value: Any) -> None:
+        name = ""
+        if isinstance(value, str):
+            name = value.strip()
+        elif isinstance(value, dict):
+            label_value = value.get("name")
+            if isinstance(label_value, str):
+                name = label_value.strip()
+        elif value is not None:
+            name = str(value).strip()
+        if name:
+            label_names.append(name)
+
+    if isinstance(raw_labels, list):
+        for label in raw_labels:
+            add_label(label)
+    else:
+        add_label(raw_labels)
+
+    return label_names
 
 
 def _contains_hodor_review(notes: list[dict[str, Any]] | None) -> bool:

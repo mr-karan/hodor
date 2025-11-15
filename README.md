@@ -154,6 +154,12 @@ hodor ... \
   --reasoning-effort medium \
   --verbose
 
+# Enable maximum reasoning effort with extended thinking (for very complex PRs)
+hodor ... --ultrathink --max-iterations 1000
+
+# Allow unlimited agent iterations for thorough reviews
+hodor ... --max-iterations -1 --verbose
+
 # Append custom instructions to the base prompt
 hodor ... --prompt "Focus on authorization bugs and SQL injection vectors."
 
@@ -221,6 +227,8 @@ See [AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md) for advanced workflows.
 | `--model` | `anthropic/claude-sonnet-4-5-20250929` | LLM model to use. Supports any [LiteLLM model](https://docs.litellm.ai/docs/providers). |
 | `--temperature` | Auto (0.0 for non-reasoning) | Override sampling temperature for LLM reasoning. |
 | `--reasoning-effort` | `none` | Enable extended thinking for complex PRs (`low`, `medium`, `high`). |
+| `--max-iterations` | `500` | Maximum number of agent iterations/steps. Use `-1` for unlimited execution. |
+| `--ultrathink` | Off | Enable maximum reasoning effort with extended thinking budget (shortcut for `--reasoning-effort high` with 500K token budget). |
 | `--prompt` | – | Append custom instructions to the base prompt. |
 | `--prompt-file` | – | Replace base prompt with a custom markdown file. |
 | `--workspace` | Temp dir | Directory for repo checkout. Re-use for faster multi-PR reviews. |

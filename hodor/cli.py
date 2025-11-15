@@ -84,6 +84,12 @@ def parse_llm_args(ctx, param, value):
     help="Post the review directly to the PR/MR as a comment (useful for CI/CD). Default: no-post (print to stdout)",
 )
 @click.option(
+    "--json",
+    "output_json",
+    is_flag=True,
+    help="Output structured JSON format instead of markdown (useful for CI/CD automation and parsing)",
+)
+@click.option(
     "--prompt",
     default=None,
     help="Custom inline prompt text (overrides default and any prompt file)",
@@ -100,6 +106,17 @@ def parse_llm_args(ctx, param, value):
     type=click.Path(),
     help="Workspace directory to use (creates temp dir if not specified). Reuses workspace if same repo.",
 )
+@click.option(
+    "--max-iterations",
+    default=500,
+    type=int,
+    help="Maximum number of agent iterations/steps (default: 500, use -1 for unlimited)",
+)
+@click.option(
+    "--ultrathink",
+    is_flag=True,
+    help="Enable maximum reasoning effort with extended thinking budget (shortcut for --reasoning-effort high)",
+)
 def main(
     pr_url: str,
     model: str,
@@ -108,15 +125,19 @@ def main(
     verbose: bool,
     llm: dict,
     post: bool,
+    output_json: bool,
     prompt: str | None,
     prompt_file: str | None,
     workspace: str | None,
+    max_iterations: int,
+    ultrathink: bool,
 ):
     """
     Review a GitHub pull request or GitLab merge request using AI.
 
     Hodor uses OpenHands SDK to run an AI agent that clones the repository,
-    checks out the PR branch, and analyzes the code using bash tools (gh, glab, git).
+    checks out the PR branch, and analyzes the code using bash tools (gh, git,
+    glab) for metadata fetching and comment posting.
 
     \b
     Examples:
@@ -144,15 +165,13 @@ def main(
         LLM_API_KEY or ANTHROPIC_API_KEY or OPENAI_API_KEY - LLM API key (required)
         LLM_BASE_URL - Custom LLM endpoint (optional)
         GITHUB_TOKEN - GitHub API token (for gh CLI authentication)
-        GITLAB_TOKEN - GitLab API token (for glab CLI authentication)
+        GITLAB_TOKEN / GITLAB_PRIVATE_TOKEN / CI_JOB_TOKEN - GitLab API tokens for glab CLI
         GITLAB_HOST - GitLab host for self-hosted instances (default: gitlab.com)
 
     \b
     Authentication:
-        Hodor uses gh and glab CLIs for GitHub and GitLab respectively.
-        Ensure you've authenticated:
         - GitHub: gh auth login  or set GITHUB_TOKEN
-        - GitLab: glab auth login  or set GITLAB_TOKEN + GITLAB_HOST
+        - GitLab: provide a token with api scope via GITLAB_TOKEN (or CI_JOB_TOKEN in CI)
     """
     # Configure logging
     if verbose:
@@ -163,7 +182,7 @@ def main(
     # Check platform and token availability
     platform = detect_platform(pr_url)
     github_token = os.getenv("GITHUB_TOKEN")
-    gitlab_token = os.getenv("GITLAB_TOKEN")
+    gitlab_token = os.getenv("GITLAB_TOKEN") or os.getenv("GITLAB_PRIVATE_TOKEN") or os.getenv("CI_JOB_TOKEN")
 
     if platform == "github" and not github_token:
         console.print(
@@ -171,35 +190,21 @@ def main(
         )
         console.print("[dim]   Set GITHUB_TOKEN environment variable or run: gh auth login[/dim]\n")
     elif platform == "gitlab" and not gitlab_token:
-        # Check if glab is already authenticated for the specific GitLab host (e.g., via CI_JOB_TOKEN)
-        try:
-            # Extract the GitLab hostname from the PR URL
-            _, _, _, gitlab_host = parse_pr_url(pr_url)
-
-            # Check auth status for the specific hostname (more reliable than checking all instances)
-            result = subprocess.run(
-                ["glab", "auth", "status", "--hostname", gitlab_host, "-t"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            # If glab auth status succeeds (exit code 0), glab is authenticated for this host
-            if result.returncode != 0:
-                console.print(
-                    f"[yellow]⚠️  Warning: GITLAB_TOKEN not set and glab is not authenticated for {gitlab_host}.[/yellow]"
-                )
-                console.print(f"[dim]   Set GITLAB_TOKEN environment variable or run: glab auth login --hostname {gitlab_host}[/dim]\n")
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            # If glab is not installed or times out, show the warning
-            console.print("[yellow]⚠️  Warning: GITLAB_TOKEN not set. You may encounter authentication issues.[/yellow]")
-            console.print("[dim]   Set GITLAB_TOKEN environment variable or run: glab auth login[/dim]\n")
-        except ValueError:
-            # If parse_pr_url fails, just show a generic warning
-            console.print("[yellow]⚠️  Warning: GITLAB_TOKEN not set. You may encounter authentication issues.[/yellow]")
-            console.print("[dim]   Set GITLAB_TOKEN environment variable or run: glab auth login[/dim]\n")
+        console.print(
+            "[yellow]⚠️  Warning: No GitLab token detected. Set GITLAB_TOKEN (api scope) or rely on CI_JOB_TOKEN for "
+            "CI environments.[/yellow]"
+        )
+        console.print("[dim]   Export GITLAB_TOKEN and optionally GITLAB_HOST for self-hosted instances.[/dim]\n")
 
     # Parse prompt file path
     prompt_file_path = Path(prompt_file) if prompt_file else None
+
+    # Handle ultrathink flag
+    if ultrathink:
+        reasoning_effort = "high"
+        # Ensure extended_thinking_budget is high if not already set
+        if "extended_thinking_budget" not in llm:
+            llm = {**llm, "extended_thinking_budget": 500000}
 
     console.print("\n[bold cyan]🚪 Hodor - AI Code Review Agent[/bold cyan]")
     console.print(f"[dim]Platform: {platform.upper()}[/dim]")
@@ -207,6 +212,10 @@ def main(
     console.print(f"[dim]Model: {model}[/dim]")
     if reasoning_effort:
         console.print(f"[dim]Reasoning Effort: {reasoning_effort}[/dim]")
+    if max_iterations == -1:
+        console.print(f"[dim]Max Iterations: Unlimited[/dim]")
+    else:
+        console.print(f"[dim]Max Iterations: {max_iterations}[/dim]")
     console.print()
 
     try:
@@ -220,7 +229,7 @@ def main(
 
             # Run the review
             workspace_path = Path(workspace) if workspace else None
-            review_markdown = review_pr(
+            review_output = review_pr(
                 pr_url=pr_url,
                 model=model,
                 temperature=temperature,
@@ -231,6 +240,8 @@ def main(
                 verbose=verbose,
                 cleanup=workspace is None,  # Only cleanup if using temp dir
                 workspace_dir=workspace_path,
+                output_format="json" if output_json else "markdown",
+                max_iterations=max_iterations,
             )
 
             progress.update(task, description="Review complete!")
@@ -238,12 +249,21 @@ def main(
 
         # Display result
         if post:
-            # Post to PR/MR
+            # Post to PR/MR (always as markdown, never raw JSON)
             console.print("\n[cyan]📤 Posting review to PR/MR...[/cyan]\n")
             try:
+                # If output is JSON, we need to format it as markdown for posting
+                if output_json:
+                    from .review_parser import parse_review_output, format_review_markdown
+
+                    parsed = parse_review_output(review_output)
+                    review_text = format_review_markdown(parsed)
+                else:
+                    review_text = review_output
+
                 result = post_review_comment(
                     pr_url=pr_url,
-                    review_text=review_markdown,
+                    review_text=review_text,
                     model=model,
                 )
 
@@ -256,18 +276,28 @@ def main(
                 else:
                     console.print(f"[bold red]❌ Failed to post review:[/bold red] {result.get('error')}")
                     console.print("\n[yellow]Review output:[/yellow]\n")
-                    console.print(Markdown(review_markdown))
+                    if output_json:
+                        console.print(review_output)
+                    else:
+                        console.print(Markdown(review_output))
 
             except Exception as e:
                 console.print(f"[bold red]❌ Error posting review:[/bold red] {str(e)}")
                 console.print("\n[yellow]Review output:[/yellow]\n")
-                console.print(Markdown(review_markdown))
+                if output_json:
+                    console.print(review_output)
+                else:
+                    console.print(Markdown(review_output))
 
         else:
             # Print to console
             console.print("[bold green]✅ Review Complete[/bold green]\n")
-            console.print(Markdown(review_markdown))
-            console.print("\n[dim]💡 Tip: Use --post to automatically post this review to the PR/MR[/dim]")
+            if output_json:
+                # Output raw JSON (no markdown rendering)
+                console.print(review_output)
+            else:
+                console.print(Markdown(review_output))
+                console.print("\n[dim]💡 Tip: Use --post to automatically post this review to the PR/MR[/dim]")
 
     except KeyboardInterrupt:
         console.print("\n[yellow]⚠️  Review cancelled by user[/yellow]")

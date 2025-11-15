@@ -92,6 +92,56 @@ def _condense_whitespace(value: str) -> str:
     return value
 
 
+def post_gitlab_mr_comment(
+    owner: str,
+    repo: str,
+    mr_number: str | int,
+    comment_text: str,
+    *,
+    host: str | None = None,
+) -> None:
+    """Post a comment to a GitLab merge request using glab CLI.
+
+    Args:
+        owner: GitLab group/owner
+        repo: Repository name
+        mr_number: Merge request number
+        comment_text: Comment text to post
+        host: GitLab host (defaults to gitlab.com or GITLAB_HOST env var)
+
+    Raises:
+        GitLabAPIError: If posting the comment fails
+    """
+    gitlab_host = host or os.getenv("GITLAB_HOST", "gitlab.com")
+    repo_full_path = f"{owner}/{repo}"
+
+    glab_env = os.environ.copy()
+    glab_env["GITLAB_HOST"] = gitlab_host
+
+    args = [
+        "glab",
+        "mr",
+        "note",
+        str(mr_number),
+        "--repo",
+        repo_full_path,
+        "--message",
+        comment_text,
+    ]
+
+    try:
+        subprocess.run(
+            args,
+            check=True,
+            capture_output=True,
+            text=True,
+            env=glab_env,
+        )
+    except subprocess.CalledProcessError as exc:
+        error_msg = exc.stderr if getattr(exc, "stderr", None) else str(exc)
+        raise GitLabAPIError(f"Failed to post GitLab comment: {error_msg}") from exc
+
+
 def summarize_gitlab_notes(
     notes: list[dict[str, Any]] | None,
     *,
