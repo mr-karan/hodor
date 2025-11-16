@@ -10,7 +10,7 @@ Identify production bugs in the PR's diff only. You are in READ-ONLY mode - anal
 
 {mr_notes_section}
 
-{mr_alert_section}
+{mr_reminder_section}
 
 ## Step 1: List Changed Files (MANDATORY FIRST STEP)
 

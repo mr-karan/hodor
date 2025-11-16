@@ -110,7 +110,7 @@ def build_pr_review_prompt(
         )
 
     # Step 3: Interpolate template variables
-    mr_context_section, mr_notes_section, mr_alert_section = _build_mr_sections(mr_metadata)
+    mr_context_section, mr_notes_section, mr_reminder_section = _build_mr_sections(mr_metadata)
 
     try:
         prompt = template_text.format(
@@ -121,7 +121,7 @@ def build_pr_review_prompt(
             diff_explanation=diff_explanation,
             mr_context_section=mr_context_section,
             mr_notes_section=mr_notes_section,
-            mr_alert_section=mr_alert_section,
+            mr_reminder_section=mr_reminder_section,
         )
         logger.info("Successfully interpolated template")
     except KeyError as e:
@@ -194,16 +194,18 @@ def _build_mr_sections(mr_metadata: dict[str, Any] | None) -> tuple[str, str, st
     if notes_summary:
         notes_section = f"## Existing MR Notes\n{notes_summary}\n"
 
-    alert_section = ""
-    if _contains_hodor_review(notes):
-        alert_section = (
-            "## Hodor Review Reminder\n"
-            "A previous `@hodor-bot` review already reported the findings above."
-            " Only report **new** production bugs that were not mentioned earlier,"
-            " or explain why an existing note is now outdated.\n"
+    reminder_section = ""
+    if notes_summary:
+        reminder_section = (
+            "## Review Note Deduplication\n\n"
+            "The discussions above may already cover some issues. Before reporting a finding:\n"
+            "1. Check if it's already mentioned in existing notes\n"
+            "2. Only report if your finding is materially different or more specific\n"
+            "3. If an existing note is incorrect/outdated, explain why in your finding\n\n"
+            "Focus on discovering NEW issues not yet discussed.\n"
         )
 
-    return context_section, notes_section, alert_section
+    return context_section, notes_section, reminder_section
 
 
 def _truncate_block(text: str, limit: int) -> str:
@@ -243,12 +245,3 @@ def _normalize_label_names(raw_labels: Any) -> list[str]:
     return label_names
 
 
-def _contains_hodor_review(notes: list[dict[str, Any]] | None) -> bool:
-    if not notes:
-        return False
-    for note in notes:
-        author = note.get("author", {})
-        username = (author.get("username") or author.get("name") or "").lower()
-        if "hodor" in username:
-            return True
-    return False
