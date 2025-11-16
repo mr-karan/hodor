@@ -28,6 +28,7 @@ def build_pr_review_prompt(
     mr_metadata: dict[str, Any] | None = None,
     custom_instructions: str | None = None,
     custom_prompt_file: Path | None = None,
+    output_format: str = "markdown",
 ) -> str:
     """Build a PR review prompt for OpenHands agent.
 
@@ -41,18 +42,22 @@ def build_pr_review_prompt(
         diff_base_sha: GitLab's calculated merge base SHA (most reliable for GitLab CI)
         custom_instructions: Optional additional instructions to append to template
         custom_prompt_file: Optional path to custom template file (replaces base template)
+        output_format: Output format - "markdown" or "json" (default: "markdown")
 
     Returns:
         Complete prompt for OpenHands agent
     """
     # Step 1: Determine which template to use
-    # custom_prompt_file = full replacement, otherwise use base template
+    # custom_prompt_file = full replacement, otherwise use format-specific template
     if custom_prompt_file:
         template_file = custom_prompt_file
         logger.info(f"Using custom prompt file: {template_file}")
+    elif output_format == "json":
+        template_file = TEMPLATES_DIR / "json_review.md"
+        logger.info("Using JSON review template")
     else:
         template_file = TEMPLATES_DIR / "default_review.md"
-        logger.info("Using default template")
+        logger.info("Using default markdown template")
 
     # Step 2: Load template
     logger.info(f"Loading template from: {template_file}")
@@ -68,16 +73,11 @@ def build_pr_review_prompt(
 
     # Prepare platform-specific commands and explanations for interpolation
     if platform == "github":
-        cli_tool = "gh"
-        pr_view_cmd = f"gh pr view {pr_number}"
         # Use git diff --name-only instead of gh pr diff to avoid dumping full diff
         pr_diff_cmd = f"git --no-pager diff origin/{target_branch}...HEAD --name-only"
-        pr_checks_cmd = f"gh pr checks {pr_number}"
         # GitHub specific diff command (base)
         git_diff_cmd = f"git --no-pager diff origin/{target_branch}...HEAD"
     else:  # gitlab
-        cli_tool = "glab"
-        pr_view_cmd = f"glab mr view {pr_number}"
         # GitLab specific diff command - use diff_base_sha if available (most reliable)
         if diff_base_sha:
             # Use git diff --name-only to list files first, not full diff
@@ -87,7 +87,6 @@ def build_pr_review_prompt(
         else:
             pr_diff_cmd = f"git --no-pager diff origin/{target_branch}...HEAD --name-only"
             git_diff_cmd = f"git --no-pager diff origin/{target_branch}...HEAD"
-        pr_checks_cmd = f"glab ci view"
 
     # Prepare diff explanation based on platform and available SHA
     if diff_base_sha:
@@ -111,7 +110,7 @@ def build_pr_review_prompt(
         )
 
     # Step 3: Interpolate template variables
-    mr_context_section, mr_notes_section, mr_alert_section = _build_mr_sections(mr_metadata)
+    mr_context_section, mr_notes_section, mr_reminder_section = _build_mr_sections(mr_metadata)
 
     try:
         prompt = template_text.format(
@@ -122,7 +121,7 @@ def build_pr_review_prompt(
             diff_explanation=diff_explanation,
             mr_context_section=mr_context_section,
             mr_notes_section=mr_notes_section,
-            mr_alert_section=mr_alert_section,
+            mr_reminder_section=mr_reminder_section,
         )
         logger.info("Successfully interpolated template")
     except KeyError as e:
@@ -171,11 +170,11 @@ def _build_mr_sections(mr_metadata: dict[str, Any] | None) -> tuple[str, str, st
         else:
             context_lines.append(f"- Pipeline: {status_text}")
 
-    labels = mr_metadata.get("labels")
-    if labels:
-        label_names = ", ".join(label.get("name", "") for label in labels if label.get("name"))
-        if label_names:
-            context_lines.append(f"- Labels: {label_names}")
+    label_names = _normalize_label_names(mr_metadata.get("label_details"))
+    if not label_names:
+        label_names = _normalize_label_names(mr_metadata.get("labels"))
+    if label_names:
+        context_lines.append(f"- Labels: {', '.join(label_names)}")
 
     description = mr_metadata.get("description", "").strip()
     description_section = ""
@@ -195,16 +194,18 @@ def _build_mr_sections(mr_metadata: dict[str, Any] | None) -> tuple[str, str, st
     if notes_summary:
         notes_section = f"## Existing MR Notes\n{notes_summary}\n"
 
-    alert_section = ""
-    if _contains_hodor_review(notes):
-        alert_section = (
-            "## Hodor Review Reminder\n"
-            "A previous `@hodor-bot` review already reported the findings above."
-            " Only report **new** production bugs that were not mentioned earlier,"
-            " or explain why an existing note is now outdated.\n"
+    reminder_section = ""
+    if notes_summary:
+        reminder_section = (
+            "## Review Note Deduplication\n\n"
+            "The discussions above may already cover some issues. Before reporting a finding:\n"
+            "1. Check if it's already mentioned in existing notes\n"
+            "2. Only report if your finding is materially different or more specific\n"
+            "3. If an existing note is incorrect/outdated, explain why in your finding\n\n"
+            "Focus on discovering NEW issues not yet discussed.\n"
         )
 
-    return context_section, notes_section, alert_section
+    return context_section, notes_section, reminder_section
 
 
 def _truncate_block(text: str, limit: int) -> str:
@@ -214,12 +215,33 @@ def _truncate_block(text: str, limit: int) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
-def _contains_hodor_review(notes: list[dict[str, Any]] | None) -> bool:
-    if not notes:
-        return False
-    for note in notes:
-        author = note.get("author", {})
-        username = (author.get("username") or author.get("name") or "").lower()
-        if "hodor" in username:
-            return True
-    return False
+def _normalize_label_names(raw_labels: Any) -> list[str]:
+    """Convert assorted GitLab label payloads into user-facing strings."""
+    if not raw_labels:
+        return []
+
+    # GitLab REST returns strings, python-gitlab may expose dicts, keep both.
+    label_names: list[str] = []
+
+    def add_label(value: Any) -> None:
+        name = ""
+        if isinstance(value, str):
+            name = value.strip()
+        elif isinstance(value, dict):
+            label_value = value.get("name")
+            if isinstance(label_value, str):
+                name = label_value.strip()
+        elif value is not None:
+            name = str(value).strip()
+        if name:
+            label_names.append(name)
+
+    if isinstance(raw_labels, list):
+        for label in raw_labels:
+            add_label(label)
+    else:
+        add_label(raw_labels)
+
+    return label_names
+
+

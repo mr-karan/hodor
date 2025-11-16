@@ -1,55 +1,121 @@
 """GitLab helper utilities for Hodor.
 
-Provides wrappers around the `glab` CLI so we can fetch merge request
-metadata and reuse it across workspace setup and prompt generation.
+Provides wrappers around python-gitlab SDK for fetching merge request
+metadata and posting review comments.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-import re
-import subprocess
 from datetime import datetime
 from typing import Any
+
+import gitlab
+from gitlab import exceptions as gitlab_exceptions
 
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_GITLAB_HOST = "gitlab.com"
+
 
 class GitLabAPIError(RuntimeError):
-    """Raised when glab fails or returns invalid data."""
+    """Raised when the GitLab API fails or returns invalid data."""
 
 
-def _run_glab_json_command(args: list[str], *, env: dict[str, str] | None = None) -> dict[str, Any]:
-    """Run a glab command that returns JSON and parse the output."""
+def _normalize_gitlab_base_url(host: str | None = None) -> str:
+    """Return the base URL (with scheme) for the GitLab instance."""
+
+    candidate = host or os.getenv("GITLAB_HOST") or os.getenv("CI_SERVER_URL") or DEFAULT_GITLAB_HOST
+    candidate = candidate.strip()
+    if not candidate:
+        candidate = DEFAULT_GITLAB_HOST
+
+    if candidate.startswith(("http://", "https://")):
+        base_url = candidate
+    else:
+        base_url = f"https://{candidate}"
+
+    return base_url.rstrip("/")
+
+
+def _gitlab_auth_kwargs() -> dict[str, str]:
+    """Build authentication kwargs for python-gitlab client."""
+
+    private_token = os.getenv("GITLAB_TOKEN") or os.getenv("GITLAB_PRIVATE_TOKEN")
+    oauth_token = os.getenv("GITLAB_OAUTH_TOKEN")
+    job_token = os.getenv("CI_JOB_TOKEN")
+
+    if private_token:
+        return {"private_token": private_token}
+    if oauth_token:
+        return {"oauth_token": oauth_token}
+    if job_token:
+        return {"job_token": job_token}
+    return {}
+
+
+def _create_gitlab_client(host: str | None = None) -> gitlab.Gitlab:
+    """Instantiate a python-gitlab client with the right base URL and auth."""
+
+    base_url = _normalize_gitlab_base_url(host)
+    auth_kwargs = _gitlab_auth_kwargs()
 
     try:
-        result = subprocess.run(
-            args,
-            check=True,
-            capture_output=True,
-            text=True,
-            env=env,
-        )
-    except subprocess.CalledProcessError as exc:  # pragma: no cover - passthrough path
-        error_msg = exc.stderr if getattr(exc, "stderr", None) else str(exc)
-        raise GitLabAPIError(error_msg) from exc
+        client = gitlab.Gitlab(base_url, **auth_kwargs)
+    except Exception as exc:  # pragma: no cover - defensive
+        raise GitLabAPIError(f"Failed to initialize GitLab client for {base_url}: {exc}") from exc
 
-    output = result.stdout.strip()
-    json_start = output.find("{")
-    if json_start == -1:
-        raise GitLabAPIError("glab output did not contain JSON payload")
+    logger.debug("Initialized GitLab client for %s (auth=%s)", base_url, "yes" if auth_kwargs else "anonymous")
+    return client
 
-    if json_start > 0:
-        logger.debug("Skipping non-JSON prefix in glab output: %s", output[:json_start])
-        output = output[json_start:]
+
+def _get_project(client: gitlab.Gitlab, owner: str, repo: str) -> Any:
+    """Return the GitLab project reference for owner/repo."""
+
+    project_path = "/".join(part for part in [owner.strip("/"), repo.strip("/")] if part).strip("/")
 
     try:
-        return json.loads(output)
-    except json.JSONDecodeError as exc:  # pragma: no cover - passthrough path
-        raise GitLabAPIError(f"Unable to parse glab JSON output: {exc}") from exc
+        return client.projects.get(project_path)
+    except gitlab_exceptions.GitlabAuthenticationError as exc:
+        raise GitLabAPIError(
+            "GitLab authentication failed. Set GITLAB_TOKEN (or CI_JOB_TOKEN) with api scope access."
+        ) from exc
+    except gitlab_exceptions.GitlabGetError as exc:
+        raise GitLabAPIError(
+            f"Unable to find GitLab project '{project_path}'. "
+            f"Verify the URL and ensure your token has access. ({exc.error_message or exc})"
+        ) from exc
+    except gitlab_exceptions.GitlabError as exc:  # pragma: no cover - defensive
+        raise GitLabAPIError(f"Unexpected GitLab error while fetching project '{project_path}': {exc}") from exc
+
+
+def _get_merge_request(project: Any, mr_number: str | int) -> Any:
+    """Fetch a merge request safely."""
+
+    try:
+        return project.mergerequests.get(int(mr_number))
+    except gitlab_exceptions.GitlabAuthenticationError as exc:
+        raise GitLabAPIError(
+            "GitLab authentication failed while fetching the merge request. "
+            "Ensure GITLAB_TOKEN (or CI_JOB_TOKEN) is valid."
+        ) from exc
+    except gitlab_exceptions.GitlabGetError as exc:
+        raise GitLabAPIError(
+            f"Could not fetch merge request !{mr_number}: {exc.error_message or exc}"
+        ) from exc
+
+
+def _serialize_notes(mr: Any) -> list[dict[str, Any]]:
+    """Return serialized note dictionaries for an MR."""
+
+    try:
+        notes = mr.notes.list(all=True, sort="asc", per_page=100)
+    except gitlab_exceptions.GitlabError as exc:
+        raise GitLabAPIError(f"Failed to fetch notes for merge request !{mr.iid}: {exc}") from exc
+
+    return [note.attributes for note in notes]
 
 
 def fetch_gitlab_mr_info(
@@ -60,69 +126,119 @@ def fetch_gitlab_mr_info(
     *,
     include_comments: bool = False,
 ) -> dict[str, Any]:
-    """Return the JSON metadata for a GitLab merge request via glab."""
+    """Return merge request metadata using python-gitlab."""
 
-    gitlab_host = host or os.getenv("GITLAB_HOST", "gitlab.com")
-    repo_full_path = f"{owner}/{repo}"
-
-    glab_env = os.environ.copy()
-    glab_env["GITLAB_HOST"] = gitlab_host
-    glab_env.pop("GLAMOUR_STYLE", None)  # ensure no ANSI art sneaks into stdout
-
-    args = [
-        "glab",
-        "mr",
-        "view",
-        str(mr_number),
-        "--repo",
-        repo_full_path,
-        "-F",
-        "json",
-    ]
+    client = _create_gitlab_client(host)
+    project = _get_project(client, owner, repo)
+    mr = _get_merge_request(project, mr_number)
+    mr_data = dict(mr.attributes)  # copy to detach from SDK object
 
     if include_comments:
-        args.append("--comments")
+        mr_data["Notes"] = _serialize_notes(mr)
 
-    return _run_glab_json_command(args, env=glab_env)
+    return mr_data
 
 
-def _condense_whitespace(value: str) -> str:
-    value = value.strip()
-    value = re.sub(r"\s+", " ", value)
-    return value
+def post_gitlab_mr_comment(
+    owner: str,
+    repo: str,
+    mr_number: str | int,
+    body: str,
+    *,
+    host: str | None = None,
+) -> dict[str, Any]:
+    """Post a top-level note on a GitLab merge request."""
+
+    client = _create_gitlab_client(host)
+    project = _get_project(client, owner, repo)
+    mr = _get_merge_request(project, mr_number)
+
+    try:
+        note = mr.notes.create({"body": body})
+    except gitlab_exceptions.GitlabAuthenticationError as exc:
+        raise GitLabAPIError("GitLab authentication failed when posting the review comment.") from exc
+    except gitlab_exceptions.GitlabCreateError as exc:
+        raise GitLabAPIError(f"GitLab rejected the review comment: {exc.error_message or exc}") from exc
+    except gitlab_exceptions.GitlabError as exc:  # pragma: no cover - defensive
+        raise GitLabAPIError(f"Failed to post comment to merge request !{mr_number}: {exc}") from exc
+
+    return note.attributes
 
 
 def summarize_gitlab_notes(
     notes: list[dict[str, Any]] | None,
     *,
-    max_entries: int = 10,
+    max_entries: int = 5,
 ) -> str:
-    """Return a human-readable bullet list for the most relevant notes."""
+    """Return a human-readable bullet list for the most relevant notes.
+
+    Preserves full comment text and multi-line formatting to provide complete context.
+    Filters out trivial comments to optimize token usage.
+    """
 
     if not notes:
         return ""
 
-    lines: list[str] = []
+    # Trivial comment patterns to skip
+    trivial_patterns = {
+        "lgtm", "+1", "-1", "👍", "👎", "thanks", "thank you",
+        "looks good", "approved", "🚀", "✅", "❌"
+    }
+
+    filtered = []
     for note in notes:
-        if note.get("system"):
-            continue
         body = note.get("body", "").strip()
         if not body:
             continue
 
         author = note.get("author", {})
         username = author.get("username") or author.get("name") or "unknown"
-        created_at = note.get("created_at") or ""
-        try:
-            timestamp = datetime.fromisoformat(created_at.rstrip("Z"))
-            created_str = timestamp.strftime("%Y-%m-%d %H:%M")
-        except ValueError:  # pragma: no cover - formatting fallback
-            created_str = created_at
+        is_system = note.get("system", False)
 
-        formatted_body = body.strip() or "(empty comment)"
-        lines.append(f"- {created_str} @{username}:\n{formatted_body}")
+        # Skip GitLab system notes (merge events, label changes, etc.)
+        if is_system:
+            continue
 
-        if len(lines) >= max_entries:
-            break
+        # Skip very short comments (likely not substantive)
+        if len(body) < 20:
+            continue
+
+        # Skip trivial comments
+        body_lower = body.lower()
+        if any(pattern in body_lower for pattern in trivial_patterns):
+            # Only skip if the comment is ONLY the trivial pattern (short comment)
+            if len(body) < 50:
+                continue
+
+        # Include meaningful human comments
+        filtered.append((username, body, note.get("created_at", "")))
+
+    # Sort by date (oldest first)
+    filtered.sort(key=lambda x: x[2])
+
+    # Take most recent
+    recent = filtered[-max_entries:]
+
+    lines = []
+    for username, body, created_at in recent:
+        # Parse timestamp for better display
+        timestamp_str = ""
+        if created_at:
+            try:
+                dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                timestamp_str = dt.strftime("%Y-%m-%d %H:%M")
+            except ValueError:
+                timestamp_str = created_at[:10] if len(created_at) >= 10 else created_at
+
+        # Format the comment header with timestamp and author
+        if timestamp_str:
+            header = f"- {timestamp_str} @{username}:"
+        else:
+            header = f"- @{username}:"
+
+        # Indent the body for better readability if multi-line
+        # Preserve full comment text without truncation
+        indented_body = "\n  ".join(body.split("\n"))
+        lines.append(f"{header}\n  {indented_body}")
 
     return "\n".join(lines)

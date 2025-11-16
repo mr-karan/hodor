@@ -16,7 +16,7 @@ from openhands.sdk.event import Event
 from openhands.sdk.workspace import LocalWorkspace
 
 from .github import GitHubAPIError, fetch_github_pr_info, normalize_github_metadata
-from .gitlab import GitLabAPIError, fetch_gitlab_mr_info
+from .gitlab import GitLabAPIError, fetch_gitlab_mr_info, post_gitlab_mr_comment
 from .llm import create_hodor_agent, get_api_key
 from .prompts.pr_review_prompt import build_pr_review_prompt
 from .skills import discover_skills
@@ -141,23 +141,13 @@ def post_review_comment(
             return {"success": True, "platform": "github", "pr_number": pr_number}
 
         elif platform == "gitlab":
-            # Use glab CLI to post comment with -R flag (works from any directory)
-            # Note: glab needs to be authenticated for the right GitLab instance
-            subprocess.run(
-                [
-                    "glab",
-                    "mr",
-                    "note",
-                    str(pr_number),
-                    "-R",
-                    f"{owner}/{repo}",  # Specify repo explicitly - works without being in git dir
-                    "--message",
-                    review_text_with_footer,
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                env={**os.environ},  # Pass GITLAB_HOST if set
+            # Use glab CLI to post comment
+            post_gitlab_mr_comment(
+                owner,
+                repo,
+                pr_number,
+                review_text_with_footer,
+                host=host,
             )
             logger.info(f"Successfully posted review to GitLab MR !{pr_number} on {owner}/{repo}")
             return {"success": True, "platform": "gitlab", "mr_number": pr_number}
@@ -165,8 +155,11 @@ def post_review_comment(
         else:
             return {"success": False, "error": f"Unsupported platform: {platform}"}
 
+    except GitLabAPIError as e:
+        logger.error(f"Failed to post GitLab comment: {e}")
+        return {"success": False, "error": str(e)}
     except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to post comment: {e}")
+        logger.error(f"Failed to post GitHub comment: {e}")
         logger.error(f"Command output: {e.stderr if hasattr(e, 'stderr') else 'N/A'}")
         return {"success": False, "error": str(e)}
     except Exception as e:
@@ -185,6 +178,8 @@ def review_pr(
     verbose: bool = False,
     cleanup: bool = True,
     workspace_dir: Path | None = None,
+    output_format: str = "markdown",
+    max_iterations: int = 500,
 ) -> str:
     """
     Review a pull request using OpenHands agent with bash tools.
@@ -200,9 +195,11 @@ def review_pr(
         verbose: Enable verbose logging
         cleanup: Clean up workspace after review (default: True)
         workspace_dir: Directory to use for workspace (if None, creates temp dir). Reuses if same repo.
+        output_format: Output format - "markdown" or "json" (default: "markdown")
+        max_iterations: Maximum number of agent iterations (default: 500, use -1 for unlimited)
 
     Returns:
-        Review text as markdown string
+        Review text as string (format depends on output_format)
 
     Raises:
         ValueError: If URL is invalid
@@ -295,6 +292,7 @@ def review_pr(
             mr_metadata=mr_metadata,
             custom_instructions=custom_prompt,
             custom_prompt_file=prompt_file,
+            output_format=output_format,
         )
     except Exception as e:
         logger.error(f"Failed to build prompt: {e}")
@@ -346,11 +344,16 @@ def review_pr(
         logger.info("Creating OpenHands conversation...")
         # Use LocalWorkspace for better integration with OpenHands SDK
         workspace_obj = LocalWorkspace(working_dir=str(workspace))
+
+        # Handle unlimited iterations (-1 -> very large number)
+        iteration_limit = 1_000_000 if max_iterations == -1 else max_iterations
+
         # Register event callback for real-time monitoring if verbose
         conversation = Conversation(
             agent=agent,
             workspace=workspace_obj,
             callbacks=[on_event] if verbose else None,
+            max_iteration_per_run=iteration_limit,
         )
 
         logger.info("Sending prompt to agent...")
