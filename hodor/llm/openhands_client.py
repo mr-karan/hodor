@@ -4,9 +4,11 @@ This module provides a clean interface to OpenHands SDK, handling:
 - LLM configuration and model selection
 - API key management (with backward compatibility)
 - Agent creation with appropriate tool presets
-- Model name normalization
+- Model name normalization for OpenAI Responses API
+- Encrypted reasoning configuration (disabled by default for compatibility)
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import logging
 import os
@@ -33,50 +35,83 @@ class ModelMetadata:
 class ModelRule:
     """Rules that customize parsing for specific model families."""
 
-    identifiers: tuple[str, ...]
+    identifiers: tuple[str, ...] = ()
+    predicate: Callable[[str], bool] | None = None
     provider: str | None = None
     use_responses_endpoint: bool | None = None
     supports_reasoning: bool = False
     default_reasoning_effort: str = "none"
 
     def matches(self, model: str) -> bool:
+        if self.predicate and self.predicate(model):
+            return True
         model_lower = model.lower()
         return any(identifier in model_lower for identifier in self.identifiers)
 
 
+def _looks_like_openai_identifier(identifier: str) -> bool:
+    if not identifier:
+        return False
+    return identifier.startswith("gpt") or (identifier.startswith("o") and len(identifier) > 1 and identifier[1].isdigit())
+
+
+def _extract_provider_and_base(model: str) -> tuple[str | None, str | None]:
+    """Return provider plus base model name (without provider/responses prefixes)."""
+
+    segments = [segment for segment in model.split("/") if segment]
+    if not segments:
+        return None, None
+
+    provider: str | None = None
+    start_index = 0
+    first_segment = segments[0].lower()
+    if first_segment in {"openai", "anthropic"}:
+        provider = first_segment
+        start_index = 1
+
+    normalized_segments = segments[start_index:]
+
+    if normalized_segments and normalized_segments[0].lower() == "responses":
+        normalized_segments = normalized_segments[1:]
+
+    if not normalized_segments:
+        base = None
+    else:
+        base = normalized_segments[0].lower()
+
+    if provider is None and base and _looks_like_openai_identifier(base):
+        provider = "openai"
+
+    return provider, base
+
+
+def _matches_openai_responses_model(model: str) -> bool:
+    """Detect OpenAI models that should use the Responses API."""
+
+    provider, base = _extract_provider_and_base(model)
+    if provider != "openai" or not base:
+        return False
+
+    if "codex" in base:
+        return True
+
+    response_prefixes = ("gpt-5", "gpt5", "o3", "o4")
+    return base.startswith(response_prefixes)
+
+
+
+
 # Ordered from most specific → least specific so substring matches work reliably.
 MODEL_RULES: tuple[ModelRule, ...] = (
-    # Mini reasoning models should stick to the standard completion endpoint.
+    # Latest OpenAI reasoning families use the Responses API automatically.
     ModelRule(
-        identifiers=("gpt-5-mini",),
-        provider="openai",
-        use_responses_endpoint=False,
-        supports_reasoning=True,
-        default_reasoning_effort="medium",
-    ),
-    ModelRule(
-        identifiers=("o3-mini",),
-        provider="openai",
-        use_responses_endpoint=False,
-        supports_reasoning=True,
-        default_reasoning_effort="medium",
-    ),
-    # Full GPT-5 models opt into the responses endpoint automatically.
-    ModelRule(
-        identifiers=("gpt-5",),
+        predicate=_matches_openai_responses_model,
         provider="openai",
         use_responses_endpoint=True,
         supports_reasoning=True,
         default_reasoning_effort="medium",
     ),
     # Other OpenAI reasoning families.
-    ModelRule(
-        identifiers=("o3",),
-        provider="openai",
-        use_responses_endpoint=False,
-        supports_reasoning=True,
-        default_reasoning_effort="medium",
-    ),
     ModelRule(
         identifiers=("o1",),
         provider="openai",
@@ -137,36 +172,101 @@ def _ensure_provider_segment(segments: list[str], provider: str) -> list[str]:
 
 
 def _ensure_responses_segment(segments: list[str], use_responses: bool) -> list[str]:
+    """Remove 'responses/' segment if present - it should not be part of the model name.
+
+    The OpenHands SDK determines Responses API usage via uses_responses_api() method,
+    not via the model name. The model name should be clean (e.g., 'openai/gpt-5').
+    """
     normalized = list(segments)
+    # Always remove 'responses/' if present - it's not part of the actual model name
     has_responses_segment = len(normalized) > 1 and normalized[1].lower() == "responses"
-    if use_responses and not has_responses_segment:
-        insert_index = 1 if normalized else 0
-        normalized.insert(insert_index, "responses")
-    elif not use_responses and has_responses_segment:
+    if has_responses_segment:
         normalized.pop(1)
     return normalized
 
 
-def get_api_key() -> str:
-    """Get LLM API key from environment variables.
+def _detect_provider(model: str) -> str | None:
+    """Detect LLM provider from model name.
 
-    Checks in order of precedence:
-    1. LLM_API_KEY (OpenHands standard)
-    2. ANTHROPIC_API_KEY (backward compatibility)
-    3. OPENAI_API_KEY (backward compatibility)
+    Args:
+        model: Model name (e.g., "anthropic/claude-sonnet-4-5" or "openai/gpt-4")
+
+    Returns:
+        Provider name ("anthropic", "openai", etc.) or None if unknown
+    """
+    model_lower = model.lower()
+
+    # Try to get provider from metadata first
+    try:
+        metadata = describe_model(model)
+        rule = _match_model_rule(metadata.raw)
+        if rule and rule.provider:
+            return rule.provider
+    except Exception:
+        # If model metadata fails, continue with string matching
+        pass
+
+    # Fall back to simple string matching
+    if "anthropic" in model_lower or "claude" in model_lower:
+        return "anthropic"
+    elif "openai" in model_lower or "gpt" in model_lower or model_lower.startswith("o1") or model_lower.startswith("o3"):
+        return "openai"
+
+    return None
+
+
+def get_api_key(model: str | None = None) -> str:
+    """Get LLM API key from environment variables with provider-aware selection.
+
+    Selection logic:
+    1. If LLM_API_KEY is set, always use it (highest priority, universal override)
+    2. If model is provided, detect provider and use provider-specific key:
+       - Anthropic/Claude models → ANTHROPIC_API_KEY
+       - OpenAI/GPT models → OPENAI_API_KEY
+    3. If no model or provider can't be detected, fall back to any available key
+       (ANTHROPIC_API_KEY first, then OPENAI_API_KEY for backward compatibility)
+
+    Args:
+        model: LLM model name (e.g., "anthropic/claude-sonnet-4-5" or "openai/gpt-4").
+               If None, falls back to provider-agnostic precedence.
 
     Returns:
         API key string
 
     Raises:
         RuntimeError: If no API key is found
+
+    Examples:
+        >>> # With both keys set and OpenAI model
+        >>> os.environ["ANTHROPIC_API_KEY"] = "sk-ant-xxx"
+        >>> os.environ["OPENAI_API_KEY"] = "sk-xxx"
+        >>> get_api_key("openai/gpt-4")  # Returns sk-xxx (OpenAI key)
+
+        >>> # With LLM_API_KEY set (overrides everything)
+        >>> os.environ["LLM_API_KEY"] = "sk-universal"
+        >>> get_api_key("openai/gpt-4")  # Returns sk-universal
     """
-    api_key = os.getenv("LLM_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or os.getenv("OPENAI_API_KEY")
+    # Priority 1: LLM_API_KEY (universal override)
+    if api_key := os.getenv("LLM_API_KEY"):
+        return api_key
 
-    if not api_key:
-        raise RuntimeError("No LLM API key found. Please set one of: LLM_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY")
+    # Priority 2: Provider-specific key based on model
+    if model:
+        provider = _detect_provider(model)
+        if provider == "anthropic":
+            if api_key := os.getenv("ANTHROPIC_API_KEY"):
+                return api_key
+        elif provider == "openai":
+            if api_key := os.getenv("OPENAI_API_KEY"):
+                return api_key
 
-    return api_key
+    # Priority 3: Fallback to any available key (backward compatibility)
+    if api_key := os.getenv("ANTHROPIC_API_KEY"):
+        return api_key
+    if api_key := os.getenv("OPENAI_API_KEY"):
+        return api_key
+
+    raise RuntimeError("No LLM API key found. Please set one of: LLM_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY")
 
 
 def create_hodor_agent(
@@ -194,9 +294,9 @@ def create_hodor_agent(
     Returns:
         Configured OpenHands Agent instance
     """
-    # Get API key
+    # Get API key (provider-aware selection based on model)
     if api_key is None:
-        api_key = get_api_key()
+        api_key = get_api_key(model)
 
     metadata = describe_model(model)
     normalized_model = metadata.normalized
@@ -209,11 +309,10 @@ def create_hodor_agent(
         "drop_params": True,  # Drop unsupported API parameters automatically
     }
 
-    # Disable encrypted reasoning for all OpenAI reasoning models
-    # The "include" parameter is for encrypted reasoning, which causes issues
-    # with GPT-5-mini and other models that don't support it
-    if metadata.supports_reasoning:
-        llm_config["enable_encrypted_reasoning"] = False
+    # Always disable encrypted reasoning to avoid API errors
+    # OpenAI models that don't support encrypted reasoning will fail with
+    # "Encrypted content is not supported with this model" error if enabled
+    llm_config["enable_encrypted_reasoning"] = False
 
     # Add base URL if provided
     if base_url:

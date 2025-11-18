@@ -246,7 +246,7 @@ See [AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md) for advanced workflows.
 | `GITLAB_HOST` | Self-hosted GitLab instance (auto-detected) | Optional |
 | `LLM_BASE_URL` | Custom OpenAI-compatible gateway | Optional |
 
-**Note**: Hodor checks for API keys in the order: `LLM_API_KEY` → `ANTHROPIC_API_KEY` → `OPENAI_API_KEY`.
+**Note**: Hodor first honors `LLM_API_KEY` as a universal override, then automatically selects the provider-specific key for the requested model (`ANTHROPIC_API_KEY` for Claude, `OPENAI_API_KEY` for GPT). If the provider cannot be detected, it falls back to `ANTHROPIC_API_KEY` and then `OPENAI_API_KEY`.
 
 **CI Detection**
 

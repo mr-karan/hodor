@@ -22,8 +22,9 @@ classifiers = [
 
 dependencies = [
     # LLM & Agent Framework (OpenHands SDK)
-    "openhands-sdk @ git+https://github.com/mr-karan/software-agent-sdk.git@main#subdirectory=openhands-sdk",
-    "openhands-tools @ git+https://github.com/mr-karan/software-agent-sdk.git@main#subdirectory=openhands-tools",
+    # Using official OpenHands SDK
+    "openhands-sdk @ git+https://github.com/OpenHands/software-agent-sdk.git@main#subdirectory=openhands-sdk",
+    "openhands-tools @ git+https://github.com/OpenHands/software-agent-sdk.git@main#subdirectory=openhands-tools",
 
     # Git operations (keeping gitpython for local git operations if needed)
     "gitpython>=3.1.0",
