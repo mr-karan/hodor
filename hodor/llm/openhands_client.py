@@ -100,6 +100,41 @@ def _matches_openai_responses_model(model: str) -> bool:
 
 
 
+def _respect_encrypted_reasoning_flag(llm: Any, options: dict[str, Any]) -> None:
+    """Ensure encrypted reasoning keys only pass when explicitly enabled."""
+
+    if getattr(llm, "enable_encrypted_reasoning", True):
+        return
+
+    include_values = options.get("include")
+    if not include_values:
+        return
+
+    filtered = [value for value in include_values if value != "reasoning.encrypted_content"]
+    if filtered:
+        options["include"] = filtered
+    else:
+        options.pop("include", None)
+
+
+# Patch OpenHands Responses options at import time so the disable flag is honored
+try:  # pragma: no cover - OpenHands may be unavailable in some environments
+    from openhands.sdk.llm.options import responses_options as _responses_options
+except Exception:  # pragma: no cover - dependency missing
+    _responses_options = None
+else:
+    if not getattr(_responses_options, "_hodor_responses_patched", False):
+        _original_select_responses_options = _responses_options.select_responses_options
+
+        def _hodor_select_responses_options(llm, user_kwargs: dict[str, Any], *, include, store):
+            options = _original_select_responses_options(llm, user_kwargs, include=include, store=store)
+            _respect_encrypted_reasoning_flag(llm, options)
+            return options
+
+        _responses_options.select_responses_options = _hodor_select_responses_options
+        _responses_options._hodor_responses_patched = True
+
+
 
 # Ordered from most specific → least specific so substring matches work reliably.
 MODEL_RULES: tuple[ModelRule, ...] = (
@@ -331,13 +366,16 @@ def create_hodor_agent(
         llm_config["temperature"] = 0.0
 
     # Handle reasoning effort
+    # Only set reasoning_effort if the model supports it or user explicitly requested it.
+    # Setting "none" causes LiteLLM to fail with "Unmapped reasoning effort: none" for
+    # Anthropic models, so we omit the parameter entirely for non-reasoning models.
     if reasoning_effort:
         # User explicitly requested extended thinking
         llm_config["reasoning_effort"] = reasoning_effort
-    else:
-        # Default to the capability-aware reasoning mode to keep behaviour predictable.
-        # Non-reasoning models explicitly set "none" because OpenHands defaults to "high".
+    elif metadata.supports_reasoning and metadata.default_reasoning_effort != "none":
+        # Model supports reasoning - use its default effort level
         llm_config["reasoning_effort"] = metadata.default_reasoning_effort
+    # For non-reasoning models or "none" effort, don't set the parameter at all
 
     # Apply any user overrides
     if llm_overrides:
