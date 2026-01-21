@@ -16,6 +16,7 @@ import shutil
 from typing import Any
 
 from openhands.sdk import LLM
+from openhands.sdk.context import Skill
 from openhands.tools.preset.default import get_default_agent
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,9 @@ class ModelRule:
 def _looks_like_openai_identifier(identifier: str) -> bool:
     if not identifier:
         return False
-    return identifier.startswith("gpt") or (identifier.startswith("o") and len(identifier) > 1 and identifier[1].isdigit())
+    return identifier.startswith("gpt") or (
+        identifier.startswith("o") and len(identifier) > 1 and identifier[1].isdigit()
+    )
 
 
 def _extract_provider_and_base(model: str) -> tuple[str | None, str | None]:
@@ -99,7 +102,6 @@ def _matches_openai_responses_model(model: str) -> bool:
     return base.startswith(response_prefixes)
 
 
-
 def _respect_encrypted_reasoning_flag(llm: Any, options: dict[str, Any]) -> None:
     """Ensure encrypted reasoning keys only pass when explicitly enabled."""
 
@@ -133,7 +135,6 @@ else:
 
         _responses_options.select_responses_options = _hodor_select_responses_options
         _responses_options._hodor_responses_patched = True
-
 
 
 # Ordered from most specific → least specific so substring matches work reliably.
@@ -244,7 +245,9 @@ def _detect_provider(model: str) -> str | None:
     # Fall back to simple string matching
     if "anthropic" in model_lower or "claude" in model_lower:
         return "anthropic"
-    elif "openai" in model_lower or "gpt" in model_lower or model_lower.startswith("o1") or model_lower.startswith("o3"):
+    elif (
+        "openai" in model_lower or "gpt" in model_lower or model_lower.startswith("o1") or model_lower.startswith("o3")
+    ):
         return "openai"
 
     return None
@@ -312,23 +315,8 @@ def create_hodor_agent(
     base_url: str | None = None,
     verbose: bool = False,
     llm_overrides: dict[str, Any] | None = None,
-    skills: list[dict] | None = None,
+    skills: list[Skill] | None = None,
 ) -> Any:
-    """Create an OpenHands agent configured for Hodor PR reviews.
-
-    Args:
-        model: LLM model name (e.g., "anthropic/claude-sonnet-4-5")
-        api_key: LLM API key (if None, reads from environment)
-        temperature: Sampling temperature (if None, auto-selected based on model)
-        reasoning_effort: For reasoning models: "low", "medium", or "high"
-        base_url: Custom LLM base URL (optional)
-        verbose: Enable verbose logging
-        llm_overrides: Additional LLM parameters to pass through
-        skills: Repository skills to inject into agent context (from discover_skills())
-
-    Returns:
-        Configured OpenHands Agent instance
-    """
     # Get API key (provider-aware selection based on model)
     if api_key is None:
         api_key = get_api_key(model)
@@ -428,34 +416,21 @@ def create_hodor_agent(
         )
 
     # Create condenser for context management
-    condenser = LLMSummarizingCondenser(
-        llm=llm.model_copy(update={"usage_id": "condenser"}), max_size=80, keep_first=4
-    )
+    condenser = LLMSummarizingCondenser(llm=llm.model_copy(update={"usage_id": "condenser"}), max_size=80, keep_first=4)
 
-    # Build agent context with repository skills if provided
     context = None
     if skills:
-        skill_objects = []
-        for skill in skills:
-            skill_objects.append(
-                Skill(
-                    name=skill["name"],
-                    content=skill["content"],
-                    trigger=skill.get("trigger"),  # Always None for repo skills (always active)
-                )
-            )
-        context = AgentContext(skills=skill_objects)
-
+        context = AgentContext(skills=skills)
         if verbose:
-            skill_names = ", ".join([s["name"] for s in skills])
-            logger.info(f"Injecting {len(skill_objects)} skill(s) into agent context: {skill_names}")
+            skill_names = ", ".join([s.name for s in skills])
+            logger.info(f"Injecting {len(skills)} skill(s) into agent context: {skill_names}")
 
     agent = Agent(
         llm=llm,
         tools=tools,
-        system_prompt_kwargs={"cli_mode": True},  # Always use CLI mode for PR reviews
+        system_prompt_kwargs={"cli_mode": True},
         condenser=condenser,
-        context=context,  # Inject repository skills
+        agent_context=context,
     )
 
     return agent

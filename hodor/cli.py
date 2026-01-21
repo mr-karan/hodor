@@ -62,9 +62,9 @@ def parse_llm_args(ctx, param, value):
 )
 @click.option(
     "--reasoning-effort",
-    type=click.Choice(["low", "medium", "high"], case_sensitive=False),
+    type=click.Choice(["low", "medium", "high", "xhigh"], case_sensitive=False),
     default=None,
-    help="Reasoning effort level for models that support extended thinking (e.g., Claude, GPT-5)",
+    help="Reasoning effort level for extended thinking (low/medium/high/xhigh)",
 )
 @click.option(
     "--verbose",

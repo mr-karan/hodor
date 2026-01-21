@@ -1,78 +1,66 @@
 """Skill discovery and loading for repository-specific review guidelines.
 
-This module implements the skills system documented in README.md and SKILLS.md,
-enabling users to customize PR reviews with project-specific guidelines.
+This module uses the OpenHands SDK's skill system with Hodor-specific extensions.
+Skills provide project-specific context for PR reviews.
 """
 
 import logging
 from pathlib import Path
 
+from openhands.sdk.context import Skill, load_project_skills
+
 logger = logging.getLogger(__name__)
 
 
-def discover_skills(workspace: Path) -> list[dict]:
+def discover_skills(workspace: Path) -> list[Skill]:
     """Discover and load skills from workspace.
 
-    Searches for skills in priority order:
-    1. .cursorrules - Simple, single-file project guidelines
-    2. agents.md or agent.md - Alternative single-file location
-    3. .hodor/skills/*.md - Modular skills organized by topic
+    Uses the OpenHands SDK's load_project_skills() for standard files:
+    - .cursorrules, agents.md, claude.md, gemini.md
 
-    All discovered files are loaded as "repository skills" (always active).
+    Additionally loads Hodor-specific skills from:
+    - .hodor/skills/*.md
 
     Args:
         workspace: Path to the repository workspace
 
     Returns:
-        List of skill dictionaries with 'name', 'content', and 'trigger' keys.
-        Empty list if no skills found.
-
-    Example:
-        >>> workspace = Path("/tmp/my-repo")
-        >>> skills = discover_skills(workspace)
-        >>> print(f"Loaded {len(skills)} skill(s)")
+        List of Skill objects. Empty list if no skills found.
     """
-    skills = []
+    seen_names: set[str] = set()
+    all_skills: list[Skill] = []
 
-    # 1. Check .cursorrules (priority 1 - most common)
-    cursorrules = workspace / ".cursorrules"
-    if cursorrules.exists() and cursorrules.is_file():
-        try:
-            content = cursorrules.read_text(encoding="utf-8")
-            skills.append({"name": ".cursorrules", "content": content, "trigger": None})
-            logger.info("Found skill: .cursorrules")
-        except Exception as e:
-            logger.warning(f"Failed to read .cursorrules: {e}")
+    # 1. Load SDK-supported skills (third-party files: .cursorrules, agents.md, etc.)
+    try:
+        sdk_skills = load_project_skills(workspace)
+        for skill in sdk_skills:
+            if skill.name not in seen_names:
+                all_skills.append(skill)
+                seen_names.add(skill.name)
+                logger.info(f"Found skill: {skill.name} (via SDK)")
+    except Exception as e:
+        logger.warning(f"Failed to load SDK skills: {e}")
 
-    # 2. Check agents.md / agent.md (priority 2 - alternative location)
-    for filename in ["agents.md", "agent.md", "AGENTS.md"]:
-        agents_file = workspace / filename
-        if agents_file.exists() and agents_file.is_file():
-            try:
-                content = agents_file.read_text(encoding="utf-8")
-                skills.append({"name": filename, "content": content, "trigger": None})
-                logger.info(f"Found skill: {filename}")
-                break  # Only load first match to avoid duplicates
-            except Exception as e:
-                logger.warning(f"Failed to read {filename}: {e}")
-
-    # 3. Check .hodor/skills/*.md (priority 3 - modular organization)
+    # 2. Load Hodor-specific skills from .hodor/skills/
     skills_dir = workspace / ".hodor" / "skills"
     if skills_dir.exists() and skills_dir.is_dir():
         skill_files = sorted(skills_dir.glob("*.md"))
         for skill_file in skill_files:
+            skill_name = f".hodor/skills/{skill_file.name}"
+            if skill_name in seen_names:
+                continue
             try:
                 content = skill_file.read_text(encoding="utf-8")
-                skill_name = f".hodor/skills/{skill_file.name}"
-                skills.append({"name": skill_name, "content": content, "trigger": None})
+                skill = Skill(name=skill_name, content=content, trigger=None)
+                all_skills.append(skill)
+                seen_names.add(skill_name)
                 logger.info(f"Found skill: {skill_name}")
             except Exception as e:
                 logger.warning(f"Failed to read {skill_file}: {e}")
 
-    # Log summary
-    if skills:
-        logger.info(f"Loaded {len(skills)} skill(s) from workspace")
+    if all_skills:
+        logger.info(f"Loaded {len(all_skills)} skill(s) from workspace")
     else:
-        logger.debug("No skills found in workspace (checked .cursorrules, agents.md, .hodor/skills/)")
+        logger.debug("No skills found in workspace")
 
-    return skills
+    return all_skills
