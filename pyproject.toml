@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hodor"
-version = "0.2.7"
+version = "0.2.8"
 description = "AI-powered code review agent that finds bugs, security issues, and logic errors in pull requests"
 readme = "README.md"
 requires-python = ">=3.13"
