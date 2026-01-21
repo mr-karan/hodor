@@ -342,18 +342,31 @@ def review_pr(
 
     try:
         logger.info("Creating OpenHands conversation...")
-        # Use LocalWorkspace for better integration with OpenHands SDK
         workspace_obj = LocalWorkspace(working_dir=str(workspace))
 
-        # Handle unlimited iterations (-1 -> very large number)
         iteration_limit = 1_000_000 if max_iterations == -1 else max_iterations
 
-        # Register event callback for real-time monitoring if verbose
+        # Collect secrets to mask in agent output (prevents accidental exposure)
+        secrets: dict[str, str] = {}
+        for env_var in [
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "LLM_API_KEY",
+            "GITHUB_TOKEN",
+            "GITLAB_TOKEN",
+            "GITLAB_PRIVATE_TOKEN",
+            "CI_JOB_TOKEN",
+        ]:
+            val = os.getenv(env_var)
+            if val:
+                secrets[env_var] = val
+
         conversation = Conversation(
             agent=agent,
             workspace=workspace_obj,
             callbacks=[on_event] if verbose else None,
             max_iteration_per_run=iteration_limit,
+            secrets=secrets if secrets else None,
         )
 
         logger.info("Sending prompt to agent...")
@@ -418,7 +431,9 @@ def review_pr(
                         if cache_write_tokens > 0:
                             logger.info(f"  • Cache writes:       {cache_write_tokens:,}")
                         if combined.response_latencies:
-                            avg_latency = sum(lat.latency for lat in combined.response_latencies) / len(combined.response_latencies)
+                            avg_latency = sum(lat.latency for lat in combined.response_latencies) / len(
+                                combined.response_latencies
+                            )
                             logger.info(f"  • Avg API latency:    {avg_latency:.2f}s")
             except Exception as e:
                 logger.warning(f"Failed to get metrics: {e}")
