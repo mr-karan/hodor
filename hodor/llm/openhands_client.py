@@ -350,6 +350,12 @@ def create_hodor_agent(
     if base_url:
         llm_config["base_url"] = base_url
 
+    # Bedrock's Anthropic models reject requests with both temperature and top_p.
+    # The OpenHands SDK defaults top_p=1.0, so we must explicitly clear it for Bedrock.
+    is_bedrock = normalized_model.lower().startswith("bedrock/")
+    if is_bedrock:
+        llm_config["top_p"] = None
+
     # Handle temperature
     thinking_active = reasoning_effort is not None or metadata.supports_reasoning
 
