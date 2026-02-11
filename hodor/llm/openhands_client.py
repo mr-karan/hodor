@@ -255,7 +255,7 @@ def _detect_provider(model: str) -> str | None:
     return None
 
 
-def get_api_key(model: str | None = None) -> str:
+def get_api_key(model: str | None = None) -> str | None:
     """Get LLM API key from environment variables with provider-aware selection.
 
     Selection logic:
@@ -295,8 +295,8 @@ def get_api_key(model: str | None = None) -> str:
         provider = _detect_provider(model)
         if provider == "bedrock":
             # Bedrock authenticates via AWS credentials (env vars, profile, or IAM role),
-            # not an API key. Return a placeholder so downstream code doesn't error.
-            return "bedrock"
+            # not an API key. Return None so no api_key is sent to LiteLLM.
+            return None
         elif provider == "anthropic":
             if api_key := os.getenv("ANTHROPIC_API_KEY"):
                 return api_key
@@ -333,10 +333,13 @@ def create_hodor_agent(
     # Build LLM config
     llm_config: dict[str, Any] = {
         "model": normalized_model,
-        "api_key": api_key,
         "usage_id": "hodor_agent",  # Identifies this LLM instance for usage tracking
         "drop_params": True,  # Drop unsupported API parameters automatically
     }
+
+    # Only include api_key when set (Bedrock uses AWS credentials, not API keys)
+    if api_key is not None:
+        llm_config["api_key"] = api_key
 
     # Always disable encrypted reasoning to avoid API errors
     # OpenAI models that don't support encrypted reasoning will fail with

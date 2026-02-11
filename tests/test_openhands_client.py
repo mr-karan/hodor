@@ -71,9 +71,9 @@ def test_get_api_key_fallback_order_without_model(monkeypatch):
     assert get_api_key() == "sk-anthropic"
 
 
-def test_get_api_key_returns_placeholder_for_bedrock():
+def test_get_api_key_returns_none_for_bedrock():
     """Bedrock uses AWS credentials, not an API key."""
-    assert get_api_key("bedrock/anthropic.claude-opus-4-6-v1") == "bedrock"
+    assert get_api_key("bedrock/anthropic.claude-opus-4-6-v1") is None
 
 
 def test_get_api_key_raises_when_missing(monkeypatch):
