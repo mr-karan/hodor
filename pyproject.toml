@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hodor"
-version = "0.2.8"
+version = "0.2.9"
 description = "AI-powered code review agent that finds bugs, security issues, and logic errors in pull requests"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -25,6 +25,9 @@ dependencies = [
     # Using official OpenHands SDK v1.8.1
     "openhands-sdk @ git+https://github.com/OpenHands/software-agent-sdk.git@v1.8.1#subdirectory=openhands-sdk",
     "openhands-tools @ git+https://github.com/OpenHands/software-agent-sdk.git@v1.8.1#subdirectory=openhands-tools",
+
+    # AWS Bedrock support (boto3 required by LiteLLM for bedrock/ models)
+    "boto3>=1.28.57",
 
     # Git operations (keeping gitpython for local git operations if needed)
     "gitpython>=3.1.0",

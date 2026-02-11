@@ -64,6 +64,10 @@ just sync
 gh auth login              # GitHub (for posting reviews)
 glab auth login            # GitLab (optional, for GitLab MRs)
 export LLM_API_KEY=sk-your-llm-key   # or ANTHROPIC_API_KEY/OPENAI_API_KEY
+
+# Or use AWS Bedrock (no API key needed, uses AWS credentials)
+export AWS_REGION_NAME=ap-south-1
+export AWS_PROFILE=main    # or set AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY
 ```
 
 ### 3. Run a review
@@ -153,6 +157,9 @@ hodor ... \
   --model anthropic/claude-sonnet-4-5 \
   --reasoning-effort medium \
   --verbose
+
+# Use AWS Bedrock (authenticates via AWS credentials, no API key needed)
+hodor ... --model bedrock/anthropic.claude-opus-4-6-v1
 
 # Enable maximum reasoning effort with extended thinking (for very complex PRs)
 hodor ... --ultrathink --max-iterations 1000
@@ -245,8 +252,11 @@ See [AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md) for advanced workflows.
 | `GITHUB_TOKEN` / `GITLAB_TOKEN` | Post comments to PRs/MRs | Only with `--post` |
 | `GITLAB_HOST` | Self-hosted GitLab instance (auto-detected) | Optional |
 | `LLM_BASE_URL` | Custom OpenAI-compatible gateway | Optional |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | AWS Bedrock authentication | For `bedrock/` models |
+| `AWS_REGION_NAME` | AWS region for Bedrock (e.g., `ap-south-1`) | For `bedrock/` models |
+| `AWS_PROFILE` | AWS profile name (alternative to access keys) | For `bedrock/` models |
 
-**Note**: Hodor first honors `LLM_API_KEY` as a universal override, then automatically selects the provider-specific key for the requested model (`ANTHROPIC_API_KEY` for Claude, `OPENAI_API_KEY` for GPT). If the provider cannot be detected, it falls back to `ANTHROPIC_API_KEY` and then `OPENAI_API_KEY`.
+**Note**: Hodor first honors `LLM_API_KEY` as a universal override, then automatically selects the provider-specific key for the requested model (`ANTHROPIC_API_KEY` for Claude, `OPENAI_API_KEY` for GPT). For `bedrock/` models, no API key is needed — authentication uses AWS credentials (environment variables, profiles, or IAM roles). If the provider cannot be detected, it falls back to `ANTHROPIC_API_KEY` and then `OPENAI_API_KEY`.
 
 **CI Detection**
 

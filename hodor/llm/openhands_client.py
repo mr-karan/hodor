@@ -68,7 +68,7 @@ def _extract_provider_and_base(model: str) -> tuple[str | None, str | None]:
     provider: str | None = None
     start_index = 0
     first_segment = segments[0].lower()
-    if first_segment in {"openai", "anthropic"}:
+    if first_segment in {"openai", "anthropic", "bedrock"}:
         provider = first_segment
         start_index = 1
 
@@ -243,7 +243,9 @@ def _detect_provider(model: str) -> str | None:
         pass
 
     # Fall back to simple string matching
-    if "anthropic" in model_lower or "claude" in model_lower:
+    if model_lower.startswith("bedrock/") or model_lower.startswith("bedrock_"):
+        return "bedrock"
+    elif "anthropic" in model_lower or "claude" in model_lower:
         return "anthropic"
     elif (
         "openai" in model_lower or "gpt" in model_lower or model_lower.startswith("o1") or model_lower.startswith("o3")
@@ -291,7 +293,11 @@ def get_api_key(model: str | None = None) -> str:
     # Priority 2: Provider-specific key based on model
     if model:
         provider = _detect_provider(model)
-        if provider == "anthropic":
+        if provider == "bedrock":
+            # Bedrock authenticates via AWS credentials (env vars, profile, or IAM role),
+            # not an API key. Return a placeholder so downstream code doesn't error.
+            return "bedrock"
+        elif provider == "anthropic":
             if api_key := os.getenv("ANTHROPIC_API_KEY"):
                 return api_key
         elif provider == "openai":

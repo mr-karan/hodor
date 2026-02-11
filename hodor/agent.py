@@ -352,6 +352,8 @@ def review_pr(
             "ANTHROPIC_API_KEY",
             "OPENAI_API_KEY",
             "LLM_API_KEY",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
             "GITHUB_TOKEN",
             "GITLAB_TOKEN",
             "GITLAB_PRIVATE_TOKEN",

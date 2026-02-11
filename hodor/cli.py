@@ -52,7 +52,7 @@ def parse_llm_args(ctx, param, value):
 @click.option(
     "--model",
     default="anthropic/claude-sonnet-4-5-20250929",
-    help="LLM model to use. Recommended: anthropic/claude-sonnet-4-20250514, anthropic/claude-sonnet-4-5-20250929 (default), openai/gpt-5-2025-08-07, gemini/gemini-2.5-pro, deepseek/deepseek-chat, moonshot/kimi-k2-0711-preview. Supports any LiteLLM model (https://docs.litellm.ai/docs/providers).",
+    help="LLM model to use. Recommended: anthropic/claude-sonnet-4-5-20250929 (default), openai/gpt-5-2025-08-07, bedrock/anthropic.claude-opus-4-6-v1. Supports any LiteLLM model (https://docs.litellm.ai/docs/providers).",
 )
 @click.option(
     "--temperature",
@@ -167,6 +167,8 @@ def main(
         GITHUB_TOKEN - GitHub API token (for gh CLI authentication)
         GITLAB_TOKEN / GITLAB_PRIVATE_TOKEN / CI_JOB_TOKEN - GitLab API tokens for glab CLI
         GITLAB_HOST - GitLab host for self-hosted instances (default: gitlab.com)
+        AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION_NAME - AWS Bedrock auth
+        AWS_PROFILE - AWS profile name (alternative to access key auth)
 
     \b
     Authentication:

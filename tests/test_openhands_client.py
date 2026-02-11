@@ -8,7 +8,7 @@ from hodor.llm.openhands_client import describe_model, get_api_key
 @pytest.fixture(autouse=True)
 def clear_llm_env(monkeypatch):
     """Ensure API key environment variables do not leak between tests."""
-    for var in ("LLM_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+    for var in ("LLM_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION_NAME", "AWS_PROFILE"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -26,6 +26,8 @@ def clear_llm_env(monkeypatch):
         ("o3-mini", "openai/o3-mini", True, "medium"),
         ("o1-preview", "openai/o1-preview", True, "medium"),
         ("anthropic/claude-sonnet-4-5", "anthropic/claude-sonnet-4-5", False, "none"),
+        ("bedrock/anthropic.claude-opus-4-6-v1", "bedrock/anthropic.claude-opus-4-6-v1", False, "none"),
+        ("bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0", "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0", False, "none"),
     ],
 )
 def test_describe_model_normalization(model, normalized, supports_reasoning, effort):
@@ -67,6 +69,11 @@ def test_get_api_key_fallback_order_without_model(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic")
 
     assert get_api_key() == "sk-anthropic"
+
+
+def test_get_api_key_returns_placeholder_for_bedrock():
+    """Bedrock uses AWS credentials, not an API key."""
+    assert get_api_key("bedrock/anthropic.claude-opus-4-6-v1") == "bedrock"
 
 
 def test_get_api_key_raises_when_missing(monkeypatch):

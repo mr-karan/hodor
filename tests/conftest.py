@@ -15,6 +15,7 @@ def _install_openhands_stub():
     openhands_module = types.ModuleType("openhands")
     sdk_module = types.ModuleType("openhands.sdk")
     conversation_module = types.ModuleType("openhands.sdk.conversation")
+    context_module = types.ModuleType("openhands.sdk.context")
     event_module = types.ModuleType("openhands.sdk.event")
     tools_module = types.ModuleType("openhands.tools")
     tools_preset_module = types.ModuleType("openhands.tools.preset")
@@ -24,6 +25,7 @@ def _install_openhands_stub():
     # Mark namespace modules as packages so submodule imports behave
     openhands_module.__path__ = []
     sdk_module.__path__ = []
+    context_module.__path__ = []
     tools_module.__path__ = []
     tools_preset_module.__path__ = []
 
@@ -70,6 +72,12 @@ def _install_openhands_stub():
     class MockEvent:
         pass
 
+    class MockSkill:
+        def __init__(self, *args, **kwargs):
+            self.name = kwargs.get("name", "mock_skill")
+
+    context_module.Skill = MockSkill
+    context_module.load_project_skills = lambda *args, **kwargs: []
     sdk_module.LLM = MockLLM
     sdk_module.Conversation = MockConversation
     sdk_module.get_logger = mock_get_logger
@@ -87,6 +95,7 @@ def _install_openhands_stub():
     # Register modules
     sys.modules["openhands"] = openhands_module
     sys.modules["openhands.sdk"] = sdk_module
+    sys.modules["openhands.sdk.context"] = context_module
     sys.modules["openhands.sdk.conversation"] = conversation_module
     sys.modules["openhands.sdk.event"] = event_module
     sys.modules["openhands.sdk.workspace"] = workspace_module
