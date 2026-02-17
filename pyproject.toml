@@ -76,7 +76,7 @@ where = ["."]
 include = ["hodor*"]
 
 [tool.setuptools.package-data]
-hodor = ["prompts/templates/*.md"]
+hodor = ["prompts/templates/*.md", "prompts/templates/*.j2"]
 
 [tool.black]
 line-length = 120
