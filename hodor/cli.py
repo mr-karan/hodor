@@ -120,8 +120,10 @@ def parse_llm_args(ctx, param, value):
 @click.option(
     "--model-canonical-name",
     default=None,
-    help="Canonical model name for feature detection (e.g. 'claude-sonnet-4-5'). "
-         "Required for opaque ARN-based models to enable prompt caching.",
+    envvar="MODEL_CANONICAL_NAME",
+    help="Canonical model name for feature detection (e.g. 'claude-opus-4-6'). "
+         "Required for opaque ARN-based models to enable prompt caching. "
+         "Env: MODEL_CANONICAL_NAME",
 )
 def main(
     pr_url: str,
