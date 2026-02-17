@@ -406,27 +406,34 @@ def review_pr(
                     cache_read_tokens = usage.cache_read_tokens or 0
                     cache_write_tokens = usage.cache_write_tokens or 0
                     reasoning_tokens = usage.reasoning_tokens or 0
-                    total_tokens = prompt_tokens + completion_tokens + cache_read_tokens + reasoning_tokens
+
+                    # Bedrock reports prompt_tokens as total input (including cached).
+                    # Separate fresh input from cached to show accurate breakdown.
+                    fresh_input = max(prompt_tokens - cache_read_tokens, 0) if cache_read_tokens > 0 else prompt_tokens
+                    total_tokens = prompt_tokens + completion_tokens + reasoning_tokens
 
                     # Cost from SDK (LiteLLM cost tracking)
                     cost = combined.accumulated_cost or 0
 
-                    # Calculate cache hit rate
+                    # Cache hit rate: percentage of total input served from cache
                     cache_hit_rate = 0
-                    if cache_read_tokens > 0 and (prompt_tokens + cache_read_tokens) > 0:
-                        cache_hit_rate = (cache_read_tokens / (prompt_tokens + cache_read_tokens)) * 100
+                    if cache_read_tokens > 0 and prompt_tokens > 0:
+                        cache_hit_rate = (cache_read_tokens / prompt_tokens) * 100
 
                     # Print metrics (always, not just verbose)
                     print("\n" + "=" * 60)
                     print("📊 Token Usage Metrics:")
-                    print(f"  • Input tokens:       {prompt_tokens:,}")
-                    print(f"  • Output tokens:      {completion_tokens:,}")
                     if cache_read_tokens > 0:
-                        print(f"  • Cache hits:         {cache_read_tokens:,} ({cache_hit_rate:.1f}%)")
+                        print(f"  • Input tokens:       {prompt_tokens:,}")
+                        print(f"    ├─ Cached (read):   {cache_read_tokens:,} ({cache_hit_rate:.0f}%)")
+                        print(f"    └─ Fresh:           {fresh_input:,}")
+                    else:
+                        print(f"  • Input tokens:       {prompt_tokens:,}")
+                    print(f"  • Output tokens:      {completion_tokens:,}")
                     if reasoning_tokens > 0:
                         print(f"  • Reasoning tokens:   {reasoning_tokens:,}")
                     print(f"  • Total tokens:       {total_tokens:,}")
-                    print(f"\n💰 Cost Estimate:      ${cost:.4f}")
+                    print(f"\n💰 Cost:               ${cost:.4f}")
                     print(f"⏱️  Review Time:        {review_time_str}")
                     print("=" * 60 + "\n")
 
