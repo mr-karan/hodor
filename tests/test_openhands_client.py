@@ -2,7 +2,12 @@ import pytest
 
 pytest.importorskip("openhands.sdk", reason="OpenHands SDK is required to import openhands_client module")
 
-from hodor.llm.openhands_client import describe_model, get_api_key
+from hodor.llm.openhands_client import (
+    _detect_model_family,
+    _MODEL_FAMILY_CANONICAL,
+    describe_model,
+    get_api_key,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -104,3 +109,31 @@ def test_responses_options_respects_encrypted_flag():
         _DummyLLM(False), {}, include=None, store=None
     )
     assert "reasoning.encrypted_content" not in opts_disabled.get("include", [])
+
+
+# --- _detect_model_family tests ---
+
+
+@pytest.mark.parametrize(
+    "model,expected",
+    [
+        ("anthropic/claude-opus-4-5", "opus"),
+        ("bedrock/anthropic.claude-opus-4-6-v1", "opus"),
+        ("anthropic/claude-sonnet-4-5", "sonnet"),
+        ("bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0", "sonnet"),
+        ("bedrock/converse/arn:aws:bedrock:us-west-2:123:inference-profile/sonnet", "sonnet"),
+        ("anthropic/claude-haiku-4-5", "haiku"),
+        ("bedrock/converse/arn:aws:bedrock:us-west-2:123:inference-profile/haiku", "haiku"),
+        ("openai/gpt-4o", None),
+        ("bedrock/converse/arn:aws:bedrock:us-west-2:123:inference-profile/unknown", None),
+    ],
+)
+def test_detect_model_family(model, expected):
+    assert _detect_model_family(model) == expected
+
+
+def test_model_family_canonical_covers_all_families():
+    """Every detected family must have a canonical name mapping."""
+    for family in ("opus", "sonnet", "haiku"):
+        assert family in _MODEL_FAMILY_CANONICAL, f"{family} missing from _MODEL_FAMILY_CANONICAL"
+        assert isinstance(_MODEL_FAMILY_CANONICAL[family], str)

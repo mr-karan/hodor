@@ -117,6 +117,12 @@ def parse_llm_args(ctx, param, value):
     is_flag=True,
     help="Enable maximum reasoning effort with extended thinking budget (shortcut for --reasoning-effort high)",
 )
+@click.option(
+    "--model-canonical-name",
+    default=None,
+    help="Canonical model name for feature detection (e.g. 'claude-sonnet-4-5'). "
+         "Required for opaque ARN-based models to enable prompt caching.",
+)
 def main(
     pr_url: str,
     model: str,
@@ -131,6 +137,7 @@ def main(
     workspace: str | None,
     max_iterations: int,
     ultrathink: bool,
+    model_canonical_name: str | None,
 ):
     """
     Review a GitHub pull request or GitLab merge request using AI.
@@ -244,6 +251,7 @@ def main(
                 workspace_dir=workspace_path,
                 output_format="json" if output_json else "markdown",
                 max_iterations=max_iterations,
+                model_canonical_name=model_canonical_name,
             )
 
             progress.update(task, description="Review complete!")

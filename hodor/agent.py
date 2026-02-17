@@ -180,6 +180,7 @@ def review_pr(
     workspace_dir: Path | None = None,
     output_format: str = "markdown",
     max_iterations: int = 500,
+    model_canonical_name: str | None = None,
 ) -> str:
     """
     Review a pull request using OpenHands agent with bash tools.
@@ -259,6 +260,7 @@ def review_pr(
             verbose=verbose,
             llm_overrides=user_llm_params,
             skills=skills,
+            model_canonical_name=model_canonical_name,
         )
     except Exception as e:
         logger.error(f"Failed to create OpenHands agent: {e}")
@@ -406,7 +408,7 @@ def review_pr(
                     reasoning_tokens = usage.reasoning_tokens or 0
                     total_tokens = prompt_tokens + completion_tokens + cache_read_tokens + reasoning_tokens
 
-                    # Cost estimate
+                    # Cost from SDK (LiteLLM cost tracking)
                     cost = combined.accumulated_cost or 0
 
                     # Calculate cache hit rate

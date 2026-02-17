@@ -12,14 +12,72 @@ from collections.abc import Callable
 from dataclasses import dataclass
 import logging
 import os
+from pathlib import Path
 import shutil
 from typing import Any
+import warnings
 
 from openhands.sdk import LLM
 from openhands.sdk.context import Skill
 from openhands.tools.preset.default import get_default_agent
 
 logger = logging.getLogger(__name__)
+
+# Custom system prompt for code review mode — replaces the SDK's general-purpose prompt
+# to avoid irrelevant instructions (ENVIRONMENT_SETUP, VERSION_CONTROL, etc.)
+_REVIEW_SYSTEM_PROMPT = str(
+    Path(__file__).resolve().parent.parent / "prompts" / "templates" / "review_system_prompt.j2"
+)
+
+# Suppress LiteLLM "Cost calculation failed" warnings for unmapped models (e.g. Bedrock ARNs)
+warnings.filterwarnings("ignore", message="Cost calculation failed")
+
+# Canonical model names for Anthropic model families.
+# Used with model_canonical_name to enable prompt caching for opaque ARN-based models.
+_MODEL_FAMILY_CANONICAL: dict[str, str] = {
+    "opus": "claude-opus-4-6",
+    "sonnet": "claude-sonnet-4-5",
+    "haiku": "claude-haiku-4-5",
+}
+
+
+def _detect_model_family(model: str) -> str | None:
+    """Detect Anthropic model family from model string. Returns 'opus'/'sonnet'/'haiku' or None."""
+    model_lower = model.lower()
+    for family in ("opus", "sonnet", "haiku"):
+        if family in model_lower:
+            return family
+    return None
+
+
+def _register_model_pricing(model: str, *candidates: str | None) -> None:
+    """Register pricing for unrecognized models using a known model's pricing data.
+
+    When using opaque identifiers (e.g., Bedrock ARNs), LiteLLM can't determine pricing
+    and returns $0. This copies pricing from the first matching candidate, fixing the
+    litellm_provider so that get_model_info() lookup succeeds.
+    """
+    try:
+        import litellm
+
+        if model in litellm.model_cost:
+            return
+
+        target_provider = "bedrock" if model.lower().startswith("bedrock") else None
+
+        for name in candidates:
+            if not name:
+                continue
+            for variant in (name, f"anthropic/{name}"):
+                if variant in litellm.model_cost:
+                    pricing = litellm.model_cost[variant].copy()
+                    if target_provider and pricing.get("litellm_provider") != target_provider:
+                        pricing["litellm_provider"] = target_provider
+                    litellm.register_model({model: pricing})
+                    logger.debug(f"Registered model pricing: {model} → {variant}")
+                    return
+    except Exception:
+        pass  # Cost tracking is best-effort
 
 
 @dataclass(frozen=True)
@@ -322,6 +380,7 @@ def create_hodor_agent(
     verbose: bool = False,
     llm_overrides: dict[str, Any] | None = None,
     skills: list[Skill] | None = None,
+    model_canonical_name: str | None = None,
 ) -> Any:
     # Get API key (provider-aware selection based on model)
     if api_key is None:
@@ -355,6 +414,25 @@ def create_hodor_agent(
     is_bedrock = normalized_model.lower().startswith("bedrock/")
     if is_bedrock:
         llm_config["top_p"] = None
+
+    # Set canonical name for prompt caching and feature detection.
+    # Opaque ARN-based models need this so the SDK's is_caching_prompt_active()
+    # can match against PROMPT_CACHE_MODELS.
+    canonical_source = model_canonical_name or normalized_model
+    family = _detect_model_family(canonical_source)
+    if family and family in _MODEL_FAMILY_CANONICAL:
+        llm_config.setdefault("model_canonical_name", _MODEL_FAMILY_CANONICAL[family])
+    elif model_canonical_name:
+        llm_config.setdefault("model_canonical_name", model_canonical_name)
+
+    # Register pricing with LiteLLM for cost tracking.
+    # Bedrock ARN models aren't in LiteLLM's cost map; copy pricing from the
+    # canonical name and fix litellm_provider so get_model_info() finds it.
+    _register_model_pricing(
+        normalized_model,
+        model_canonical_name,
+        llm_config.get("model_canonical_name"),
+    )
 
     # Handle temperature
     thinking_active = reasoning_effort is not None or metadata.supports_reasoning
@@ -403,11 +481,9 @@ def create_hodor_agent(
     from openhands.sdk.context.condenser import LLMSummarizingCondenser
     from openhands.sdk.context import Skill
     from openhands.sdk.tool.spec import Tool
-    from openhands.tools.file_editor import FileEditorTool
     from openhands.tools.glob import GlobTool
     from openhands.tools.grep import GrepTool
     from openhands.tools.planning_file_editor import PlanningFileEditorTool
-    from openhands.tools.task_tracker import TaskTrackerTool
     from openhands.tools.terminal import TerminalTool
 
     # Set terminal dimensions dynamically based on actual terminal size
@@ -421,13 +497,11 @@ def create_hodor_agent(
         Tool(name=GrepTool.name),  # Efficient code search via ripgrep
         Tool(name=GlobTool.name),  # Pattern-based file finding
         Tool(name=PlanningFileEditorTool.name),  # Read-optimized file editor for reviews
-        Tool(name=FileEditorTool.name),  # Full file editor (if modifications needed)
-        Tool(name=TaskTrackerTool.name),  # Task tracking
     ]
 
     if verbose:
         logger.info(
-            f"Configured {len(tools)} tools: terminal, grep, glob, planning_file_editor, file_editor, task_tracker"
+            f"Configured {len(tools)} tools: terminal, grep, glob, planning_file_editor"
         )
 
     # Create condenser for context management
@@ -443,7 +517,8 @@ def create_hodor_agent(
     agent = Agent(
         llm=llm,
         tools=tools,
-        system_prompt_kwargs={"cli_mode": True},
+        system_prompt_filename=_REVIEW_SYSTEM_PROMPT,
+        system_prompt_kwargs={"cli_mode": True, "llm_security_analyzer": False},
         condenser=condenser,
         agent_context=context,
     )
