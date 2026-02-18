@@ -123,6 +123,12 @@ def parse_llm_args(ctx, param, value):
     help="Canonical model name for feature detection (e.g. 'claude-opus-4-6'). "
          "Required for opaque ARN-based models to enable prompt caching.",
 )
+@click.option(
+    "--skip-if-unchanged/--no-skip-if-unchanged",
+    default=True,
+    help="Skip review if the diff hasn't changed since last posted review (default: enabled). "
+         "Only applies when --post is used.",
+)
 def main(
     pr_url: str,
     model: str,
@@ -138,6 +144,7 @@ def main(
     max_iterations: int,
     ultrathink: bool,
     model_canonical_name: str | None,
+    skip_if_unchanged: bool,
 ):
     """
     Review a GitHub pull request or GitLab merge request using AI.
@@ -252,10 +259,22 @@ def main(
                 output_format="json" if output_json else "markdown",
                 max_iterations=max_iterations,
                 model_canonical_name=model_canonical_name,
+                post=post,
+                skip_if_unchanged=skip_if_unchanged,
             )
 
             progress.update(task, description="Review complete!")
             progress.stop()
+
+        # Handle skip (diff unchanged)
+        if review_output is None:
+            console.print("\n[bold green]Review skipped — diff unchanged since last review[/bold green]")
+            return
+
+        # Unpack diff_hash when in post mode
+        diff_hash = None
+        if isinstance(review_output, tuple):
+            review_output, diff_hash = review_output
 
         # Display result
         if post:
@@ -275,6 +294,7 @@ def main(
                     pr_url=pr_url,
                     review_text=review_text,
                     model=model,
+                    diff_hash=diff_hash,
                 )
 
                 if result.get("success"):
