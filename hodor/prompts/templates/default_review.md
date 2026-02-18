@@ -158,6 +158,10 @@ Total issues: X critical, Y important, Z minor.
 *Correct = existing code won't break, no bugs, free of blocking issues.*
 ```
 
+### Clean Review (No Issues Found)
+
+If you find zero qualifying issues, omit the "Issues Found" section entirely (do NOT list empty categories with "None"). Jump straight to the Summary and Overall Verdict.
+
 ### Formatting Rules
 
 - Brief: 1 paragraph max per finding, no unnecessary line breaks
