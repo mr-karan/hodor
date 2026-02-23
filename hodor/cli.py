@@ -2,7 +2,6 @@
 
 import logging
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -13,7 +12,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from .agent import detect_platform, parse_pr_url, post_review_comment, review_pr
+from .agent import detect_platform, post_review_comment, review_pr
 
 console = Console()
 
@@ -107,6 +106,18 @@ def parse_llm_args(ctx, param, value):
     help="Workspace directory to use (creates temp dir if not specified). Reuses workspace if same repo.",
 )
 @click.option(
+    "--include",
+    "include_patterns",
+    multiple=True,
+    help="Include only files matching these glob patterns (can be specified multiple times)",
+)
+@click.option(
+    "--exclude",
+    "exclude_patterns",
+    multiple=True,
+    help="Exclude files matching these glob patterns (can be specified multiple times)",
+)
+@click.option(
     "--max-iterations",
     default=500,
     type=int,
@@ -135,6 +146,8 @@ def main(
     prompt: str | None,
     prompt_file: str | None,
     workspace: str | None,
+    include_patterns: tuple[str, ...],
+    exclude_patterns: tuple[str, ...],
     max_iterations: int,
     ultrathink: bool,
     model_canonical_name: str | None,
@@ -221,8 +234,12 @@ def main(
     console.print(f"[dim]Model: {model}[/dim]")
     if reasoning_effort:
         console.print(f"[dim]Reasoning Effort: {reasoning_effort}[/dim]")
+    if include_patterns:
+        console.print(f"[dim]Include Patterns: {', '.join(include_patterns)}[/dim]")
+    if exclude_patterns:
+        console.print(f"[dim]Exclude Patterns: {', '.join(exclude_patterns)}[/dim]")
     if max_iterations == -1:
-        console.print(f"[dim]Max Iterations: Unlimited[/dim]")
+        console.print("[dim]Max Iterations: Unlimited[/dim]")
     else:
         console.print(f"[dim]Max Iterations: {max_iterations}[/dim]")
     console.print()
@@ -252,6 +269,8 @@ def main(
                 output_format="json" if output_json else "markdown",
                 max_iterations=max_iterations,
                 model_canonical_name=model_canonical_name,
+                include_patterns=include_patterns,
+                exclude_patterns=exclude_patterns,
             )
 
             progress.update(task, description="Review complete!")

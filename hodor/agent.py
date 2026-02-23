@@ -17,8 +17,9 @@ from openhands.sdk.workspace import LocalWorkspace
 
 from .github import GitHubAPIError, fetch_github_pr_info, normalize_github_metadata
 from .gitlab import GitLabAPIError, fetch_gitlab_mr_info, post_gitlab_mr_comment
-from .llm import create_hodor_agent, get_api_key
+from .llm import create_hodor_agent
 from .prompts.pr_review_prompt import build_pr_review_prompt
+from .review_scope import get_filtered_diff_files, resolve_review_scope
 from .skills import discover_skills
 from .workspace import cleanup_workspace, setup_workspace
 
@@ -181,6 +182,8 @@ def review_pr(
     output_format: str = "markdown",
     max_iterations: int = 500,
     model_canonical_name: str | None = None,
+    include_patterns: tuple[str, ...] = (),
+    exclude_patterns: tuple[str, ...] = (),
 ) -> str:
     """
     Review a pull request using OpenHands agent with bash tools.
@@ -198,6 +201,8 @@ def review_pr(
         workspace_dir: Directory to use for workspace (if None, creates temp dir). Reuses if same repo.
         output_format: Output format - "markdown" or "json" (default: "markdown")
         max_iterations: Maximum number of agent iterations (default: 500, use -1 for unlimited)
+        include_patterns: Include-only glob patterns for files in the PR diff
+        exclude_patterns: Exclude glob patterns for files in the PR diff
 
     Returns:
         Review text as string (format depends on output_format)
@@ -281,6 +286,33 @@ def review_pr(
         except GitHubAPIError as e:
             logger.warning(f"Failed to fetch GitHub metadata: {e}")
 
+    # Resolve effective review scope (CLI flags override .hodor/config.toml)
+    try:
+        review_scope = resolve_review_scope(
+            workspace=workspace,
+            cli_include=include_patterns,
+            cli_exclude=exclude_patterns,
+        )
+    except Exception as e:
+        logger.error(f"Failed to load review scope config: {e}")
+        if workspace and cleanup:
+            cleanup_workspace(workspace)
+        raise RuntimeError(f"Failed to load review scope config: {e}") from e
+
+    try:
+        scoped_files = get_filtered_diff_files(
+            workspace=workspace,
+            target_branch=target_branch,
+            diff_base_sha=diff_base_sha,
+            include=review_scope.include,
+            exclude=review_scope.exclude,
+        )
+    except Exception as e:
+        logger.error(f"Failed to compute filtered diff files: {e}")
+        if workspace and cleanup:
+            cleanup_workspace(workspace)
+        raise RuntimeError(f"Failed to compute filtered diff files: {e}") from e
+
     # Build prompt
     try:
         prompt = build_pr_review_prompt(
@@ -295,6 +327,9 @@ def review_pr(
             custom_instructions=custom_prompt,
             custom_prompt_file=prompt_file,
             output_format=output_format,
+            include_patterns=review_scope.include,
+            exclude_patterns=review_scope.exclude,
+            scoped_files=scoped_files,
         )
     except Exception as e:
         logger.error(f"Failed to build prompt: {e}")
@@ -324,7 +359,7 @@ def review_pr(
             elif action_type == "FileEditAction":
                 logger.info(f"✏️  Editing file: {getattr(event.action, 'file_path', 'unknown')}")
             elif action_type == "MessageAction":
-                logger.info(f"💬 Agent thinking...")
+                logger.info("💬 Agent thinking...")
 
         # Log observations (results)
         if hasattr(event, "observation") and event.observation:

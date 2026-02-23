@@ -1151,7 +1151,7 @@ wheels = [
 
 [[package]]
 name = "hodor"
-version = "0.2.11"
+version = "0.2.14"
 source = { editable = "." }
 dependencies = [
     { name = "boto3" },
@@ -1160,6 +1160,7 @@ dependencies = [
     { name = "lizard" },
     { name = "openhands-sdk" },
     { name = "openhands-tools" },
+    { name = "pathspec" },
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "python-gitlab" },
@@ -1194,6 +1195,7 @@ requires-dist = [
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.5.0" },
     { name = "openhands-sdk", git = "https://github.com/OpenHands/software-agent-sdk.git?subdirectory=openhands-sdk&rev=v1.11.5" },
     { name = "openhands-tools", git = "https://github.com/OpenHands/software-agent-sdk.git?subdirectory=openhands-tools&rev=v1.11.5" },
+    { name = "pathspec", specifier = ">=0.12.1" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },

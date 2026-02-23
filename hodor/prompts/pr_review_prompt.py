@@ -5,6 +5,7 @@ using OpenHands' bash-based tool system instead of custom API tools.
 """
 
 import logging
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,9 @@ def build_pr_review_prompt(
     custom_instructions: str | None = None,
     custom_prompt_file: Path | None = None,
     output_format: str = "markdown",
+    include_patterns: tuple[str, ...] = (),
+    exclude_patterns: tuple[str, ...] = (),
+    scoped_files: list[str] | None = None,
 ) -> str:
     """Build a PR review prompt for OpenHands agent.
 
@@ -43,6 +47,9 @@ def build_pr_review_prompt(
         custom_instructions: Optional additional instructions to append to template
         custom_prompt_file: Optional path to custom template file (replaces base template)
         output_format: Output format - "markdown" or "json" (default: "markdown")
+        include_patterns: Include-only glob patterns
+        exclude_patterns: Exclude glob patterns
+        scoped_files: Pre-filtered list of files to review in this PR
 
     Returns:
         Complete prompt for OpenHands agent
@@ -88,13 +95,23 @@ def build_pr_review_prompt(
             pr_diff_cmd = f"git --no-pager diff origin/{target_branch}...HEAD --name-only"
             git_diff_cmd = f"git --no-pager diff origin/{target_branch}...HEAD"
 
+    scope_section = ""
+    if scoped_files is not None:
+        pr_diff_cmd = _build_scoped_file_list_cmd(scoped_files)
+    if include_patterns or exclude_patterns or scoped_files is not None:
+        scope_section = _build_scope_section(
+            include_patterns=include_patterns,
+            exclude_patterns=exclude_patterns,
+            scoped_files=scoped_files or [],
+        )
+
     # Prepare diff explanation based on platform and available SHA
     if diff_base_sha:
         diff_explanation = (
-            f"**GitLab CI Advantage**: This uses GitLab's pre-calculated merge base SHA "
-            f"(`CI_MERGE_REQUEST_DIFF_BASE_SHA`), which matches exactly what the GitLab UI shows. "
-            f"This is more reliable than three-dot syntax because it handles force pushes, rebases, "
-            f"and messy histories correctly."
+            "**GitLab CI Advantage**: This uses GitLab's pre-calculated merge base SHA "
+            "(`CI_MERGE_REQUEST_DIFF_BASE_SHA`), which matches exactly what the GitLab UI shows. "
+            "This is more reliable than three-dot syntax because it handles force pushes, rebases, "
+            "and messy histories correctly."
         )
     else:
         diff_explanation = (
@@ -134,6 +151,10 @@ def build_pr_review_prompt(
     if custom_instructions:
         prompt += f"\n\n## Additional Instructions\n\n{custom_instructions}\n"
         logger.info("Appended custom instructions to prompt")
+
+    if scope_section:
+        prompt += f"\n\n{scope_section}\n"
+        logger.info("Appended scoped review file constraints to prompt")
 
     return prompt
 
@@ -245,3 +266,34 @@ def _normalize_label_names(raw_labels: Any) -> list[str]:
     return label_names
 
 
+def _build_scoped_file_list_cmd(scoped_files: list[str]) -> str:
+    if not scoped_files:
+        return "printf ''"
+    quoted = [shlex.quote(path) for path in scoped_files]
+    return "printf '%s\\n' " + " ".join(quoted)
+
+
+def _build_scope_section(
+    include_patterns: tuple[str, ...],
+    exclude_patterns: tuple[str, ...],
+    scoped_files: list[str],
+) -> str:
+    lines = ["## File Scope Filters", ""]
+    lines.append("Review scope filtering is already applied. Treat this as the source of truth.")
+    lines.append("")
+    if include_patterns:
+        lines.append(f"- Include patterns: {', '.join(include_patterns)}")
+    if exclude_patterns:
+        lines.append(f"- Exclude patterns: {', '.join(exclude_patterns)}")
+    lines.append(f"- Files in scope after filtering: {len(scoped_files)}")
+    lines.append("")
+    if scoped_files:
+        lines.append("Only review these files:")
+        for path in scoped_files:
+            lines.append(f"- `{path}`")
+        lines.append("")
+        lines.append("Do not review files outside this list, even if they exist in the full diff.")
+    else:
+        lines.append("No files matched the configured scope. Return no findings.")
+
+    return "\n".join(lines)

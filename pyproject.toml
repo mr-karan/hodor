@@ -49,6 +49,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "tenacity>=8.0.0",
     "requests>=2.31.0",
+    "pathspec>=0.12.1",
 ]
 
 [project.optional-dependencies]
