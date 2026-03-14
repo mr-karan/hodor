@@ -28,13 +28,76 @@ import type {
 } from "./types.js";
 
 export interface AgentProgressEvent {
-  type: "tool_start" | "tool_end" | "thinking" | "turn_start" | "turn_end" | "agent_start" | "agent_end" | "text_delta" | "thinking_delta" | "tool_result";
+  type: "tool_start" | "tool_end" | "turn_start" | "turn_end" | "agent_start" | "agent_end" | "assistant_text" | "assistant_thinking";
   toolName?: string;
   toolArgs?: string;
   isError?: boolean;
   turnIndex?: number;
-  delta?: string;
   result?: string;
+  fullOutputPath?: string;
+  truncated?: boolean;
+  message?: string;
+  stopReason?: string;
+  toolCount?: number;
+}
+
+interface AssistantContentBlockLike {
+  type?: string;
+  text?: string;
+  thinking?: string;
+}
+
+interface AssistantMessageLike {
+  role?: string;
+  content?: AssistantContentBlockLike[];
+  stopReason?: string;
+}
+
+interface ToolResultPayload {
+  text: string;
+  fullOutputPath?: string;
+  truncated: boolean;
+}
+
+function asAssistantMessage(value: unknown): AssistantMessageLike | null {
+  if (!value || typeof value !== "object") return null;
+  const message = value as AssistantMessageLike;
+  return message.role === "assistant" && Array.isArray(message.content)
+    ? message
+    : null;
+}
+
+export function extractAssistantBlobs(
+  message: unknown,
+  type: "text" | "thinking",
+): string[] {
+  const assistantMessage = asAssistantMessage(message);
+  if (!assistantMessage) return [];
+  const content = assistantMessage.content ?? [];
+
+  return content
+    .filter((block) => block.type === type)
+    .map((block) => (type === "text" ? block.text : block.thinking) ?? "")
+    .map((blob) => blob.trim())
+    .filter((blob) => blob.length > 0);
+}
+
+export function formatTurnSummary(message: unknown, toolResults: unknown[]): string {
+  const assistantMessage = asAssistantMessage(message);
+  const summaryParts: string[] = [];
+
+  if (assistantMessage?.stopReason) {
+    summaryParts.push(`stop=${assistantMessage.stopReason}`);
+  }
+  if (toolResults.length > 0) {
+    summaryParts.push(`tool_results=${toolResults.length}`);
+  }
+  const textBlocks = extractAssistantBlobs(message, "text");
+  if (textBlocks.length > 0) {
+    summaryParts.push(`text_blobs=${textBlocks.length}`);
+  }
+
+  return summaryParts.length > 0 ? summaryParts.join(", ") : "no assistant output";
 }
 
 function buildMissingAuthError(provider: string, model: string): Error {
@@ -444,20 +507,34 @@ export async function reviewPr(opts: {
       return JSON.stringify(obj).slice(0, 200);
     }
 
-    /** Extract text content from tool result */
-    function formatToolResult(result: unknown): string {
-      if (typeof result === "string") return result;
+    /** Extract text content and metadata from tool result */
+    function formatToolResult(result: unknown): ToolResultPayload {
+      if (typeof result === "string") {
+        return { text: result, truncated: false };
+      }
       const obj = result as Record<string, unknown> | undefined;
-      if (!obj) return "";
+      if (!obj) return { text: "", truncated: false };
       // pi-sdk wraps results as {content: [{type: "text", text: "..."}]}
       const content = obj.content as Array<{ type?: string; text?: string }> | undefined;
+      const details = obj.details as Record<string, unknown> | undefined;
+      const fullOutputPath =
+        typeof details?.fullOutputPath === "string" ? details.fullOutputPath : undefined;
+      const truncated = Boolean(details?.truncation) || Boolean(fullOutputPath);
       if (Array.isArray(content)) {
-        return content
-          .filter((c) => c.type === "text" && c.text)
-          .map((c) => c.text)
-          .join("\n");
+        return {
+          text: content
+            .filter((c) => c.type === "text" && c.text)
+            .map((c) => c.text)
+            .join("\n"),
+          fullOutputPath,
+          truncated,
+        };
       }
-      return JSON.stringify(result)?.slice(0, 500) ?? "";
+      return {
+        text: JSON.stringify(result, null, 2) ?? "",
+        fullOutputPath,
+        truncated,
+      };
     }
 
     session.subscribe((event) => {
@@ -473,7 +550,16 @@ export async function reviewPr(opts: {
           onEvent?.({ type: "turn_start", turnIndex: turnCount });
           break;
         case "turn_end":
-          onEvent?.({ type: "turn_end", turnIndex: turnCount });
+          onEvent?.({
+            type: "turn_end",
+            turnIndex: turnCount,
+            message: formatTurnSummary(event.message, event.toolResults),
+            stopReason:
+              typeof (event.message as { stopReason?: unknown })?.stopReason === "string"
+                ? (event.message as { stopReason: string }).stopReason
+                : undefined,
+            toolCount: event.toolResults.length,
+          });
           break;
         case "tool_execution_start":
           toolCallCount++;
@@ -484,24 +570,26 @@ export async function reviewPr(opts: {
           });
           break;
         case "tool_execution_end":
+          {
+            const toolResult = formatToolResult(event.result);
           onEvent?.({
             type: "tool_end",
             toolName: event.toolName,
             isError: event.isError,
-            result: formatToolResult(event.result),
+            result: toolResult.text,
+            fullOutputPath: toolResult.fullOutputPath,
+            truncated: toolResult.truncated,
           });
-          break;
-        case "message_start":
-          onEvent?.({ type: "thinking" });
+          }
           break;
         case "message_update": {
           const msgEvent = (event as Record<string, unknown>).assistantMessageEvent as
-            { type: string; delta?: string } | undefined;
-          if (!msgEvent?.delta) break;
-          if (msgEvent.type === "text_delta") {
-            onEvent?.({ type: "text_delta", delta: msgEvent.delta });
-          } else if (msgEvent.type === "thinking_delta") {
-            onEvent?.({ type: "thinking_delta", delta: msgEvent.delta });
+            { type: string; content?: string } | undefined;
+          if (!msgEvent?.content) break;
+          if (msgEvent.type === "text_end") {
+            onEvent?.({ type: "assistant_text", message: msgEvent.content.trim() });
+          } else if (msgEvent.type === "thinking_end") {
+            onEvent?.({ type: "assistant_thinking", message: msgEvent.content.trim() });
           }
           break;
         }
