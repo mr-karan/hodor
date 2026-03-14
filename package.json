@@ -40,10 +40,10 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@sinclair/typebox": "^0.34.48",
     "@anthropic-ai/sdk": "^0.39.0",
-    "@mariozechner/pi-ai": "^0.55.1",
-    "@mariozechner/pi-coding-agent": "^0.55.1",
+    "@mariozechner/pi-ai": "^0.57.1",
+    "@mariozechner/pi-coding-agent": "^0.57.1",
+    "@sinclair/typebox": "^0.34.48",
     "chalk": "^5.4.0",
     "commander": "^13.1.0",
     "dotenv": "^16.4.0"

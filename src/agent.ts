@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import type { Model } from "@mariozechner/pi-ai";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { logger } from "./utils/logger.js";
 import { exec } from "./utils/exec.js";
@@ -13,7 +14,7 @@ import {
 } from "./gitlab.js";
 import { setupWorkspace, cleanupWorkspace } from "./workspace.js";
 import { buildPrReviewPrompt } from "./prompt.js";
-import { parseModelString, mapReasoningEffort, getApiKey } from "./model.js";
+import { parseModelString, mapReasoningEffort } from "./model.js";
 import { formatMetricsMarkdown, printMetrics } from "./metrics.js";
 import { SUBMIT_REVIEW_SCHEMA, validateReviewOutput } from "./review.js";
 import { REVIEW_SYSTEM_PROMPT } from "./system-prompt.js";
@@ -34,6 +35,20 @@ export interface AgentProgressEvent {
   turnIndex?: number;
   delta?: string;
   result?: string;
+}
+
+function buildMissingAuthError(provider: string, model: string): Error {
+  if (provider === "openai-codex") {
+    return new Error(
+      `No authentication found for "${model}". Hodor can reuse pi credentials from ~/.pi/agent/auth.json. ` +
+      `Run "pi", use "/login", select "ChatGPT Plus/Pro (Codex Subscription)", then retry.`,
+    );
+  }
+
+  return new Error(
+    `No authentication found for "${model}". Hodor checks LLM_API_KEY, provider-specific environment variables, ` +
+    `and pi auth storage (~/.pi/agent/auth.json).`,
+  );
 }
 
 export function detectPlatform(prUrl: string): Platform {
@@ -196,9 +211,6 @@ export async function reviewPr(opts: {
   const parsed = parseModelString(model);
   const thinkingLevel = mapReasoningEffort(reasoningEffort);
 
-  // Resolve API key (throws if missing for non-bedrock providers)
-  const apiKey = getApiKey(model);
-
   // Note: For bedrock, we don't preflight-check AWS credentials because the
   // SDK resolves them from many sources (env vars, IMDS, ECS task role, IRSA,
   // ~/.aws/credentials, etc.) and we can't reliably detect all of them.
@@ -206,22 +218,13 @@ export async function reviewPr(opts: {
 
   // Snapshot env vars we may mutate, restore in finally block
   const envSnapshot: Record<string, string | undefined> = {
-    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-    OPENAI_API_KEY: process.env.OPENAI_API_KEY,
     AWS_REGION: process.env.AWS_REGION,
   };
 
-  // Set API key in environment for pi-ai early so session creation can use it
-  if (apiKey) {
-    if (parsed.provider === "anthropic") {
-      process.env.ANTHROPIC_API_KEY = apiKey;
-    } else if (parsed.provider === "openai") {
-      process.env.OPENAI_API_KEY = apiKey;
-    }
-  }
-
   // Import pi SDK
   const {
+    AuthStorage,
+    ModelRegistry,
     createAgentSession,
     DefaultResourceLoader,
     SessionManager,
@@ -232,10 +235,15 @@ export async function reviewPr(opts: {
     createFindTool,
     createLsTool,
   } = await import("@mariozechner/pi-coding-agent");
-  const { getModel } = await import("@mariozechner/pi-ai");
+
+  const authStorage = AuthStorage.create();
+  if (process.env.LLM_API_KEY && parsed.provider !== "amazon-bedrock") {
+    authStorage.setRuntimeApiKey(parsed.provider, process.env.LLM_API_KEY);
+  }
+  const modelRegistry = new ModelRegistry(authStorage);
 
   // Resolve model — use registry for known models, construct manually for custom ARNs
-  let piModel: ReturnType<typeof getModel>;
+  let piModel: Model<any>;
   if (parsed.modelId.startsWith("arn:")) {
     // Custom bedrock ARN (inference profile, cross-region, etc.)
     // Extract region from ARN: arn:aws:bedrock:<region>:<account>:...
@@ -256,15 +264,25 @@ export async function reviewPr(opts: {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 200000,
       maxTokens: 16384,
-    } as ReturnType<typeof getModel>;
+    } as Model<any>;
     logger.info(`Custom bedrock ARN model — region: ${region}`);
   } else {
-    try {
-      piModel = getModel(parsed.provider as "anthropic", parsed.modelId as never);
-    } catch (err) {
+    const resolvedModel = modelRegistry.find(parsed.provider, parsed.modelId);
+    if (!resolvedModel) {
       throw new Error(
-        `Unsupported model "${model}": ${err instanceof Error ? err.message : err}`,
+        `Unsupported model "${model}".`,
       );
+    }
+    piModel = resolvedModel;
+  }
+
+  if (parsed.provider !== "amazon-bedrock") {
+    const providerApiKey = await modelRegistry.getApiKey(piModel);
+    if (!providerApiKey) {
+      throw buildMissingAuthError(parsed.provider, model);
+    }
+    if (!process.env.LLM_API_KEY && modelRegistry.isUsingOAuth(piModel)) {
+      logger.info(`Using pi auth storage credentials for ${parsed.provider}`);
     }
   }
   logger.info("Preflight OK — model and credentials validated");
@@ -384,6 +402,8 @@ export async function reviewPr(opts: {
 
     const { session } = await createAgentSession({
       cwd: workspacePath,
+      authStorage,
+      modelRegistry,
       model: piModel,
       thinkingLevel,
       tools: [

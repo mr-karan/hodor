@@ -5,7 +5,7 @@ export interface ParsedModel {
 
 /**
  * Parse a model string like "anthropic/claude-sonnet-4-5" into { provider, modelId }.
- * Handles bare names like "claude-sonnet-4-5" or "gpt-5" via auto-detection.
+ * Handles bare names like "claude-sonnet-4-5", "gpt-5", or "gpt-5.2-codex" via auto-detection.
  */
 export function parseModelString(model: string): ParsedModel {
   const trimmed = model.trim();
@@ -25,7 +25,7 @@ export function parseModelString(model: string): ParsedModel {
       }
       return { provider: "amazon-bedrock", modelId };
     }
-    if (["anthropic", "openai"].includes(first)) {
+    if (["anthropic", "openai", "openai-codex"].includes(first)) {
       return { provider: first, modelId: parts.slice(1).join("/") };
     }
   }
@@ -34,6 +34,9 @@ export function parseModelString(model: string): ParsedModel {
   const lower = trimmed.toLowerCase();
   if (lower.includes("claude") || lower.includes("anthropic")) {
     return { provider: "anthropic", modelId: trimmed };
+  }
+  if (lower.includes("codex")) {
+    return { provider: "openai-codex", modelId: trimmed };
   }
   if (
     lower.startsWith("gpt") ||
@@ -55,7 +58,7 @@ export function parseModelString(model: string): ParsedModel {
  */
 export function mapReasoningEffort(
   effort: string | undefined,
-): "low" | "medium" | "high" | undefined {
+): "low" | "medium" | "high" | "xhigh" | undefined {
   if (!effort) return undefined;
   switch (effort.toLowerCase()) {
     case "low":
@@ -63,8 +66,9 @@ export function mapReasoningEffort(
     case "medium":
       return "medium";
     case "high":
-    case "xhigh":
       return "high";
+    case "xhigh":
+      return "xhigh";
     default:
       return undefined;
   }
@@ -85,9 +89,12 @@ export function getApiKey(model?: string): string | null {
   const llmKey = process.env.LLM_API_KEY;
   if (llmKey) return llmKey;
 
+  let parsedProvider: string | undefined;
+
   // Priority 2: Provider-specific
   if (model) {
     const { provider } = parseModelString(model);
+    parsedProvider = provider;
     if (provider === "amazon-bedrock") return null;
     if (provider === "anthropic") {
       const key = process.env.ANTHROPIC_API_KEY;
@@ -97,6 +104,12 @@ export function getApiKey(model?: string): string | null {
       const key = process.env.OPENAI_API_KEY;
       if (key) return key;
     }
+  }
+
+  if (parsedProvider === "openai-codex") {
+    throw new Error(
+      "No LLM API key found. OpenAI Codex subscription models use pi auth storage or LLM_API_KEY.",
+    );
   }
 
   // Priority 3: Fallback

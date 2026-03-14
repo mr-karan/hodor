@@ -64,6 +64,9 @@ gh auth login              # GitHub (for posting reviews)
 glab auth login            # GitLab (optional, for GitLab MRs)
 export ANTHROPIC_API_KEY=sk-your-key   # or OPENAI_API_KEY
 
+# Or reuse an existing pi login (OAuth-backed subscriptions like OpenAI Codex)
+pi                         # then run /login once if you have not already
+
 # Or use AWS Bedrock (no API key needed, uses AWS credentials)
 export AWS_PROFILE=main    # or set AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY
 ```
@@ -158,7 +161,10 @@ bun run dist/cli.js <PR_URL> \
 # Use AWS Bedrock
 bun run dist/cli.js <PR_URL> --model bedrock/converse/anthropic.claude-sonnet-4-5-v2
 
-# Enable maximum reasoning effort (for very complex PRs)
+# Use your ChatGPT Plus/Pro Codex subscription via pi auth storage
+bun run dist/cli.js <PR_URL> --model openai-codex/gpt-5.4
+
+# Enable maximum reasoning effort (maps to xhigh where supported)
 bun run dist/cli.js <PR_URL> --ultrathink
 
 # Append custom instructions to the base prompt
@@ -221,9 +227,9 @@ See [AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md) for advanced workflows.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model` | `anthropic/claude-sonnet-4-5-20250929` | LLM model to use. Supports Anthropic, OpenAI, and AWS Bedrock. |
-| `--reasoning-effort` | None | Enable extended thinking (`low`, `medium`, `high`). |
-| `--ultrathink` | Off | Maximum reasoning effort with extended thinking budget. |
+| `--model` | `anthropic/claude-sonnet-4-5-20250929` | LLM model to use. Supports Anthropic, OpenAI, OpenAI Codex via pi auth, and AWS Bedrock. |
+| `--reasoning-effort` | None | Enable extended thinking (`low`, `medium`, `high`, `xhigh`). |
+| `--ultrathink` | Off | Maximum reasoning effort with extended thinking budget (`xhigh` where supported). |
 | `--prompt` | – | Append custom instructions to the base prompt. |
 | `--prompt-file` | – | Replace base prompt with a custom markdown file. |
 | `--workspace` | Temp dir | Directory for repo checkout. Re-use for faster multi-PR reviews. |
@@ -244,7 +250,7 @@ See [AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md) for advanced workflows.
 | `AWS_REGION` / `AWS_DEFAULT_REGION` | AWS region for Bedrock (e.g., `ap-south-1`) | For `bedrock/` models |
 | `AWS_PROFILE` | AWS profile name (alternative to access keys) | For `bedrock/` models |
 
-**Note**: Hodor automatically selects the provider-specific key for the requested model (`ANTHROPIC_API_KEY` for Claude, `OPENAI_API_KEY` for GPT). For `bedrock/` models, no API key is needed — authentication uses AWS credentials (environment variables, profiles, or IAM roles).
+**Note**: Hodor automatically selects the provider-specific key for the requested model (`ANTHROPIC_API_KEY` for Claude, `OPENAI_API_KEY` for GPT). It also reuses pi auth storage from `~/.pi/agent/auth.json` (or `$PI_CODING_AGENT_DIR/auth.json`) for OAuth-backed providers such as `openai-codex/*`. For `bedrock/` models, no API key is needed; authentication uses AWS credentials (environment variables, profiles, or IAM roles).
 
 **CI Detection**
 

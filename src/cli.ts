@@ -22,7 +22,7 @@ program
   .argument("<pr-url>", "URL of the GitHub PR or GitLab MR to review")
   .option(
     "--model <model>",
-    "LLM model to use (e.g., anthropic/claude-sonnet-4-5-20250929, openai/gpt-5)",
+    "LLM model to use (e.g., anthropic/claude-sonnet-4-5-20250929, openai/gpt-5, openai-codex/gpt-5.4)",
     "anthropic/claude-sonnet-4-5-20250929",
   )
   .option(
@@ -67,7 +67,7 @@ program
 
     // Handle ultrathink
     if (ultrathink) {
-      reasoningEffort = "high";
+      reasoningEffort = "xhigh";
     }
 
     const log = console.log;

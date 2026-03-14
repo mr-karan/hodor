@@ -5,10 +5,12 @@ describe("parseModelString", () => {
   it.each([
     ["anthropic/claude-sonnet-4-5", "anthropic", "claude-sonnet-4-5"],
     ["openai/gpt-5-2025-08-07", "openai", "gpt-5-2025-08-07"],
+    ["openai-codex/gpt-5.2-codex", "openai-codex", "gpt-5.2-codex"],
     ["bedrock/anthropic.claude-opus-4-6-v1", "amazon-bedrock", "anthropic.claude-opus-4-6-v1"],
     ["bedrock/converse/arn:aws:bedrock:ap-south-1:123:inference-profile/xyz", "amazon-bedrock", "arn:aws:bedrock:ap-south-1:123:inference-profile/xyz"],
     ["claude-sonnet-4-5", "anthropic", "claude-sonnet-4-5"],
     ["gpt-5", "openai", "gpt-5"],
+    ["gpt-5.2-codex", "openai-codex", "gpt-5.2-codex"],
     ["o3-mini", "openai", "o3-mini"],
   ] as const)("parses %s", (input, expectedProvider, expectedModelId) => {
     const result = parseModelString(input);
@@ -27,7 +29,7 @@ describe("mapReasoningEffort", () => {
     ["low", "low"],
     ["medium", "medium"],
     ["high", "high"],
-    ["xhigh", "high"],
+    ["xhigh", "xhigh"],
   ] as const)("maps %s to %s", (input, expected) => {
     expect(mapReasoningEffort(input as string | undefined)).toBe(expected);
   });
@@ -71,6 +73,11 @@ describe("getApiKey", () => {
 
   it("returns null for bedrock", () => {
     expect(getApiKey("bedrock/anthropic.claude-opus-4-6-v1")).toBeNull();
+  });
+
+  it("does not reuse OPENAI_API_KEY for openai-codex models", () => {
+    process.env.OPENAI_API_KEY = "sk-openai";
+    expect(() => getApiKey("openai-codex/gpt-5.2-codex")).toThrow();
   });
 
   it("throws when no key available", () => {
