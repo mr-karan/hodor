@@ -26,6 +26,9 @@ export ANTHROPIC_API_KEY=sk-...   # Anthropic (default)
 export OPENAI_API_KEY=sk-...      # OpenAI
 export AWS_PROFILE=default        # AWS Bedrock (no API key needed)
 
+# Or reuse an existing pi login (OAuth-backed subscriptions like OpenAI Codex)
+pi                         # then run /login once if you have not already
+
 # For posting reviews as comments
 gh auth login                     # GitHub
 glab auth login                   # GitLab
@@ -46,6 +49,7 @@ npx @mrkaran/hodor <PR_URL> --post
 # Use a different model
 npx @mrkaran/hodor <PR_URL> --model openai/gpt-5
 npx @mrkaran/hodor <PR_URL> --model bedrock/converse/anthropic.claude-sonnet-4-5-v2
+npx @mrkaran/hodor <PR_URL> --model openai-codex/gpt-5.4
 
 # Extended reasoning for complex PRs
 npx @mrkaran/hodor <PR_URL> --reasoning-effort high
@@ -92,9 +96,9 @@ Local mode:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model` | `anthropic/claude-sonnet-4-5-20250929` | LLM model (Anthropic, OpenAI, or Bedrock) |
-| `--reasoning-effort` | – | Extended thinking: `low`, `medium`, `high` |
-| `--ultrathink` | Off | Maximum reasoning effort |
+| `--model` | `anthropic/claude-sonnet-4-5-20250929` | LLM model (Anthropic, OpenAI, OpenAI Codex via pi auth, or Bedrock) |
+| `--reasoning-effort` | – | Extended thinking: `low`, `medium`, `high`, `xhigh` |
+| `--ultrathink` | Off | Maximum reasoning effort (`xhigh` where supported) |
 | `--local` | Off | Review local git changes (no PR URL required) |
 | `--diff-against` | `origin/main` | Git ref to diff against in `--local` mode |
 | `--post` | Off | Post review as a comment on the PR/MR |
@@ -114,6 +118,10 @@ Local mode:
 | `LLM_API_KEY` | Generic fallback (when provider-specific key is not set) |
 | `GITHUB_TOKEN` / `GITLAB_TOKEN` | Post comments to PRs/MRs (with `--post`) |
 | `AWS_PROFILE` or `AWS_ACCESS_KEY_ID` | AWS Bedrock auth (no API key needed) |
+
+Hodor automatically selects the provider-specific key for the requested model.
+It also reuses pi auth storage from `~/.pi/agent/auth.json` (or `$PI_CODING_AGENT_DIR/auth.json`)
+for OAuth-backed providers such as `openai-codex/*`.
 
 ## CI/CD
 
