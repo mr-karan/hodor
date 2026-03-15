@@ -4,8 +4,9 @@ import { Command } from "commander";
 import chalk from "chalk";
 import "dotenv/config";
 
-import { detectPlatform, postReviewComment, reviewPr } from "./agent.js";
+import { detectPlatform, postReviewComment, postReviewStructured, reviewPr } from "./agent.js";
 import type { AgentProgressEvent } from "./agent.js";
+import type { PostCommentResult } from "./types.js";
 import { renderMarkdown } from "./render.js";
 import { pushMetrics } from "./metrics.js";
 import { setLogLevel } from "./utils/logger.js";
@@ -47,6 +48,20 @@ program
     "Workspace directory (creates temp dir if not specified)",
   )
   .option(
+    "--review-style <style>",
+    "How to post reviews on GitLab: summary (single comment), inline (diff comments), hybrid (both). Default: hybrid.",
+    "hybrid",
+  )
+  .option(
+    "--code-quality <path>",
+    "Write a gl-code-quality-report.json CodeClimate artifact to this path",
+  )
+  .option(
+    "--commit-status",
+    "Post a pass/fail commit status to the MR head SHA",
+    false,
+  )
+  .option(
     "--ultrathink",
     "Enable maximum reasoning effort with extended thinking budget",
     false,
@@ -77,6 +92,9 @@ program
     const prompt = cmdOpts.prompt as string | undefined;
     const promptFile = cmdOpts.promptFile as string | undefined;
     const workspace = cmdOpts.workspace as string | undefined;
+    const reviewStyle = cmdOpts.reviewStyle as "summary" | "inline" | "hybrid" | undefined;
+    const codeQuality = cmdOpts.codeQuality as string | undefined;
+    const commitStatus = cmdOpts.commitStatus as boolean;
     const ultrathink = cmdOpts.ultrathink as boolean;
     const bedrockTagsRaw = cmdOpts.bedrockTags as string | undefined;
     const prometheusPush = cmdOpts.prometheusPush as string | undefined;
@@ -89,6 +107,10 @@ program
     }
     if (localMode && post) {
       console.error(chalk.red("Error: --post is not supported in --local mode (no remote to post to)"));
+      process.exit(1);
+    }
+    if (!["summary", "inline", "hybrid"].includes(reviewStyle ?? "hybrid")) {
+      console.error(chalk.red("Error: --review-style must be one of: summary, inline, hybrid"));
       process.exit(1);
     }
 
@@ -249,16 +271,43 @@ program
 
       streamLog(chalk.green("✔ Review complete!"));
 
+      if (codeQuality) {
+        try {
+          const { formatCodeQualityReport } = await import("./codequality.js");
+          const { writeFileSync } = await import("node:fs");
+          writeFileSync(codeQuality, formatCodeQualityReport(review, process.env.CI_PROJECT_DIR), "utf-8");
+          log(chalk.dim(`Wrote code quality report to ${codeQuality}`));
+        } catch (err) {
+          log(chalk.yellow(`Failed to write code quality report: ${err}`));
+        }
+      }
+
       if (post && prUrl) {
         log(chalk.cyan("\nPosting review to PR/MR..."));
 
-        const result = await postReviewComment({
-          prUrl,
-          reviewText,
-          model,
-          metricsFooter,
-          headSha,
-        });
+        const platform = detectPlatform(prUrl);
+        const useStructured = platform === "gitlab" && reviewStyle !== "summary";
+
+        let result: PostCommentResult;
+        if (useStructured) {
+          result = await postReviewStructured({
+            prUrl,
+            review,
+            model,
+            metricsFooter,
+            reviewStyle: reviewStyle ?? "hybrid",
+            commitStatus,
+            headSha,
+          });
+        } else {
+          result = await postReviewComment({
+            prUrl,
+            reviewText,
+            model,
+            metricsFooter,
+            headSha,
+          });
+        }
 
         if (result.success) {
           log(chalk.bold.green("Review posted successfully!"));

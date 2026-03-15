@@ -11,17 +11,26 @@ import {
 import {
   fetchGitlabMrInfo,
   postGitlabMrComment,
+  getGitlabMrDiffRefs,
+  cleanupHodorComments,
+  createGitlabDraftNote,
+  bulkPublishGitlabDraftNotes,
+  postGitlabCommitStatus,
+  listHodorDiscussions,
+  resolveGitlabDiscussions,
 } from "./gitlab.js";
 import {
   fetchGiteaPrInfo,
   postGiteaPrComment,
 } from "./gitea.js";
+import type { DiffRefs } from "./gitlab.js";
 import { setupWorkspace, cleanupWorkspace } from "./workspace.js";
 import { buildPrReviewPrompt } from "./prompt.js";
 import { parseModelString, mapReasoningEffort } from "./model.js";
 import { formatMetricsMarkdown, printMetrics } from "./metrics.js";
 import { SUBMIT_REVIEW_SCHEMA, validateReviewOutput } from "./review.js";
 import { REVIEW_SYSTEM_PROMPT } from "./system-prompt.js";
+import { renderMarkdown, renderSummaryMarkdown } from "./render.js";
 import type {
   Platform,
   ParsedPrUrl,
@@ -122,6 +131,15 @@ export function parsePrUrl(prUrl: string): ParsedPrUrl {
   );
 }
 
+function formatLocationRelative(loc: { absolute_file_path: string; line_range: { start: number; end: number } }): string {
+  let filePath = loc.absolute_file_path;
+  const buildsMatch = filePath.match(/\/builds\/[^/]+\/[^/]+\/(.+)/);
+  if (buildsMatch) filePath = buildsMatch[1];
+  else if (filePath.includes("/workspace/")) filePath = filePath.slice(filePath.indexOf("/workspace/") + "/workspace/".length);
+  else filePath = filePath.replace(/^.*\/hodor-review-[^/]+\//, "");
+  return filePath;
+}
+
 export async function postReviewComment(opts: {
   prUrl: string;
   reviewText: string;
@@ -197,6 +215,223 @@ export async function postReviewComment(opts: {
     logger.error(`Failed to post comment: ${msg}`);
     return { success: false, error: msg };
   }
+}
+
+export async function postReviewStructured(opts: {
+  prUrl: string;
+  review: ReviewOutput;
+  model?: string | null;
+  metricsFooter?: string | null;
+  reviewStyle?: "summary" | "inline" | "hybrid";
+  commitStatus?: boolean;
+  codeQualityPath?: string | null;
+  headSha?: string | null;
+}): Promise<PostCommentResult> {
+  const {
+    prUrl,
+    review,
+    model,
+    metricsFooter,
+    reviewStyle,
+    commitStatus,
+    codeQualityPath,
+    headSha,
+  } = opts;
+
+  const platform = detectPlatform(prUrl);
+  if (platform === "github") {
+    return postReviewComment({
+      prUrl,
+      reviewText: renderMarkdown(review),
+      model,
+      metricsFooter,
+      headSha,
+    });
+  }
+
+  if (reviewStyle === "summary") {
+    return postReviewComment({
+      prUrl,
+      reviewText: renderMarkdown(review),
+      model,
+      metricsFooter,
+      headSha,
+    });
+  }
+
+  const parsed = parsePrUrl(prUrl);
+
+  try {
+    const discussions = await listHodorDiscussions(
+      parsed.owner,
+      parsed.repo,
+      parsed.prNumber,
+      parsed.host,
+    );
+    const unresolvedIds = [...new Set(
+      discussions.filter((d) => !d.resolved).map((d) => d.discussionId),
+    )];
+    if (unresolvedIds.length > 0) {
+      const resolved = await resolveGitlabDiscussions(
+        parsed.owner,
+        parsed.repo,
+        parsed.prNumber,
+        unresolvedIds,
+        parsed.host,
+      );
+      if (resolved > 0) logger.info(`Resolved ${resolved} old Hodor discussion(s)`);
+    }
+  } catch (err) {
+    logger.warn(`Failed to resolve old discussions: ${err instanceof Error ? err.message : err}`);
+  }
+
+  try {
+    const deleted = await cleanupHodorComments(
+      parsed.owner,
+      parsed.repo,
+      parsed.prNumber,
+      parsed.host,
+    );
+    if (deleted > 0) logger.info(`Cleaned up ${deleted} old Hodor comment(s)`);
+  } catch (err) {
+    logger.warn(`Failed to cleanup old comments: ${err instanceof Error ? err.message : err}`);
+  }
+
+  let diffRefs: DiffRefs | null = null;
+  try {
+    diffRefs = await getGitlabMrDiffRefs(
+      parsed.owner,
+      parsed.repo,
+      parsed.prNumber,
+      parsed.host,
+    );
+  } catch (err) {
+    logger.warn(`Failed to get diff_refs, falling back to summary mode: ${err instanceof Error ? err.message : err}`);
+  }
+
+  if (!diffRefs) {
+    return postReviewComment({
+      prUrl,
+      reviewText: renderMarkdown(review),
+      model,
+      metricsFooter,
+      headSha,
+    });
+  }
+
+  let inlineCount = 0;
+  let failedCount = 0;
+
+  for (const finding of review.findings) {
+    const relPath = formatLocationRelative(finding.code_location);
+    const marker = "<!-- hodor-review -->";
+    const priorityTag = `[P${finding.priority}]`;
+    const title = /^\[P[0-3]\]/.test(finding.title)
+      ? finding.title
+      : `${priorityTag} ${finding.title}`;
+    let body = `${marker}\n**${title}**\n\n${finding.body}`;
+
+    if (
+      finding.suggestion &&
+      finding.code_location.line_range.start === finding.code_location.line_range.end
+    ) {
+      body += `\n\n\`\`\`suggestion:-0+0\n${finding.suggestion}\n\`\`\``;
+    }
+
+    try {
+      await createGitlabDraftNote(
+        parsed.owner,
+        parsed.repo,
+        parsed.prNumber,
+        body,
+        parsed.host,
+        {
+          filePath: relPath,
+          line: finding.code_location.line_range.start,
+          diffRefs,
+        },
+      );
+      inlineCount++;
+    } catch (err) {
+      logger.warn(`Failed to create inline note for "${finding.title}": ${err instanceof Error ? err.message : err}`);
+      failedCount++;
+    }
+  }
+
+  logger.info(`Created ${inlineCount} inline draft note(s)${failedCount > 0 ? ` (${failedCount} failed)` : ""}`);
+
+  if (reviewStyle === "hybrid" || reviewStyle === undefined) {
+    let summaryBody = renderSummaryMarkdown(review);
+    if (headSha) summaryBody = `<!-- hodor:sha:${headSha} -->\n${summaryBody}`;
+    if (model) summaryBody += `\n---\n\nReview generated by Hodor (model: \`${model}\`)`;
+    if (metricsFooter) summaryBody += `\n\n${metricsFooter}`;
+    try {
+      await postGitlabMrComment(
+        parsed.owner,
+        parsed.repo,
+        parsed.prNumber,
+        summaryBody,
+        parsed.host,
+      );
+    } catch (err) {
+      logger.warn(`Failed to post summary comment: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  if (inlineCount > 0) {
+    try {
+      await bulkPublishGitlabDraftNotes(
+        parsed.owner,
+        parsed.repo,
+        parsed.prNumber,
+        parsed.host,
+      );
+      logger.info("Published all draft notes");
+    } catch (err) {
+      logger.warn(`Failed to bulk publish draft notes: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  if (commitStatus && diffRefs) {
+    const hasBlocking = review.findings.some((f) => f.priority <= 1);
+    const state = hasBlocking ? "failed" : "success";
+    const desc = hasBlocking
+      ? `${review.findings.filter((f) => f.priority <= 1).length} blocking issue(s) found`
+      : review.findings.length > 0
+        ? `${review.findings.length} non-blocking issue(s)`
+        : "No issues found";
+    try {
+      await postGitlabCommitStatus(
+        parsed.owner,
+        parsed.repo,
+        diffRefs.head_sha,
+        state,
+        parsed.host,
+        { description: desc },
+      );
+      logger.info(`Posted commit status: ${state}`);
+    } catch (err) {
+      logger.warn(`Failed to post commit status: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  if (codeQualityPath) {
+    try {
+      const { formatCodeQualityReport } = await import("./codequality.js");
+      const report = formatCodeQualityReport(review, undefined);
+      const { writeFileSync } = await import("node:fs");
+      writeFileSync(codeQualityPath, report, "utf-8");
+      logger.info(`Wrote code quality report to ${codeQualityPath}`);
+    } catch (err) {
+      logger.warn(`Failed to write code quality report: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  return {
+    success: true,
+    platform: "gitlab",
+    mrNumber: parsed.prNumber,
+  };
 }
 
 export async function reviewPr(opts: {

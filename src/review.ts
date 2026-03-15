@@ -29,6 +29,7 @@ export const REVIEW_FINDING_SCHEMA = Type.Object(
     body: Type.String({ minLength: 1 }),
     priority: Type.Integer({ minimum: 0, maximum: 3 }),
     code_location: REVIEW_LOCATION_SCHEMA,
+    suggestion: Type.Optional(Type.String({ minLength: 1 })),
   },
   { additionalProperties: false },
 );
