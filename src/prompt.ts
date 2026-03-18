@@ -3,7 +3,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { logger } from "./utils/logger.js";
 import { summarizeGitlabNotes } from "./gitlab.js";
-import type { MrMetadata, Platform } from "./types.js";
+import type { MrMetadata } from "./types.js";
 
 // Resolve templates directory relative to this file (works in both src/ and dist/)
 function getTemplatesDir(): string {
@@ -12,22 +12,22 @@ function getTemplatesDir(): string {
 }
 
 export function buildPrReviewPrompt(opts: {
-  prUrl: string;
-  platform: Platform;
+  prUrl?: string;
   targetBranch?: string;
   diffBaseSha?: string | null;
   mrMetadata?: MrMetadata | null;
   customInstructions?: string | null;
   customPromptFile?: string | null;
+  localMode?: boolean;
 }): string {
   const {
     prUrl,
-    platform,
     targetBranch = "main",
     diffBaseSha,
     mrMetadata,
     customInstructions,
     customPromptFile,
+    localMode = false,
   } = opts;
 
   // Step 1: Determine template (always tool submission; rendered to markdown post-hoc)
@@ -58,23 +58,13 @@ export function buildPrReviewPrompt(opts: {
     throw new Error(`Invalid diff base SHA: ${diffBaseSha}`);
   }
 
-  // Prepare platform-specific commands
-  let prDiffCmd: string;
-  let gitDiffCmd: string;
+  // Prepare git diff commands
+  const baseRef = diffBaseSha ?? (localMode ? targetBranch : `origin/${targetBranch}`);
+  const prDiffCmd = `git --no-pager diff ${baseRef}${diffBaseSha ? " HEAD" : "...HEAD"} --name-only`;
+  const gitDiffCmd = `git --no-pager diff ${baseRef}${diffBaseSha ? " HEAD" : "...HEAD"}`;
 
-  if (platform === "github") {
-    prDiffCmd = `git --no-pager diff origin/${targetBranch}...HEAD --name-only`;
-    gitDiffCmd = `git --no-pager diff origin/${targetBranch}...HEAD`;
-  } else {
-    // gitlab
-    if (diffBaseSha) {
-      prDiffCmd = `git --no-pager diff ${diffBaseSha} HEAD --name-only`;
-      gitDiffCmd = `git --no-pager diff ${diffBaseSha} HEAD`;
-      logger.info(`Using GitLab CI_MERGE_REQUEST_DIFF_BASE_SHA: ${diffBaseSha.slice(0, 8)}`);
-    } else {
-      prDiffCmd = `git --no-pager diff origin/${targetBranch}...HEAD --name-only`;
-      gitDiffCmd = `git --no-pager diff origin/${targetBranch}...HEAD`;
-    }
+  if (diffBaseSha) {
+    logger.info(`Using GitLab CI_MERGE_REQUEST_DIFF_BASE_SHA: ${diffBaseSha.slice(0, 8)}`);
   }
 
   // Diff explanation
@@ -94,9 +84,14 @@ export function buildPrReviewPrompt(opts: {
   // Step 3: Build MR sections
   const { contextSection, notesSection, reminderSection } = buildMrSections(mrMetadata);
 
+  // Determine the display URL
+  const displayUrl = localMode
+    ? `local diff (against ${targetBranch})`
+    : prUrl ?? "unknown";
+
   // Step 4: Interpolate
   let prompt = templateText
-    .replace(/\{pr_url\}/g, prUrl)
+    .replace(/\{pr_url\}/g, displayUrl)
     .replace(/\{pr_diff_cmd\}/g, prDiffCmd)
     .replace(/\{git_diff_cmd\}/g, gitDiffCmd)
     .replace(/\{target_branch\}/g, targetBranch)

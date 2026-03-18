@@ -14,12 +14,14 @@ const program = new Command();
 program
   .name("hodor")
   .description(
-    "AI-powered code review agent for GitHub PRs and GitLab MRs.\n\n" +
+    "AI-powered code review agent for GitHub PRs, GitLab MRs, and local diffs.\n\n" +
       "Hodor uses an AI agent that clones the repository, checks out the PR branch,\n" +
-      "and analyzes the code using tools (gh, git, glab) for metadata fetching and comment posting.",
+      "and analyzes the code using tools (gh, git, glab) for metadata fetching and comment posting.\n\n" +
+      "For local reviews (e.g., Bitbucket PRs), use --local with --diff-against to review " +
+      "changes in your current git repository.",
   )
   .version("0.3.4")
-  .argument("<pr-url>", "URL of the GitHub PR or GitLab MR to review")
+  .argument("[pr-url]", "URL of the GitHub PR or GitLab MR to review (optional with --local)")
   .option(
     "--model <model>",
     "LLM model to use (e.g., anthropic/claude-sonnet-4-5-20250929, openai/gpt-5)",
@@ -49,7 +51,16 @@ program
     "Enable maximum reasoning effort with extended thinking budget",
     false,
   )
-  .action(async (prUrl: string, cmdOpts: Record<string, unknown>) => {
+  .option(
+    "--local",
+    "Review local changes in the current directory (no PR URL required)",
+    false,
+  )
+  .option(
+    "--diff-against <ref>",
+    "Git ref to diff against (e.g., origin/main, HEAD~1). Required with --local, defaults to 'origin/main'",
+  )
+  .action(async (prUrl: string | undefined, cmdOpts: Record<string, unknown>) => {
     const verbose = cmdOpts.verbose as boolean;
     const post = cmdOpts.post as boolean;
     const model = cmdOpts.model as string;
@@ -58,6 +69,22 @@ program
     const promptFile = cmdOpts.promptFile as string | undefined;
     const workspace = cmdOpts.workspace as string | undefined;
     const ultrathink = cmdOpts.ultrathink as boolean;
+    const localMode = cmdOpts.local as boolean;
+    const diffAgainst = cmdOpts.diffAgainst as string | undefined;
+
+    // Validate arguments
+    if (!localMode && !prUrl) {
+      console.error(
+        chalk.red("Error: pr-url is required unless --local is specified"),
+      );
+      process.exit(1);
+    }
+
+    if (localMode && prUrl) {
+      console.error(
+        chalk.yellow("Warning: --local specified, ignoring pr-url"),
+      );
+    }
 
     // Auto-detect CI environment
     const isCI = !!(process.env.CI || process.env.GITLAB_CI || process.env.GITHUB_ACTIONS);
@@ -146,50 +173,42 @@ program
     }
 
     try {
-      // Validate URL and detect platform (inside try so errors are caught)
-      const platform = detectPlatform(prUrl);
-      const githubToken = process.env.GITHUB_TOKEN;
-      const gitlabToken =
-        process.env.GITLAB_TOKEN ??
-        process.env.GITLAB_PRIVATE_TOKEN ??
-        process.env.CI_JOB_TOKEN;
+      // Handle local mode vs PR mode
+      let platform: "github" | "gitlab" | "local" = "local";
 
-      if (platform === "github" && !githubToken) {
-        console.error(
-          chalk.yellow(
-            "Warning: GITHUB_TOKEN not set. You may encounter rate limits or authentication issues.",
-          ),
-        );
-        console.error(
-          chalk.dim("  Set GITHUB_TOKEN environment variable or run: gh auth login\n"),
-        );
-      } else if (platform === "gitlab" && !gitlabToken) {
-        console.error(
-          chalk.yellow(
-            "Warning: No GitLab token detected. Set GITLAB_TOKEN (api scope) for authentication.",
-          ),
-        );
-        console.error(
-          chalk.dim(
-            "  Export GITLAB_TOKEN and optionally GITLAB_HOST for self-hosted instances.\n",
-          ),
-        );
+      if (!localMode && prUrl) {
+        platform = detectPlatform(prUrl);
+        const tokens = {
+          github: process.env.GITHUB_TOKEN,
+          gitlab: process.env.GITLAB_TOKEN ?? process.env.GITLAB_PRIVATE_TOKEN ?? process.env.CI_JOB_TOKEN,
+        };
+
+        if (!tokens[platform]) {
+          const hints: Record<string, string> = {
+            github: "Set GITHUB_TOKEN or run: gh auth login",
+            gitlab: "Set GITLAB_TOKEN (api scope) for authentication",
+          };
+          console.error(chalk.yellow(`Warning: No ${platform} token detected. You may encounter rate limits.`));
+          console.error(chalk.dim(`  ${hints[platform]}\n`));
+        }
       }
 
-      log(
-        `\n${chalk.bold.cyan("Hodor - AI Code Review Agent")}`,
-      );
-      log(chalk.dim(`Platform: ${platform.toUpperCase()}`));
-      log(chalk.dim(`PR URL: ${prUrl}`));
+      log(`\n${chalk.bold.cyan("Hodor - AI Code Review Agent")}`);
+      if (localMode) {
+        log(chalk.dim(`Mode: Local diff review`));
+        log(chalk.dim(`Diff against: ${diffAgainst ?? "origin/main"}`));
+        log(chalk.dim(`Workspace: ${workspace ?? process.cwd()}`));
+      } else {
+        log(chalk.dim(`Platform: ${platform.toUpperCase()}`));
+        log(chalk.dim(`PR URL: ${prUrl}`));
+      }
       log(chalk.dim(`Model: ${model}`));
-      if (reasoningEffort) {
-        log(chalk.dim(`Reasoning Effort: ${reasoningEffort}`));
-      }
+      if (reasoningEffort) log(chalk.dim(`Reasoning Effort: ${reasoningEffort}`));
       log();
 
       streamLog(chalk.dim("▶ Setting up workspace..."));
       const { review, metricsFooter } = await reviewPr({
-        prUrl,
+        prUrl: localMode ? undefined : prUrl,
         model,
         reasoningEffort,
         customPrompt: prompt,
@@ -198,39 +217,33 @@ program
         workspaceDir: workspace,
         includeMetricsFooter: post,
         onEvent: handleEvent,
+        localMode,
+        diffAgainst,
       });
       const reviewText = renderMarkdown(review);
 
       streamLog(chalk.green("✔ Review complete!"));
 
-      if (post) {
-        log(chalk.cyan("\nPosting review to PR/MR..."));
+      if (post && localMode) {
+        log(chalk.yellow("\n--post is not supported in --local mode"));
+      }
 
-        const result = await postReviewComment({
-          prUrl,
-          reviewText,
-          model,
-          metricsFooter,
-        });
+      if (post && !localMode && prUrl) {
+        log(chalk.cyan("\nPosting review to PR/MR..."));
+        const result = await postReviewComment({ prUrl, reviewText, model, metricsFooter });
 
         if (result.success) {
           log(chalk.bold.green("Review posted successfully!"));
           log(chalk.dim(`  ${platform === "github" ? "PR" : "MR"}: ${prUrl}`));
         } else {
-          log(
-            chalk.bold.red(`Failed to post review: ${result.error}`),
-          );
+          log(chalk.bold.red(`Failed to post review: ${result.error}`));
           log(chalk.yellow("\nReview output:\n"));
           console.log(reviewText);
         }
       } else {
         log(chalk.bold.green("Review Complete\n"));
         console.log(reviewText);
-        log(
-          chalk.dim(
-            "\nTip: Use --post to automatically post this review to the PR/MR",
-          ),
-        );
+        if (!localMode) log(chalk.dim("\nTip: Use --post to automatically post this review to the PR/MR"));
       }
     } catch (err) {
       streamLog(chalk.red("✗ Review failed"));

@@ -163,7 +163,7 @@ export async function postReviewComment(opts: {
 }
 
 export async function reviewPr(opts: {
-  prUrl: string;
+  prUrl?: string;
   model?: string;
   reasoningEffort?: string;
   customPrompt?: string | null;
@@ -172,6 +172,8 @@ export async function reviewPr(opts: {
   workspaceDir?: string | null;
   includeMetricsFooter?: boolean;
   onEvent?: (event: AgentProgressEvent) => void;
+  localMode?: boolean;
+  diffAgainst?: string;
 }): Promise<{ review: ReviewOutput; metricsFooter: string | null }> {
   const {
     prUrl,
@@ -183,14 +185,26 @@ export async function reviewPr(opts: {
     workspaceDir,
     includeMetricsFooter = false,
     onEvent,
+    localMode = false,
+    diffAgainst,
   } = opts;
 
-  logger.info(`Starting PR review for: ${prUrl}`);
+  logger.info(`Starting PR review for: ${localMode ? "local diff" : prUrl}`);
 
-  // Parse PR URL
-  const { owner, repo, prNumber, host } = parsePrUrl(prUrl);
-  const platform = detectPlatform(prUrl);
-  logger.info(`Platform: ${platform}, Repo: ${owner}/${repo}, PR: ${prNumber}, Host: ${host}`);
+  // Parse PR URL (skip in local mode)
+  let owner = "", repo = "", host = "";
+  let prNumber = 0;
+  let platform: Platform = "github";
+
+  if (!localMode && prUrl) {
+    const parsed = parsePrUrl(prUrl);
+    owner = parsed.owner;
+    repo = parsed.repo;
+    prNumber = parsed.prNumber;
+    host = parsed.host;
+    platform = detectPlatform(prUrl);
+    logger.info(`Platform: ${platform}, Repo: ${owner}/${repo}, PR: ${prNumber}, Host: ${host}`);
+  }
 
   // --- Preflight: validate model + credentials before any expensive I/O ---
   const parsed = parseModelString(model);
@@ -272,47 +286,51 @@ export async function reviewPr(opts: {
   // --- End preflight ---
 
   // Setup workspace
-  const { workspace, targetBranch, diffBaseSha, isTemporary } = await setupWorkspace({
-    platform,
-    owner,
-    repo,
-    prNumber: String(prNumber),
-    host,
-    workingDir: workspaceDir ?? undefined,
-    reuse: workspaceDir != null,
-  });
+  let workspace: string;
+  let targetBranch: string;
+  let diffBaseSha: string | null = null;
+  let isTemporary = false;
+
+  if (localMode) {
+    workspace = workspaceDir ?? process.cwd();
+    targetBranch = diffAgainst ?? "origin/main";
+    logger.info(`Local mode: workspace=${workspace}, diffAgainst=${targetBranch}`);
+  } else {
+    const result = await setupWorkspace({
+      platform, owner, repo, prNumber: String(prNumber), host,
+      workingDir: workspaceDir ?? undefined,
+      reuse: workspaceDir != null,
+    });
+    workspace = result.workspace;
+    targetBranch = result.targetBranch;
+    diffBaseSha = result.diffBaseSha;
+    isTemporary = result.isTemporary;
+  }
 
   const workspacePath = workspace;
 
   try {
-    // Fetch PR metadata
+    // Fetch PR metadata (skip in local mode)
     let mrMetadata: MrMetadata | null = null;
-    if (platform === "gitlab") {
+    if (!localMode && prUrl) {
       try {
-        mrMetadata = await fetchGitlabMrInfo(owner, repo, prNumber, host, {
-          includeComments: true,
-        });
+        mrMetadata = platform === "gitlab"
+          ? await fetchGitlabMrInfo(owner, repo, prNumber, host, { includeComments: true })
+          : normalizeGithubMetadata(await fetchGithubPrInfo(owner, repo, prNumber));
       } catch (err) {
-        logger.warn(`Failed to fetch GitLab metadata: ${err}`);
-      }
-    } else if (platform === "github") {
-      try {
-        const githubRaw = await fetchGithubPrInfo(owner, repo, prNumber);
-        mrMetadata = normalizeGithubMetadata(githubRaw);
-      } catch (err) {
-        logger.warn(`Failed to fetch GitHub metadata: ${err}`);
+        logger.warn(`Failed to fetch ${platform} metadata: ${err}`);
       }
     }
 
-    // Build prompt (always uses JSON template; rendered to markdown post-hoc)
+    // Build prompt
     const prompt = buildPrReviewPrompt({
-      prUrl,
-      platform,
+      prUrl: localMode ? undefined : prUrl,
       targetBranch,
       diffBaseSha,
       mrMetadata,
       customInstructions: customPrompt,
       customPromptFile: promptFile,
+      localMode,
     });
 
     const startTime = Date.now();
