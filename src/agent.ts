@@ -231,8 +231,15 @@ export async function reviewPr(opts: {
     createGrepTool,
     createFindTool,
     createLsTool,
+    AuthStorage,
+    ModelRegistry,
   } = await import("@mariozechner/pi-coding-agent");
   const { getModel } = await import("@mariozechner/pi-ai");
+
+  // Create an in-memory auth storage that doesn't load from ~/.pi/auth.json
+  // This forces the SDK to use environment variables only
+  const authStorage = AuthStorage.inMemory();
+  const modelRegistry = new ModelRegistry(authStorage);
 
   // Resolve model — use registry for known models, construct manually for custom ARNs
   let piModel: ReturnType<typeof getModel>;
@@ -397,6 +404,8 @@ export async function reviewPr(opts: {
       sessionManager: SessionManager.inMemory(),
       settingsManager,
       resourceLoader,
+      authStorage,
+      modelRegistry,
     });
 
     // Subscribe to agent events for progress + metrics tracking
