@@ -167,7 +167,7 @@ export async function postReviewComment(opts: {
 }
 
 export async function reviewPr(opts: {
-  prUrl: string;
+  prUrl?: string;
   model?: string;
   reasoningEffort?: string;
   customPrompt?: string | null;
@@ -177,6 +177,8 @@ export async function reviewPr(opts: {
   includeMetricsFooter?: boolean;
   onEvent?: (event: AgentProgressEvent) => void;
   bedrockTags?: Record<string, string> | null;
+  localMode?: boolean;
+  diffAgainst?: string;
 }): Promise<{ review: ReviewOutput; metricsFooter: string | null; headSha: string | null; metrics: ReviewMetrics }> {
   const {
     prUrl,
@@ -189,14 +191,25 @@ export async function reviewPr(opts: {
     includeMetricsFooter = false,
     onEvent,
     bedrockTags,
+    localMode = false,
+    diffAgainst,
   } = opts;
 
-  logger.info(`Starting PR review for: ${prUrl}`);
+  logger.info(`Starting PR review for: ${localMode ? "local diff" : prUrl}`);
 
-  // Parse PR URL
-  const { owner, repo, prNumber, host } = parsePrUrl(prUrl);
-  const platform = detectPlatform(prUrl);
-  logger.info(`Platform: ${platform}, Repo: ${owner}/${repo}, PR: ${prNumber}, Host: ${host}`);
+  let owner = "", repo = "", host = "";
+  let prNumber = 0;
+  let platform: Platform = "github";
+
+  if (!localMode && prUrl) {
+    const urlParsed = parsePrUrl(prUrl);
+    owner = urlParsed.owner;
+    repo = urlParsed.repo;
+    prNumber = urlParsed.prNumber;
+    host = urlParsed.host;
+    platform = detectPlatform(prUrl);
+    logger.info(`Platform: ${platform}, Repo: ${owner}/${repo}, PR: ${prNumber}, Host: ${host}`);
+  }
 
   // --- Preflight: validate model + credentials before any expensive I/O ---
   const parsed = parseModelString(model);
@@ -285,22 +298,41 @@ export async function reviewPr(opts: {
   // --- End preflight ---
 
   // Setup workspace
-  const { workspace, targetBranch, diffBaseSha, isTemporary } = await setupWorkspace({
-    platform,
-    owner,
-    repo,
-    prNumber: String(prNumber),
-    host,
-    workingDir: workspaceDir ?? undefined,
-    reuse: workspaceDir != null,
-  });
+  let workspacePath: string;
+  let targetBranch: string;
+  let diffBaseSha: string | null = null;
+  let isTemporary = false;
 
-  const workspacePath = workspace;
+  if (localMode) {
+    // Resolve to git repo root so paths from git diff match tool expectations
+    const cwd = workspaceDir ?? process.cwd();
+    try {
+      const { stdout: toplevel } = await exec("git", ["rev-parse", "--show-toplevel"], { cwd });
+      workspacePath = toplevel.trim();
+    } catch {
+      workspacePath = cwd; // fallback if not in a git repo
+    }
+    targetBranch = diffAgainst ?? "origin/main";
+    logger.info(`Local mode: workspace=${workspacePath}, diffAgainst=${targetBranch}`);
+  } else {
+    const wsResult = await setupWorkspace({
+      platform,
+      owner,
+      repo,
+      prNumber: String(prNumber),
+      host,
+      workingDir: workspaceDir ?? undefined,
+      reuse: workspaceDir != null,
+    });
+    workspacePath = wsResult.workspace;
+    targetBranch = wsResult.targetBranch;
+    diffBaseSha = wsResult.diffBaseSha;
+    isTemporary = wsResult.isTemporary;
+  }
 
   try {
-    // Fetch PR metadata
     let mrMetadata: MrMetadata | null = null;
-    if (platform === "gitlab") {
+    if (!localMode && platform === "gitlab") {
       try {
         mrMetadata = await fetchGitlabMrInfo(owner, repo, prNumber, host, {
           includeComments: true,
@@ -308,7 +340,7 @@ export async function reviewPr(opts: {
       } catch (err) {
         logger.warn(`Failed to fetch GitLab metadata: ${err}`);
       }
-    } else if (platform === "github") {
+    } else if (!localMode && platform === "github") {
       try {
         const githubRaw = await fetchGithubPrInfo(owner, repo, prNumber);
         mrMetadata = normalizeGithubMetadata(githubRaw);
@@ -340,9 +372,12 @@ export async function reviewPr(opts: {
       }
     }
 
-    // Get HEAD SHA for embedding in posted comments
-    const { stdout: headShaRaw } = await exec("git", ["rev-parse", "HEAD"], { cwd: workspacePath });
-    const headSha = headShaRaw.trim();
+    // Get HEAD SHA for embedding in posted comments (skip in local mode — no posting)
+    let headSha: string | null = null;
+    if (!localMode) {
+      const { stdout: headShaRaw } = await exec("git", ["rev-parse", "HEAD"], { cwd: workspacePath });
+      headSha = headShaRaw.trim();
+    }
 
     // Pre-fetch diff for embedding in prompt (avoids per-file tool calls)
     const MAX_EMBED_BYTES = 200 * 1024; // 200KB
@@ -352,7 +387,9 @@ export async function reviewPr(opts: {
         ? ["--no-pager", "diff", `${previousReviewSha}...HEAD`]
         : diffBaseSha
           ? ["--no-pager", "diff", diffBaseSha, "HEAD"]
-          : ["--no-pager", "diff", `origin/${targetBranch}...HEAD`];
+          : localMode
+            ? ["--no-pager", "diff", targetBranch]  // includes uncommitted changes
+            : ["--no-pager", "diff", `origin/${targetBranch}...HEAD`];
       const { stdout: rawDiff } = await exec("git", diffArgs, { cwd: workspacePath });
       if (Buffer.byteLength(rawDiff, "utf-8") <= MAX_EMBED_BYTES) {
         embeddedDiff = rawDiff;
@@ -366,7 +403,7 @@ export async function reviewPr(opts: {
 
     // Build prompt (always uses JSON template; rendered to markdown post-hoc)
     const prompt = buildPrReviewPrompt({
-      prUrl,
+      prUrl: prUrl ?? `local diff (against ${targetBranch})`,
       platform,
       targetBranch,
       diffBaseSha,
@@ -375,6 +412,7 @@ export async function reviewPr(opts: {
       customPromptFile: promptFile,
       embeddedDiff,
       previousReviewSha,
+      localMode,
     });
 
     const startTime = Date.now();

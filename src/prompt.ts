@@ -21,6 +21,7 @@ export function buildPrReviewPrompt(opts: {
   customPromptFile?: string | null;
   embeddedDiff?: string | null;
   previousReviewSha?: string | null;
+  localMode?: boolean;
 }): string {
   const {
     prUrl,
@@ -32,6 +33,7 @@ export function buildPrReviewPrompt(opts: {
     customPromptFile,
     embeddedDiff,
     previousReviewSha,
+    localMode = false,
   } = opts;
 
   // Step 1: Determine template (always tool submission; rendered to markdown post-hoc)
@@ -74,6 +76,10 @@ export function buildPrReviewPrompt(opts: {
     prDiffCmd = `git --no-pager diff ${previousReviewSha}...HEAD --name-only`;
     gitDiffCmd = `git --no-pager diff ${previousReviewSha}...HEAD`;
     logger.info(`Incremental review: diffing from ${previousReviewSha.slice(0, 8)} to HEAD`);
+  } else if (localMode) {
+    // Plain two-arg diff includes uncommitted (staged + unstaged) changes
+    prDiffCmd = `git --no-pager diff ${targetBranch} --name-only`;
+    gitDiffCmd = `git --no-pager diff ${targetBranch}`;
   } else if (platform === "github") {
     prDiffCmd = `git --no-pager diff origin/${targetBranch}...HEAD --name-only`;
     gitDiffCmd = `git --no-pager diff origin/${targetBranch}...HEAD`;

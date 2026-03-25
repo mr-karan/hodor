@@ -15,12 +15,13 @@ const program = new Command();
 program
   .name("hodor")
   .description(
-    "AI-powered code review agent for GitHub PRs and GitLab MRs.\n\n" +
+    "AI-powered code review agent for GitHub PRs, GitLab MRs, and local diffs.\n\n" +
       "Hodor uses an AI agent that clones the repository, checks out the PR branch,\n" +
-      "and analyzes the code using tools (gh, git, glab) for metadata fetching and comment posting.",
+      "and analyzes the code using tools (gh, git, glab) for metadata fetching and comment posting.\n\n" +
+      "For local reviews, use --local with --diff-against to review changes in your current git repository.",
   )
-  .version("0.3.4")
-  .argument("<pr-url>", "URL of the GitHub PR or GitLab MR to review")
+  .version("0.4.1")
+  .argument("[pr-url]", "URL of the GitHub PR or GitLab MR to review (optional with --local)")
   .option(
     "--model <model>",
     "LLM model to use (e.g., anthropic/claude-sonnet-4-5-20250929, openai/gpt-5)",
@@ -58,7 +59,17 @@ program
     "--prometheus-push <url>",
     "Push review metrics to a Prometheus Pushgateway URL",
   )
-  .action(async (prUrl: string, cmdOpts: Record<string, unknown>) => {
+  .option(
+    "--local",
+    "Review local changes in the current directory (no PR URL required)",
+    false,
+  )
+  .option(
+    "--diff-against <ref>",
+    "Git ref to diff against in local mode (e.g., origin/main, HEAD~1)",
+    "origin/main",
+  )
+  .action(async (prUrl: string | undefined, cmdOpts: Record<string, unknown>) => {
     const verbose = cmdOpts.verbose as boolean;
     const post = cmdOpts.post as boolean;
     const model = cmdOpts.model as string;
@@ -69,6 +80,17 @@ program
     const ultrathink = cmdOpts.ultrathink as boolean;
     const bedrockTagsRaw = cmdOpts.bedrockTags as string | undefined;
     const prometheusPush = cmdOpts.prometheusPush as string | undefined;
+    const localMode = cmdOpts.local as boolean;
+    const diffAgainst = cmdOpts.diffAgainst as string;
+
+    if (!localMode && !prUrl) {
+      console.error(chalk.red("Error: pr-url is required unless --local is specified"));
+      process.exit(1);
+    }
+    if (localMode && post) {
+      console.error(chalk.red("Error: --post is not supported in --local mode (no remote to post to)"));
+      process.exit(1);
+    }
 
     // Auto-detect CI environment
     const isCI = !!(process.env.CI || process.env.GITLAB_CI || process.env.GITHUB_ACTIONS);
@@ -168,41 +190,34 @@ program
     }
 
     try {
-      // Validate URL and detect platform (inside try so errors are caught)
-      const platform = detectPlatform(prUrl);
-      const githubToken = process.env.GITHUB_TOKEN;
-      const gitlabToken =
-        process.env.GITLAB_TOKEN ??
-        process.env.GITLAB_PRIVATE_TOKEN ??
-        process.env.CI_JOB_TOKEN;
+      // Detect platform and warn about missing tokens
+      let platform: string = "local";
+      if (!localMode && prUrl) {
+        platform = detectPlatform(prUrl);
+        const githubToken = process.env.GITHUB_TOKEN;
+        const gitlabToken =
+          process.env.GITLAB_TOKEN ??
+          process.env.GITLAB_PRIVATE_TOKEN ??
+          process.env.CI_JOB_TOKEN;
 
-      if (platform === "github" && !githubToken) {
-        console.error(
-          chalk.yellow(
-            "Warning: GITHUB_TOKEN not set. You may encounter rate limits or authentication issues.",
-          ),
-        );
-        console.error(
-          chalk.dim("  Set GITHUB_TOKEN environment variable or run: gh auth login\n"),
-        );
-      } else if (platform === "gitlab" && !gitlabToken) {
-        console.error(
-          chalk.yellow(
-            "Warning: No GitLab token detected. Set GITLAB_TOKEN (api scope) for authentication.",
-          ),
-        );
-        console.error(
-          chalk.dim(
-            "  Export GITLAB_TOKEN and optionally GITLAB_HOST for self-hosted instances.\n",
-          ),
-        );
+        if (platform === "github" && !githubToken) {
+          console.error(chalk.yellow("Warning: GITHUB_TOKEN not set. You may encounter rate limits."));
+          console.error(chalk.dim("  Set GITHUB_TOKEN or run: gh auth login\n"));
+        } else if (platform === "gitlab" && !gitlabToken) {
+          console.error(chalk.yellow("Warning: No GitLab token detected. Set GITLAB_TOKEN (api scope)."));
+          console.error(chalk.dim("  Export GITLAB_TOKEN and optionally GITLAB_HOST.\n"));
+        }
       }
 
-      log(
-        `\n${chalk.bold.cyan("Hodor - AI Code Review Agent")}`,
-      );
-      log(chalk.dim(`Platform: ${platform.toUpperCase()}`));
-      log(chalk.dim(`PR URL: ${prUrl}`));
+      log(`\n${chalk.bold.cyan("Hodor - AI Code Review Agent")}`);
+      if (localMode) {
+        log(chalk.dim(`Mode: Local diff review`));
+        log(chalk.dim(`Diff against: ${diffAgainst}`));
+        log(chalk.dim(`Workspace: ${workspace ?? process.cwd()}`));
+      } else {
+        log(chalk.dim(`Platform: ${platform.toUpperCase()}`));
+        log(chalk.dim(`PR URL: ${prUrl}`));
+      }
       log(chalk.dim(`Model: ${model}`));
       if (reasoningEffort) {
         log(chalk.dim(`Reasoning Effort: ${reasoningEffort}`));
@@ -211,22 +226,24 @@ program
 
       streamLog(chalk.dim("▶ Setting up workspace..."));
       const { review, metricsFooter, headSha, metrics } = await reviewPr({
-        prUrl,
+        prUrl: localMode ? undefined : prUrl,
         model,
         reasoningEffort,
         customPrompt: prompt,
         promptFile,
         cleanup: !workspace,
         workspaceDir: workspace,
-        includeMetricsFooter: post,
+        includeMetricsFooter: post && !localMode,
         onEvent: handleEvent,
         bedrockTags,
+        localMode,
+        diffAgainst,
       });
       const reviewText = renderMarkdown(review);
 
       streamLog(chalk.green("✔ Review complete!"));
 
-      if (post) {
+      if (post && prUrl) {
         log(chalk.cyan("\nPosting review to PR/MR..."));
 
         const result = await postReviewComment({
@@ -241,20 +258,16 @@ program
           log(chalk.bold.green("Review posted successfully!"));
           log(chalk.dim(`  ${platform === "github" ? "PR" : "MR"}: ${prUrl}`));
         } else {
-          log(
-            chalk.bold.red(`Failed to post review: ${result.error}`),
-          );
+          log(chalk.bold.red(`Failed to post review: ${result.error}`));
           log(chalk.yellow("\nReview output:\n"));
           console.log(reviewText);
         }
       } else {
         log(chalk.bold.green("Review Complete\n"));
         console.log(reviewText);
-        log(
-          chalk.dim(
-            "\nTip: Use --post to automatically post this review to the PR/MR",
-          ),
-        );
+        if (!localMode) {
+          log(chalk.dim("\nTip: Use --post to automatically post this review to the PR/MR"));
+        }
       }
 
       // Push metrics to Prometheus Pushgateway (best-effort, never fails the run)
