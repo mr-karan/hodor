@@ -4,6 +4,60 @@ import type { MrMetadata, NoteEntry } from "./types.js";
 
 const DEFAULT_GITLAB_HOST = "gitlab.com";
 
+/**
+ * Parse concatenated JSON arrays from `glab api --paginate`.
+ * glab outputs `[...][...][...]` — one array per page, no delimiter.
+ * We track bracket depth (respecting strings/escapes) to find each
+ * top-level array, parse them individually, and merge with flat().
+ */
+export function parseGlabPaginatedJson(raw: string): Array<Record<string, unknown>> {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+
+  const chunks: string[] = [];
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let start = -1;
+
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\" && inString) {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+
+    if (ch === "[") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === "]") {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        chunks.push(trimmed.slice(start, i + 1));
+        start = -1;
+      }
+    }
+  }
+
+  const results: Array<Record<string, unknown>> = [];
+  for (const chunk of chunks) {
+    const parsed = JSON.parse(chunk) as Array<Record<string, unknown>>;
+    if (Array.isArray(parsed)) {
+      results.push(...parsed);
+    }
+  }
+  return results;
+}
+
 export class GitLabAPIError extends Error {
   constructor(message: string) {
     super(message);
@@ -79,11 +133,15 @@ export async function fetchGitlabMrInfo(
 
   if (options?.includeComments) {
     try {
-      const notes = await execJson<Array<Record<string, unknown>>>(
+      // glab --paginate concatenates JSON arrays across pages (e.g., `[...][...]`).
+      // Parse each top-level array separately and merge, avoiding regex on raw JSON
+      // which could corrupt string values containing `][`.
+      const { stdout: rawNotes } = await exec(
         "glab",
         ["api", `projects/${encoded}/merge_requests/${mrNumber}/notes`, "--paginate"],
         { env },
       );
+      const notes = parseGlabPaginatedJson(rawNotes);
       metadata.Notes = notes.map((n) => ({
         body: (n.body as string) ?? "",
         author: n.author as { username?: string; name?: string } | undefined,
