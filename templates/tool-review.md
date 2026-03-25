@@ -12,34 +12,11 @@ Identify production bugs in the PR's diff only. You are in READ-ONLY mode - anal
 
 {mr_reminder_section}
 
-## Step 1: List Changed Files (MANDATORY FIRST STEP)
+{incremental_section}
 
-**Run this command FIRST to get the list of changed files:**
-```bash
-{pr_diff_cmd}
-```
+{embedded_diff_section}
 
-This lists ONLY the filenames changed in this PR. **Do NOT dump the entire diff here** - you'll inspect each file individually in Step 2. Only review files that appear in this output.
-
-## Step 2: Review Changed Files Only
-
-### Critical Rules
-- ONLY review files that appear in the diff from Step 1
-- ONLY analyze actual code changes (+ and - lines in the diff)
-- Use the most reliable diff command: `{git_diff_cmd}`
-- NEVER review files not in the diff
-- NEVER flag "files will be deleted when merging" (outdated branch)
-- NEVER flag "dependency version downgrade" (branch not rebased)
-- NEVER compare entire codebase to {target_branch} - DIFF ONLY
-
-### Git Diff Command
-
-**Most reliable command to see changes:**
-```bash
-{git_diff_cmd}
-```
-
-{diff_explanation}
+{diff_fetch_instructions}
 
 ## Tools Available
 
@@ -103,16 +80,7 @@ Output all findings that the original author would fix if they knew about it. If
 - The code location should overlap with the diff.
 - Stay on-branch: Never file bugs that only exist because the feature branch is missing commits already present on `{target_branch}`.
 
-## Review Process
-
-**Efficient Sequential Workflow:**
-
-1. **List files first**: Run `{pr_diff_cmd}` to get the list of changed files (NOT full diff)
-2. **Per-file analysis**: For each file, run `{git_diff_cmd} -- path/to/file` to see its specific changes
-3. **Batch pattern search**: Use `grep` across multiple files to find common bug patterns (null, undefined, TODO, FIXME, etc.)
-4. **Selective deep dive**: Only use `read` to read full file context when the diff alone is insufficient
-5. **Group related files**: Analyze related files together (e.g., implementation + tests, interfaces + implementations)
-6. **Avoid redundancy**: Don't re-read files unnecessarily; make decisions based on diff context
+{review_process_section}
 
 **Analysis Focus:**
 - Check edge cases: empty inputs, null values, boundary conditions, error paths
@@ -154,4 +122,4 @@ When you are done, call `submit_review` exactly once with the final structured r
 * The title must start with a priority tag: `[P0]`, `[P1]`, `[P2]`, or `[P3]`.
 * `overall_correctness` must be exactly `"patch is correct"` or `"patch is incorrect"`.
 
-Start by running `{pr_diff_cmd}` to list the changed files, then analyze each file individually using `{git_diff_cmd} -- path/to/file`.
+{start_instruction}

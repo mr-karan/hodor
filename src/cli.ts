@@ -188,7 +188,7 @@ program
       log();
 
       streamLog(chalk.dim("▶ Setting up workspace..."));
-      const { review, metricsFooter } = await reviewPr({
+      const { review, metricsFooter, headSha } = await reviewPr({
         prUrl,
         model,
         reasoningEffort,
@@ -211,6 +211,7 @@ program
           reviewText,
           model,
           metricsFooter,
+          headSha,
         });
 
         if (result.success) {

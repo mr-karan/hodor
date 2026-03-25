@@ -17,7 +17,8 @@ function formatDuration(seconds: number): string {
 }
 
 export function formatMetricsMarkdown(metrics: ReviewMetrics): string {
-  const parts = [`in \`${tok(metrics.inputTokens)}\``];
+  const totalInput = metrics.inputTokens + metrics.cacheReadTokens;
+  const parts = [`in \`${tok(totalInput)}\``];
   if (metrics.cacheReadTokens > 0) {
     parts.push(`cached \`${tok(metrics.cacheReadTokens)}\``);
   }
@@ -43,12 +44,12 @@ export function printMetrics(metrics: ReviewMetrics, stream: NodeJS.WritableStre
   write("");
   write(dim("─".repeat(50)));
 
-  // Tokens
-  let tokenLine = `${dim("Tokens:")}  ${bold(tok(metrics.inputTokens))} in`;
+  // Tokens — inputTokens may be only fresh tokens (SDK reports cache hits separately)
+  const totalInput = metrics.inputTokens + metrics.cacheReadTokens;
+  let tokenLine = `${dim("Tokens:")}  ${bold(tok(totalInput))} in`;
   if (metrics.cacheReadTokens > 0) {
-    const fresh = metrics.inputTokens - metrics.cacheReadTokens;
-    const hitPct = ((metrics.cacheReadTokens / metrics.inputTokens) * 100).toFixed(0);
-    tokenLine += dim(` (${tok(metrics.cacheReadTokens)} cached ${hitPct}% · ${tok(fresh)} fresh)`);
+    const hitPct = ((metrics.cacheReadTokens / totalInput) * 100).toFixed(0);
+    tokenLine += dim(` (${tok(metrics.cacheReadTokens)} cached ${hitPct}% · ${tok(metrics.inputTokens)} fresh)`);
   }
   tokenLine += `  ${bold(tok(metrics.outputTokens))} out`;
   tokenLine += dim(`  (${tok(metrics.totalTokens)} total)`);
