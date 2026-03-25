@@ -9,89 +9,85 @@ Hodor runs as a stateful agent with tools (`bash`, `grep`, `read`, `git diff`) t
 ## Install
 
 ```bash
-# npx (zero install, always latest)
+# Just run it (zero install, always latest)
 npx @mrkaran/hodor <PR_URL>
 
-# Global install
+# Or install globally
 npm install -g @mrkaran/hodor
+```
 
-# Docker
-docker pull ghcr.io/mr-karan/hodor:latest
+Docker images are also available at `ghcr.io/mr-karan/hodor:latest` for CI environments.
 
-# From source
-git clone https://github.com/mr-karan/hodor && cd hodor
-bun install && bun run build
+## Setup
+
+```bash
+# Set an API key for your LLM provider
+export ANTHROPIC_API_KEY=sk-...   # Anthropic (default)
+export OPENAI_API_KEY=sk-...      # OpenAI
+export AWS_PROFILE=default        # AWS Bedrock (no API key needed)
+
+# For posting reviews as comments
+gh auth login                     # GitHub
+glab auth login                   # GitLab
 ```
 
 ## Usage
 
 ```bash
 # Review a GitHub PR
-hodor https://github.com/owner/repo/pull/123
+npx @mrkaran/hodor https://github.com/owner/repo/pull/123
 
 # Review a GitLab MR (including self-hosted)
-hodor https://gitlab.example.com/org/project/-/merge_requests/42
+npx @mrkaran/hodor https://gitlab.example.com/org/project/-/merge_requests/42
 
-# Post the review as a comment
-hodor <PR_URL> --post
+# Post the review as a PR/MR comment
+npx @mrkaran/hodor <PR_URL> --post
 
 # Review local changes (no PR URL needed)
-hodor --local                              # diff against origin/main
-hodor --local --diff-against HEAD~1        # diff against specific ref
-hodor --local --diff-against feature-branch
+npx @mrkaran/hodor --local                         # diff against origin/main
+npx @mrkaran/hodor --local --diff-against HEAD~1   # diff against specific ref
 
 # Use a different model
-hodor <PR_URL> --model openai/gpt-5
-hodor <PR_URL> --model bedrock/converse/anthropic.claude-sonnet-4-5-v2
+npx @mrkaran/hodor <PR_URL> --model openai/gpt-5
+npx @mrkaran/hodor <PR_URL> --model bedrock/converse/anthropic.claude-sonnet-4-5-v2
 
 # Extended reasoning for complex PRs
-hodor <PR_URL> --reasoning-effort high
-hodor <PR_URL> --ultrathink
+npx @mrkaran/hodor <PR_URL> --reasoning-effort high
 
 # Custom review instructions
-hodor <PR_URL> --prompt "Focus on SQL injection and auth bypasses"
-hodor <PR_URL> --prompt-file .hodor/security-review.md
+npx @mrkaran/hodor <PR_URL> --prompt "Focus on SQL injection and auth bypasses"
 
 # Verbose mode (watch the agent think)
-hodor <PR_URL> -v
+npx @mrkaran/hodor <PR_URL> -v
 ```
 
-**Docker:**
-```bash
-docker run --rm \
-  -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
-  -e GITHUB_TOKEN=$GITHUB_TOKEN \
-  ghcr.io/mr-karan/hodor:latest \
-  https://github.com/owner/repo/pull/123 --post
-```
+> If you installed globally with `npm install -g`, replace `npx @mrkaran/hodor` with `hodor`.
 
-## Configuration
-
-### CLI Flags
+## CLI Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model` | `anthropic/claude-sonnet-4-5` | LLM model (Anthropic, OpenAI, or Bedrock) |
+| `--model` | `anthropic/claude-sonnet-4-5-20250929` | LLM model (Anthropic, OpenAI, or Bedrock) |
 | `--reasoning-effort` | – | Extended thinking: `low`, `medium`, `high` |
 | `--ultrathink` | Off | Maximum reasoning effort |
-| `--local` | Off | Review local changes (no PR URL required) |
-| `--diff-against` | `origin/main` | Git ref to diff against in local mode |
-| `--post` | Off | Post review comment to GitHub/GitLab |
+| `--local` | Off | Review local git changes (no PR URL required) |
+| `--diff-against` | `origin/main` | Git ref to diff against in `--local` mode |
+| `--post` | Off | Post review as a comment on the PR/MR |
 | `--prompt` | – | Append custom instructions to the review prompt |
-| `--prompt-file` | – | Replace the review prompt entirely |
-| `--workspace` | Temp dir | Workspace directory (re-use for faster multi-PR reviews) |
+| `--prompt-file` | – | Use a custom prompt file |
+| `--workspace` | Temp dir | Workspace directory (reuse for faster multi-PR reviews) |
 | `--bedrock-tags` | – | JSON cost allocation tags for AWS Bedrock |
-| `--prometheus-push` | – | Push metrics to a Prometheus Pushgateway URL |
+| `--prometheus-push` | – | Push review metrics to a Prometheus Pushgateway |
 | `-v, --verbose` | Off | Stream agent reasoning and tool calls |
 
-### Environment Variables
+## Environment Variables
 
 | Variable | Purpose |
 |----------|---------|
 | `ANTHROPIC_API_KEY` | Claude API key |
 | `OPENAI_API_KEY` | OpenAI API key |
-| `LLM_API_KEY` | Generic fallback (used when provider-specific key is not set) |
-| `GITHUB_TOKEN` / `GITLAB_TOKEN` | Post comments to PRs/MRs (only with `--post`) |
+| `LLM_API_KEY` | Generic fallback (when provider-specific key is not set) |
+| `GITHUB_TOKEN` / `GITLAB_TOKEN` | Post comments to PRs/MRs (with `--post`) |
 | `AWS_PROFILE` or `AWS_ACCESS_KEY_ID` | AWS Bedrock auth (no API key needed) |
 
 ## CI/CD
@@ -129,19 +125,19 @@ hodor-review:
   extends: .hodor-review
 ```
 
-See [AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md) for advanced workflows.
+See [AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md) for advanced CI workflows.
 
 ## Token Optimization
 
 Hodor automatically optimizes token usage:
 
-- **Diff embedding**: For PRs under 200KB, the diff is embedded directly in the prompt, cutting turns from ~60 to ~5.
-- **Incremental reviews**: On re-runs, only reviews changes since the last hodor comment (detected via SHA markers).
-- **Compaction**: SDK auto-summarizes older turns when context grows too large.
+- **Diff embedding**: For PRs under 200KB, the diff is embedded directly in the prompt, cutting agent turns from ~60 to ~5.
+- **Incremental reviews**: On re-runs, only reviews changes since the last hodor comment (detected via SHA markers in posted comments).
+- **Compaction**: SDK auto-summarizes older conversation turns when context grows too large.
 
 ## Skills
 
-Hodor discovers repository-specific review guidelines from `.pi/skills/` or `.hodor/skills/`. Create a skill file to enforce conventions:
+Hodor discovers repository-specific review guidelines from `.pi/skills/` or `.hodor/skills/`:
 
 ```bash
 mkdir -p .hodor/skills/review-guidelines
