@@ -9,10 +9,16 @@ Hodor runs as a stateful agent with tools (`bash`, `grep`, `read`, `git diff`) t
 ## Install
 
 ```bash
-# Docker (recommended)
+# npx (zero install, always latest)
+npx @mrkaran/hodor <PR_URL>
+
+# Global install
+npm install -g @mrkaran/hodor
+
+# Docker
 docker pull ghcr.io/mr-karan/hodor:latest
 
-# Or from source
+# From source
 git clone https://github.com/mr-karan/hodor && cd hodor
 bun install && bun run build
 ```
