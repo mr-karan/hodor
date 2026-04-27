@@ -4,7 +4,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 import "dotenv/config";
 
-import { detectPlatform, postReviewComment, postReviewStructured, reviewPr } from "./agent.js";
+import { detectPlatform, parsePrUrl, postReviewComment, postReviewStructured, reviewPr } from "./agent.js";
 import type { AgentProgressEvent } from "./agent.js";
 import type { PostCommentResult } from "./types.js";
 import { renderMarkdown } from "./render.js";
@@ -307,6 +307,41 @@ program
             metricsFooter,
             headSha,
           });
+
+          if (platform === "gitlab" && commitStatus) {
+            try {
+              const { getGitlabMrDiffRefs, postGitlabCommitStatus } = await import("./gitlab.js");
+              const parsed = parsePrUrl(prUrl);
+              const diffRefs = await getGitlabMrDiffRefs(
+                parsed.owner,
+                parsed.repo,
+                parsed.prNumber,
+                parsed.host,
+              );
+              const hasBlocking = review.findings.some((finding) => finding.priority <= 1);
+              await postGitlabCommitStatus(
+                parsed.owner,
+                parsed.repo,
+                diffRefs.head_sha,
+                hasBlocking ? "failed" : "success",
+                parsed.host,
+                {
+                  description: hasBlocking
+                    ? `${review.findings.filter((finding) => finding.priority <= 1).length} blocking issue(s) found`
+                    : review.findings.length > 0
+                      ? `${review.findings.length} non-blocking issue(s)`
+                      : "No issues found",
+                },
+              );
+            } catch (err) {
+              result = {
+                success: false,
+                platform: "gitlab",
+                mrNumber: parsePrUrl(prUrl).prNumber,
+                error: `Failed to post commit status: ${err instanceof Error ? err.message : err}`,
+              };
+            }
+          }
         }
 
         if (result.success) {

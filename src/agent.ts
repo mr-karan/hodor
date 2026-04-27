@@ -133,6 +133,16 @@ export function parsePrUrl(prUrl: string): ParsedPrUrl {
 
 function formatLocationRelative(loc: { absolute_file_path: string; line_range: { start: number; end: number } }): string {
   let filePath = loc.absolute_file_path;
+
+  const ciProjectDir = process.env.CI_PROJECT_DIR?.replace(/\/+$/, "");
+  if (ciProjectDir && filePath.startsWith(`${ciProjectDir}/`)) {
+    filePath = filePath.slice(ciProjectDir.length + 1);
+  } else if (process.env.CI_PROJECT_PATH) {
+    const escapedPath = process.env.CI_PROJECT_PATH.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const projectMatch = filePath.match(new RegExp(`/builds/${escapedPath}/(.+)`));
+    if (projectMatch) filePath = projectMatch[1];
+  }
+
   const buildsMatch = filePath.match(/\/builds\/[^/]+\/[^/]+\/(.+)/);
   if (buildsMatch) filePath = buildsMatch[1];
   else if (filePath.includes("/workspace/")) filePath = filePath.slice(filePath.indexOf("/workspace/") + "/workspace/".length);
@@ -321,6 +331,10 @@ export async function postReviewStructured(opts: {
 
   let inlineCount = 0;
   let failedCount = 0;
+  let summaryPosted = false;
+  let draftsPublished = false;
+  let statusPosted = false;
+  const postingErrors: string[] = [];
 
   for (const finding of review.findings) {
     const relPath = formatLocationRelative(finding.code_location);
@@ -353,7 +367,9 @@ export async function postReviewStructured(opts: {
       );
       inlineCount++;
     } catch (err) {
-      logger.warn(`Failed to create inline note for "${finding.title}": ${err instanceof Error ? err.message : err}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(`Failed to create inline note for "${finding.title}": ${msg}`);
+      postingErrors.push(`inline note: ${msg}`);
       failedCount++;
     }
   }
@@ -373,8 +389,11 @@ export async function postReviewStructured(opts: {
         summaryBody,
         parsed.host,
       );
+      summaryPosted = true;
     } catch (err) {
-      logger.warn(`Failed to post summary comment: ${err instanceof Error ? err.message : err}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(`Failed to post summary comment: ${msg}`);
+      postingErrors.push(`summary comment: ${msg}`);
     }
   }
 
@@ -387,8 +406,11 @@ export async function postReviewStructured(opts: {
         parsed.host,
       );
       logger.info("Published all draft notes");
+      draftsPublished = true;
     } catch (err) {
-      logger.warn(`Failed to bulk publish draft notes: ${err instanceof Error ? err.message : err}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(`Failed to bulk publish draft notes: ${msg}`);
+      postingErrors.push(`draft publish: ${msg}`);
     }
   }
 
@@ -410,8 +432,11 @@ export async function postReviewStructured(opts: {
         { description: desc },
       );
       logger.info(`Posted commit status: ${state}`);
+      statusPosted = true;
     } catch (err) {
-      logger.warn(`Failed to post commit status: ${err instanceof Error ? err.message : err}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(`Failed to post commit status: ${msg}`);
+      postingErrors.push(`commit status: ${msg}`);
     }
   }
 
@@ -425,6 +450,17 @@ export async function postReviewStructured(opts: {
     } catch (err) {
       logger.warn(`Failed to write code quality report: ${err instanceof Error ? err.message : err}`);
     }
+  }
+
+  const visibleResult = summaryPosted || (inlineCount > 0 && draftsPublished) || statusPosted;
+  const expectedInlineComments = reviewStyle === "inline" && review.findings.length > 0;
+  if ((postingErrors.length > 0 && !visibleResult) || (expectedInlineComments && inlineCount === 0)) {
+    return {
+      success: false,
+      platform: "gitlab",
+      mrNumber: parsed.prNumber,
+      error: postingErrors[0] ?? "No GitLab inline comments were created",
+    };
   }
 
   return {

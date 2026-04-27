@@ -118,7 +118,7 @@ hodor-review:
     - glab auth login --hostname $CI_SERVER_HOST --token $GITLAB_TOKEN
   script:
     - MR_URL="${CI_PROJECT_URL}/-/merge_requests/${CI_MERGE_REQUEST_IID}"
-    - hodor "$MR_URL" --model anthropic/claude-sonnet-4-5 --post --code-quality gl-code-quality-report.json --commit-status
+    - bun run /app/dist/cli.js "$MR_URL" --model anthropic/claude-sonnet-4-5 --post --code-quality gl-code-quality-report.json --commit-status
   artifacts:
     reports:
       codequality: gl-code-quality-report.json
