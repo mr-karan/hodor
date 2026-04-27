@@ -22,9 +22,10 @@ Docker images are also available at `ghcr.io/mr-karan/hodor:latest` for CI envir
 
 ```bash
 # Set an API key for your LLM provider
-export ANTHROPIC_API_KEY=sk-...   # Anthropic (default)
-export OPENAI_API_KEY=sk-...      # OpenAI
-export AWS_PROFILE=default        # AWS Bedrock (no API key needed)
+export ANTHROPIC_API_KEY=sk-...     # Anthropic (default)
+export OPENAI_API_KEY=sk-...        # OpenAI
+export OPENROUTER_API_KEY=sk-or-... # OpenRouter (e.g., Kimi K2.6)
+export AWS_PROFILE=default          # AWS Bedrock (no API key needed)
 
 # For posting reviews as comments
 gh auth login                     # GitHub
@@ -98,7 +99,7 @@ Local mode:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model` | `anthropic/claude-sonnet-4-5-20250929` | LLM model (Anthropic, OpenAI, or Bedrock) |
+| `--model` | `anthropic/claude-sonnet-4-5-20250929` | LLM model as `provider/model-id`. Recommended: Anthropic, OpenAI, Bedrock, OpenRouter. Other pi-ai providers (e.g., Mistral, Gemini, xAI, Groq) are best-effort. See [docs/MODELS.md](./docs/MODELS.md). |
 | `--reasoning-effort` | – | Extended thinking: `low`, `medium`, `high` |
 | `--ultrathink` | Off | Maximum reasoning effort |
 | `--local` | Off | Review local git changes (no PR URL required) |
@@ -117,11 +118,15 @@ Local mode:
 |----------|---------|
 | `ANTHROPIC_API_KEY` | Claude API key |
 | `OPENAI_API_KEY` | OpenAI API key |
+| `OPENROUTER_API_KEY` | OpenRouter API key (for `openrouter/...` models, e.g. `openrouter/moonshotai/kimi-k2.6`) |
+| Provider-specific keys | For best-effort pi-ai providers, use the env var pi-ai expects (e.g. `MISTRAL_API_KEY`, `GEMINI_API_KEY`, `XAI_API_KEY`, `GROQ_API_KEY`) |
 | `LLM_API_KEY` | Generic fallback (when provider-specific key is not set) |
 | `GITHUB_TOKEN` / `GITLAB_TOKEN` | Post comments to GitHub PRs / GitLab MRs (with `--post`) |
 | `GITEA_TOKEN` / `FORGEJO_TOKEN` | Read private repos and post comments on Gitea/Forgejo PRs |
 | `GITEA_HOST` / `FORGEJO_HOST` | Hostname for Gitea/Forgejo when not inferable from a full PR URL |
 | `AWS_PROFILE` or `AWS_ACCESS_KEY_ID` | AWS Bedrock auth (no API key needed) |
+
+See [docs/MODELS.md](./docs/MODELS.md) for the full model/provider matrix and [docs/OPENROUTER.md](./docs/OPENROUTER.md) for an end-to-end Kimi K2.6 example.
 
 ## Gitea / Forgejo
 

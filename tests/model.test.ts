@@ -5,6 +5,9 @@ describe("parseModelString", () => {
   it.each([
     ["anthropic/claude-sonnet-4-5", "anthropic", "claude-sonnet-4-5"],
     ["openai/gpt-5-2025-08-07", "openai", "gpt-5-2025-08-07"],
+    ["openrouter/moonshotai/kimi-k2.6", "openrouter", "moonshotai/kimi-k2.6"],
+    ["mistral/mistral-large-latest", "mistral", "mistral-large-latest"],
+    ["google/gemini-2.5-pro", "google", "gemini-2.5-pro"],
     ["bedrock/anthropic.claude-opus-4-6-v1", "amazon-bedrock", "anthropic.claude-opus-4-6-v1"],
     ["bedrock/converse/arn:aws:bedrock:ap-south-1:123:inference-profile/xyz", "amazon-bedrock", "arn:aws:bedrock:ap-south-1:123:inference-profile/xyz"],
     ["claude-sonnet-4-5", "anthropic", "claude-sonnet-4-5"],
@@ -18,6 +21,10 @@ describe("parseModelString", () => {
 
   it("throws on empty string", () => {
     expect(() => parseModelString("")).toThrow();
+  });
+
+  it("throws on unknown provider prefixes", () => {
+    expect(() => parseModelString("unknown/foo")).toThrow(/Unsupported provider/);
   });
 });
 
@@ -38,6 +45,9 @@ describe("getApiKey", () => {
     delete process.env.LLM_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.MISTRAL_API_KEY;
+    delete process.env.GEMINI_API_KEY;
     delete process.env.AWS_ACCESS_KEY_ID;
     delete process.env.AWS_SECRET_ACCESS_KEY;
     delete process.env.AWS_REGION_NAME;
@@ -63,10 +73,15 @@ describe("getApiKey", () => {
     expect(getApiKey("anthropic/claude-sonnet-4-5")).toBe("sk-anthropic");
   });
 
-  it("falls back to Anthropic first without model", () => {
+  it("prefers OpenRouter key for OpenRouter models", () => {
     process.env.OPENAI_API_KEY = "sk-openai";
-    process.env.ANTHROPIC_API_KEY = "sk-anthropic";
-    expect(getApiKey()).toBe("sk-anthropic");
+    process.env.OPENROUTER_API_KEY = "sk-or";
+    expect(getApiKey("openrouter/moonshotai/kimi-k2.6")).toBe("sk-or");
+  });
+
+  it("uses pi-ai provider env vars for registry-backed providers", () => {
+    process.env.MISTRAL_API_KEY = "sk-mistral";
+    expect(getApiKey("mistral/mistral-large-latest")).toBe("sk-mistral");
   });
 
   it("returns null for bedrock", () => {
@@ -75,5 +90,11 @@ describe("getApiKey", () => {
 
   it("throws when no key available", () => {
     expect(() => getApiKey("openai/gpt-4o")).toThrow();
+  });
+
+  it("throws without a model instead of guessing a provider", () => {
+    process.env.OPENAI_API_KEY = "sk-openai";
+    process.env.ANTHROPIC_API_KEY = "sk-anthropic";
+    expect(() => getApiKey()).toThrow();
   });
 });

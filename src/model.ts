@@ -1,7 +1,13 @@
+import { getEnvApiKey, getProviders } from "@mariozechner/pi-ai";
+
 export interface ParsedModel {
   provider: string;
   modelId: string;
 }
+
+const PROVIDER_ALIASES: Record<string, string> = {
+  bedrock: "amazon-bedrock",
+};
 
 /**
  * Parse a model string like "anthropic/claude-sonnet-4-5" into { provider, modelId }.
@@ -13,21 +19,36 @@ export function parseModelString(model: string): ParsedModel {
 
   const parts = trimmed.split("/");
 
-  // Explicit provider prefix
+  // Explicit provider prefix. Hodor delegates provider/model support to pi-ai's
+  // registry instead of maintaining its own curated allow-list. Keep `bedrock`
+  // as a friendlier alias for pi-ai's `amazon-bedrock` provider name.
   if (parts.length >= 2) {
     const first = parts[0].toLowerCase();
-    if (first === "bedrock") {
-      // Map "bedrock" → "amazon-bedrock" (pi-ai SDK convention)
-      // Strip optional "converse/" prefix from model ID
+    const provider = PROVIDER_ALIASES[first] ?? first;
+    const knownProviders = new Set<string>(getProviders());
+
+    if (provider === "amazon-bedrock") {
+      // Strip optional "converse/" prefix from model ID for backwards compatibility.
       let modelId = parts.slice(1).join("/");
       if (modelId.startsWith("converse/")) {
         modelId = modelId.slice("converse/".length);
       }
-      return { provider: "amazon-bedrock", modelId };
+      return { provider, modelId };
     }
-    if (["anthropic", "openai"].includes(first)) {
-      return { provider: first, modelId: parts.slice(1).join("/") };
+
+    if (knownProviders.has(provider)) {
+      return { provider, modelId: parts.slice(1).join("/") };
     }
+
+    // OpenRouter adds new model slugs frequently. Allow it even if the installed
+    // pi-ai registry ever lags; agent.ts has a conservative OpenRouter fallback.
+    if (provider === "openrouter") {
+      return { provider, modelId: parts.slice(1).join("/") };
+    }
+
+    throw new Error(
+      `Unsupported provider "${first}". Use a pi-ai provider prefix such as anthropic/, openai/, openrouter/, google/, mistral/, xai/, or bedrock/.`,
+    );
   }
 
   // Auto-detect provider from bare model name
@@ -75,8 +96,8 @@ export function mapReasoningEffort(
  *
  * Priority:
  * 1. LLM_API_KEY (universal override)
- * 2. Provider-specific key (ANTHROPIC_API_KEY, OPENAI_API_KEY)
- * 3. Fallback to any available key
+ * 2. Provider-specific key known by pi-ai (ANTHROPIC_API_KEY, OPENAI_API_KEY,
+ *    OPENROUTER_API_KEY, etc.)
  *
  * Returns null for bedrock (uses AWS credentials).
  */
@@ -89,21 +110,13 @@ export function getApiKey(model?: string): string | null {
   if (model) {
     const { provider } = parseModelString(model);
     if (provider === "amazon-bedrock") return null;
-    if (provider === "anthropic") {
-      const key = process.env.ANTHROPIC_API_KEY;
-      if (key) return key;
-    }
-    if (provider === "openai") {
-      const key = process.env.OPENAI_API_KEY;
-      if (key) return key;
-    }
+    const key = getEnvApiKey(provider);
+    if (key) return key;
   }
 
-  // Priority 3: Fallback
-  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
-  if (process.env.OPENAI_API_KEY) return process.env.OPENAI_API_KEY;
-
   throw new Error(
-    "No LLM API key found. Please set one of: LLM_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY",
+    model
+      ? `No API key found for provider "${parseModelString(model).provider}". Set the provider-specific environment variable or LLM_API_KEY.`
+      : "No LLM API key found. Please set LLM_API_KEY or a provider-specific environment variable.",
   );
 }
