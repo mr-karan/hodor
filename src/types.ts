@@ -60,6 +60,7 @@ export interface ReviewFinding {
     absolute_file_path: string;
     line_range: { start: number; end: number };
   };
+  suggestion?: string;
 }
 
 export interface ReviewOutput {

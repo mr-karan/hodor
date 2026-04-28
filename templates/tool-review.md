@@ -103,7 +103,8 @@ When you are done, call `submit_review` exactly once with the final structured r
       "code_location": {
         "absolute_file_path": "<absolute file path>",
         "line_range": {"start": <int>, "end": <int>}
-      }
+      },
+      "suggestion": "<optional: exact replacement code for the flagged line range>"
     }
   ],
   "overall_correctness": "patch is correct" | "patch is incorrect",
@@ -121,5 +122,6 @@ When you are done, call `submit_review` exactly once with the final structured r
 * Use absolute file paths (for example, `/workspace/path/to/file.py`) not relative paths.
 * The title must start with a priority tag: `[P0]`, `[P1]`, `[P2]`, or `[P3]`.
 * `overall_correctness` must be exactly `"patch is correct"` or `"patch is incorrect"`.
+* If you can suggest a specific code fix for a finding, include the replacement code in the `suggestion` field. This should be the exact code to replace the lines in `line_range`, without markdown fences or extra context. Omit `suggestion` if no specific fix is available.
 
 {start_instruction}

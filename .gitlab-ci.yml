@@ -64,13 +64,19 @@ hodor-review:
     - MR_URL="${CI_PROJECT_URL}/-/merge_requests/${CI_MERGE_REQUEST_IID}"
     - echo "🔍 Reviewing MR: $MR_URL"
 
-    # Run Hodor review (uses authenticated glab session)
+    # Run Hodor review with inline comments + code quality artifact
     - |
+      HODOR_ARGS="$MR_URL --model $HODOR_MODEL --post --code-quality gl-code-quality-report.json --commit-status"
       if [ "$HODOR_VERBOSE" = "true" ]; then
-        hodor "$MR_URL" --model "$HODOR_MODEL" --post --verbose
+        hodor $HODOR_ARGS --verbose
       else
-        hodor "$MR_URL" --model "$HODOR_MODEL" --post
+        hodor $HODOR_ARGS
       fi
+
+  artifacts:
+    reports:
+      codequality: gl-code-quality-report.json
+    when: always
 
   allow_failure: true
   timeout: 15m

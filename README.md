@@ -2,7 +2,7 @@
 
 # Hodor
 
-> Agentic code reviewer for GitHub PRs, GitLab MRs, and local diffs. Powered by the [pi-coding-agent](https://github.com/badlogic/pi-mono) SDK.
+> Agentic code reviewer for GitHub PRs, GitLab MRs, Gitea/Forgejo PRs, and local diffs. Powered by the [pi-coding-agent](https://github.com/badlogic/pi-mono) SDK.
 
 Hodor runs as a stateful agent with tools (`bash`, `grep`, `read`, `git diff`) to autonomously analyze code changes, find bugs, and post structured reviews.
 
@@ -105,6 +105,9 @@ Local mode:
 | `--local` | Off | Review local git changes (no PR URL required) |
 | `--diff-against` | `origin/main` | Git ref to diff against in `--local` mode |
 | `--post` | Off | Post review as a comment on the PR/MR |
+| `--review-style` | `hybrid` | GitLab posting style: `summary`, `inline`, or `hybrid` |
+| `--code-quality` | – | Write a CodeClimate JSON artifact for GitLab code quality reports |
+| `--commit-status` | Off | Post a pass/fail commit status to the GitLab MR head SHA |
 | `--prompt` | – | Append custom instructions to the review prompt |
 | `--prompt-file` | – | Use a custom prompt file |
 | `--workspace` | Temp dir | Workspace directory (reuse for faster multi-PR reviews) |
@@ -171,16 +174,34 @@ jobs:
 ### GitLab CI
 
 ```yaml
-include:
-  - project: 'commons/gitlab-templates'
-    ref: master
-    file: '/hodor/.gitlab-ci-template.yml'
+# .gitlab-ci.yml
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
 
 hodor-review:
-  extends: .hodor-review
+  stage: test
+  image:
+    name: ghcr.io/mr-karan/hodor:latest
+    entrypoint: [""]
+  variables:
+    HODOR_MODEL: "anthropic/claude-sonnet-4-5-20250929"
+  before_script:
+    - glab auth login --hostname $CI_SERVER_HOST --token $GITLAB_TOKEN
+  script:
+    - MR_URL="${CI_PROJECT_URL}/-/merge_requests/${CI_MERGE_REQUEST_IID}"
+    - bun run /app/dist/cli.js "$MR_URL" --model "$HODOR_MODEL" --post --code-quality gl-code-quality-report.json --commit-status
+  artifacts:
+    reports:
+      codequality: gl-code-quality-report.json
+    when: always
+  allow_failure: true
+  timeout: 15m
 ```
 
-See [AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md) for advanced CI workflows.
+This posts inline comments on the diff, a summary note, a pass/fail commit status, and a code quality report visible in the MR widget.
+
+See [AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md) for advanced workflows.
 
 ## Token Optimization
 
@@ -221,6 +242,40 @@ bun run test         # Run tests
 bun run dev -- <url> # Run from source
 ```
 
+---
+
+## Architecture
+
+Hodor is written in TypeScript and runs on [Bun](https://bun.sh). Key components:
+
+| Module | Purpose |
+|--------|---------|
+| `src/cli.ts` | Commander.js CLI entry point |
+| `src/agent.ts` | Core review orchestration, URL parsing, comment posting |
+| `src/workspace.ts` | CI detection, repo cloning, branch checkout |
+| `src/prompt.ts` | Prompt template building and interpolation |
+| `src/model.ts` | Model string parsing, API key resolution |
+| `src/gitlab.ts` | GitLab API via `glab` CLI (comments, inline notes, draft notes, commit status) |
+| `src/github.ts` | GitHub API via `gh` CLI |
+| `src/render.ts` | JSON review output → markdown rendering |
+| `src/codequality.ts` | CodeClimate JSON artifact for GitLab code quality widget |
+| `src/metrics.ts` | Token usage and cost formatting |
+| `templates/` | Review prompt template (JSON schema) |
+
+The agent runtime is provided by [`@mariozechner/pi-coding-agent`](https://github.com/badlogic/pi-mono) with [`@mariozechner/pi-ai`](https://github.com/badlogic/pi-mono) for LLM access. The agent session gets read-only tools (bash, read, grep, find, ls) and a review prompt, then autonomously analyzes the PR.
+
+---
+
+## Learn More
+
+### Hodor Documentation
+- **[SKILLS.md](./docs/SKILLS.md)** - Creating repository-specific review guidelines
+- **[AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md)** - Advanced CI/CD workflows
+
+### Contributing
+Found a bug? Want to add a feature? Open an issue at https://github.com/mr-karan/hodor/issues.
+
+---
 ## License
 
 MIT

@@ -4,11 +4,13 @@
 
 import type { ReviewFinding, ReviewOutput } from "./types.js";
 
+export const HODOR_REVIEW_MARKER = "<!-- hodor-review -->";
+
 /**
  * Render a ReviewOutput into clean markdown for posting as a PR/MR comment.
  */
 export function renderMarkdown(review: ReviewOutput): string {
-  const lines: string[] = [];
+  const lines: string[] = [HODOR_REVIEW_MARKER];
 
   // Group findings by priority
   const critical: ReviewFinding[] = []; // P0, P1
@@ -70,6 +72,43 @@ export function renderMarkdown(review: ReviewOutput): string {
   lines.push("");
   if (review.overall_explanation) {
     lines.push(`**Explanation**: ${review.overall_explanation}`);
+  }
+
+  return lines.join("\n").trimEnd() + "\n";
+}
+
+export function renderSummaryMarkdown(review: ReviewOutput): string {
+  const lines: string[] = [HODOR_REVIEW_MARKER];
+
+  const counts = { critical: 0, important: 0, minor: 0 };
+  for (const f of review.findings) {
+    if (f.priority <= 1) counts.critical++;
+    else if (f.priority === 2) counts.important++;
+    else counts.minor++;
+  }
+
+  lines.push("");
+  lines.push("| Category | Count |");
+  lines.push("| --- | ---: |");
+  lines.push(`| Critical (P0/P1) | ${counts.critical} |`);
+  lines.push(`| Important (P2) | ${counts.important} |`);
+  lines.push(`| Minor (P3) | ${counts.minor} |`);
+
+  const isCorrect = review.overall_correctness === "patch is correct";
+  lines.push("");
+  lines.push(`**Overall verdict**: ${isCorrect ? "Patch is correct" : "Patch has blocking issues"}`);
+  lines.push("");
+  lines.push(`**Explanation**: ${review.overall_explanation}`);
+
+  if (review.findings.length > 0) {
+    lines.push("");
+    lines.push("| Finding | Location | Priority |");
+    lines.push("| --- | --- | --- |");
+    for (const f of review.findings) {
+      const loc = formatLocation(f.code_location);
+      const safeTitle = f.title.replace(/\|/g, "\\|");
+      lines.push(`| ${safeTitle} | \`${loc}\` | P${f.priority} |`);
+    }
   }
 
   return lines.join("\n").trimEnd() + "\n";

@@ -114,15 +114,71 @@ hodor-review:
     name: ghcr.io/mr-karan/hodor:latest
     entrypoint: [""]
   stage: test
+  before_script:
+    - glab auth login --hostname $CI_SERVER_HOST --token $GITLAB_TOKEN
   script:
-    - git config --global --add safe.directory $CI_PROJECT_DIR
-    - export MR_URL="${CI_PROJECT_URL}/-/merge_requests/${CI_MERGE_REQUEST_IID}"
-    - bun run /app/dist/cli.js "$MR_URL" --model anthropic/claude-sonnet-4-5 --post
+    - MR_URL="${CI_PROJECT_URL}/-/merge_requests/${CI_MERGE_REQUEST_IID}"
+    - bun run /app/dist/cli.js "$MR_URL" --model anthropic/claude-sonnet-4-5 --post --code-quality gl-code-quality-report.json --commit-status
+  artifacts:
+    reports:
+      codequality: gl-code-quality-report.json
+    when: always
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   allow_failure: true
-  timeout: 30m
+  timeout: 15m
 ```
+
+## GitLab Advanced Integration
+
+When posting to GitLab MRs, Hodor uses several API features for a rich review experience.
+
+### Inline Diff Comments
+
+By default (`--review-style hybrid`), Hodor posts each finding as an inline comment pinned to the exact line in the MR diff view. Reviewers see annotations right where the issue is, not buried in a wall-of-text comment.
+
+If a finding's line can't be mapped to the diff (e.g., the line wasn't changed), Hodor skips that inline comment gracefully and includes it in the summary instead.
+
+### Suggestion Blocks
+
+When the agent can suggest a specific fix, it includes it as a GitLab suggestion block. This renders an "Apply suggestion" button in the MR — the author clicks it, and GitLab commits the fix automatically. No copy-paste needed.
+
+### Review Styles
+
+Control how Hodor posts reviews with `--review-style`:
+
+| Style | Summary Note | Inline Comments | Best For |
+|-------|-------------|-----------------|----------|
+| `hybrid` (default) | Compact table with counts and verdict | Per-finding on diff lines | Most teams |
+| `inline` | None | Per-finding on diff lines | Minimal noise |
+| `summary` | Full markdown (legacy behavior) | None | Compatibility |
+
+### Draft Notes (Batch Publishing)
+
+Hodor creates all inline comments as draft notes first, then publishes them atomically. This means the MR author receives **one notification** for the entire review, not one per finding.
+
+### Commit Status
+
+With `--commit-status`, Hodor posts a pass/fail status check on the MR head SHA:
+- **Success**: No P0 or P1 (critical) findings
+- **Failed**: One or more P0/P1 findings
+
+This integrates with GitLab's merge checks — you can configure your project to block merging when Hodor flags critical issues.
+
+### Code Quality Artifact
+
+With `--code-quality gl-code-quality-report.json`, Hodor writes a CodeClimate-format JSON file. When declared as a CI artifact, GitLab renders the findings inline in the MR diff widget natively — no API calls required.
+
+```yaml
+artifacts:
+  reports:
+    codequality: gl-code-quality-report.json
+  when: always
+```
+
+### Comment Cleanup
+
+On re-review (e.g., after a force-push), Hodor automatically deletes its previous comments before posting new ones. This keeps the MR timeline clean — no stale review noise.
 
 ## Configuration Options
 
