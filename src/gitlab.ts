@@ -1,6 +1,9 @@
 import { exec, execJson } from "./utils/exec.js";
 import { logger } from "./utils/logger.js";
 import type { MrMetadata, NoteEntry } from "./types.js";
+import { HODOR_REVIEW_MARKER } from "./render.js";
+
+export { HODOR_REVIEW_MARKER };
 
 export interface DiffRefs {
   base_sha: string;
@@ -9,6 +12,16 @@ export interface DiffRefs {
 }
 
 const DEFAULT_GITLAB_HOST = "gitlab.com";
+
+/**
+ * Match notes Hodor itself created. We require the marker to appear at the very start
+ * of the note (after optional whitespace). This avoids deleting/resolving human notes
+ * that quote the marker incidentally (e.g., in a code block discussing Hodor itself).
+ */
+function isHodorNote(body: unknown, marker = HODOR_REVIEW_MARKER): boolean {
+  if (typeof body !== "string") return false;
+  return body.trimStart().startsWith(marker);
+}
 
 /**
  * Parse concatenated JSON arrays from `glab api --paginate`.
@@ -56,9 +69,13 @@ export function parseGlabPaginatedJson(raw: string): Array<Record<string, unknow
 
   const results: Array<Record<string, unknown>> = [];
   for (const chunk of chunks) {
-    const parsed = JSON.parse(chunk) as Array<Record<string, unknown>>;
-    if (Array.isArray(parsed)) {
-      results.push(...parsed);
+    try {
+      const parsed = JSON.parse(chunk) as Array<Record<string, unknown>>;
+      if (Array.isArray(parsed)) results.push(...parsed);
+    } catch (err) {
+      logger.warn(
+        `Skipping malformed glab pagination chunk: ${err instanceof Error ? err.message : err}`,
+      );
     }
   }
   return results;
@@ -183,10 +200,10 @@ export async function postGitlabMrComment(
         `projects/${encoded}/merge_requests/${mrNumber}/notes`,
         "--method",
         "POST",
-        "--field",
-        `body=${body}`,
+        "--input",
+        "-",
       ],
-      { env },
+      { env, input: JSON.stringify({ body }) },
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -486,7 +503,7 @@ export async function cleanupHodorComments(
   repo: string,
   mrNumber: number | string,
   host?: string | null,
-  marker = "<!-- hodor-review -->",
+  marker = HODOR_REVIEW_MARKER,
 ): Promise<number> {
   const encoded = encodedProjectPath(owner, repo);
   const env = glabEnv(host);
@@ -508,17 +525,13 @@ export async function cleanupHodorComments(
     throw new GitLabAPIError(`Failed to list notes for MR !${mrNumber}: ${msg}`);
   }
 
-  const matchedNotes = notes.filter((note) => {
-    const body = note.body;
-    return typeof body === "string" && body.includes(marker);
-  });
+  const matchedNotes = notes.filter((note) => isHodorNote(note.body, marker));
 
   let deletedCount = 0;
+  let failedCount = 0;
   for (const note of matchedNotes) {
     const noteId = note.id;
-    if (typeof noteId !== "number") {
-      continue;
-    }
+    if (typeof noteId !== "number") continue;
 
     try {
       await exec(
@@ -532,11 +545,18 @@ export async function cleanupHodorComments(
         { env },
       );
       deletedCount += 1;
-      logger.debug(`Deleted GitLab MR note ${noteId} for marker ${marker}`);
+      logger.debug(`Deleted GitLab MR note ${noteId}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new GitLabAPIError(`Failed to delete note ${noteId} on MR !${mrNumber}: ${msg}`);
+      // Inline (discussion) notes can't be deleted via /notes/{id}; log and continue
+      // so one stale note doesn't abort the whole cleanup.
+      logger.warn(`Skipping note ${noteId} on MR !${mrNumber}: ${msg}`);
+      failedCount += 1;
     }
+  }
+
+  if (failedCount > 0) {
+    logger.warn(`Cleanup left ${failedCount} note(s) undeleted on MR !${mrNumber}`);
   }
 
   return deletedCount;
@@ -547,7 +567,7 @@ export async function listHodorDiscussions(
   repo: string,
   mrNumber: number | string,
   host?: string | null,
-  marker = "<!-- hodor-review -->",
+  marker = HODOR_REVIEW_MARKER,
 ): Promise<
   Array<{
     discussionId: string;
@@ -605,7 +625,7 @@ export async function listHodorDiscussions(
       const noteObj = note as Record<string, unknown>;
       const noteId = noteObj.id;
       const body = noteObj.body;
-      if (typeof noteId !== "number" || typeof body !== "string" || !body.includes(marker)) {
+      if (typeof noteId !== "number" || typeof body !== "string" || !isHodorNote(body, marker)) {
         continue;
       }
 

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ReviewOutput, ReviewFinding, ReviewPriority } from "./types.js";
+import { relativizeWorkspacePath } from "./utils/path.js";
 
 const PRIORITY_TO_SEVERITY: Record<ReviewPriority, string> = {
   0: "critical",
@@ -7,24 +8,6 @@ const PRIORITY_TO_SEVERITY: Record<ReviewPriority, string> = {
   2: "minor",
   3: "info",
 };
-
-function relativizePath(absolutePath: string, workspacePrefix?: string): string {
-  if (workspacePrefix) {
-    const prefix = workspacePrefix.endsWith("/") ? workspacePrefix : workspacePrefix + "/";
-    if (absolutePath.startsWith(prefix)) {
-      return absolutePath.slice(prefix.length);
-    }
-  }
-
-  // Fallback: try common workspace patterns
-  const buildsMatch = absolutePath.match(/\/builds\/[^/]+\/[^/]+\/(.+)/);
-  if (buildsMatch) return buildsMatch[1];
-  const workspaceMatch = absolutePath.match(/\/workspace\/(.+)/);
-  if (workspaceMatch) return workspaceMatch[1];
-  const hodorMatch = absolutePath.replace(/^.*\/hodor-review-[^/]+\//, "");
-  if (hodorMatch !== absolutePath) return hodorMatch;
-  return absolutePath;
-}
 
 function fingerprint(finding: ReviewFinding, relativePath: string): string {
   const input = `${finding.title}:${relativePath}:${finding.code_location.line_range.start}`;
@@ -36,7 +19,7 @@ export function formatCodeQualityReport(
   workspacePrefix?: string,
 ): string {
   const issues = review.findings.map((finding) => {
-    const relPath = relativizePath(finding.code_location.absolute_file_path, workspacePrefix);
+    const relPath = relativizeWorkspacePath(finding.code_location.absolute_file_path, workspacePrefix);
     return {
       type: "issue",
       check_name: `hodor/P${finding.priority}`,
