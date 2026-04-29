@@ -85,6 +85,31 @@ describe("GitLab paginated API helpers", () => {
     expect(execMock.mock.calls[1][1].some((arg: string) => arg.includes("/notes/101"))).toBe(true);
   });
 
+  it("cleanupHodorComments matches notes with hodor:sha prefix before the marker", async () => {
+    // Re-review path prepends `<!-- hodor:sha:abc -->` before the canonical marker.
+    // Cleanup must still recognize that as a hodor-owned summary.
+    execMock.mockResolvedValueOnce({
+      stdout: JSON.stringify([
+        {
+          id: 200,
+          body:
+            "<!-- hodor:sha:abc1234 -->\n<!-- hodor-review -->\n\nReview summary",
+        },
+        {
+          id: 201,
+          body: "<!-- hodor:sha:def5678 -->\nNo canonical marker — should be skipped",
+        },
+      ]),
+      stderr: "",
+    });
+    execMock.mockResolvedValueOnce({ stdout: "", stderr: "" });
+
+    const { cleanupHodorComments } = await import("../src/gitlab.js");
+    await expect(cleanupHodorComments("acme", "app", 42, "gitlab.example.com")).resolves.toBe(1);
+    expect(execMock.mock.calls[1][1].some((arg: string) => arg.includes("/notes/200"))).toBe(true);
+    expect(execMock.mock.calls.every((c) => !c[1].some((a: string) => a.includes("/notes/201")))).toBe(true);
+  });
+
   it("cleanupHodorComments warns and continues on per-note delete failures", async () => {
     execMock.mockResolvedValueOnce({
       stdout: JSON.stringify([

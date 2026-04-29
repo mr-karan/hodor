@@ -14,13 +14,24 @@ export interface DiffRefs {
 const DEFAULT_GITLAB_HOST = "gitlab.com";
 
 /**
- * Match notes Hodor itself created. We require the marker to appear at the very start
- * of the note (after optional whitespace). This avoids deleting/resolving human notes
- * that quote the marker incidentally (e.g., in a code block discussing Hodor itself).
+ * Match notes Hodor itself created. The body must begin with a hodor-owned HTML
+ * comment (either `<!-- hodor-review -->` or a sibling like `<!-- hodor:sha:... -->`
+ * that hodor prepends to summary comments). Anchoring at the start avoids deleting
+ * human notes that quote the marker incidentally (e.g., a code block discussing hodor).
  */
+const HODOR_NOTE_PREFIX_RE = /^\s*<!--\s*hodor[-:]/;
+
 function isHodorNote(body: unknown, marker = HODOR_REVIEW_MARKER): boolean {
   if (typeof body !== "string") return false;
-  return body.trimStart().startsWith(marker);
+  // Default fast-path: body starts with the canonical marker (allowing leading whitespace).
+  if (body.trimStart().startsWith(marker)) return true;
+  // Accept hodor's own SHA prefix, e.g. `<!-- hodor:sha:abc -->\n<!-- hodor-review -->\n...`
+  if (marker === HODOR_REVIEW_MARKER && HODOR_NOTE_PREFIX_RE.test(body)) {
+    // Require the canonical marker to appear somewhere in the body so we don't
+    // resolve unrelated `<!-- hodor:foo -->` notes that aren't review summaries.
+    return body.includes(HODOR_REVIEW_MARKER);
+  }
+  return false;
 }
 
 /**

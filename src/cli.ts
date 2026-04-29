@@ -253,7 +253,7 @@ program
       log();
 
       streamLog(chalk.dim("▶ Setting up workspace..."));
-      const { review, metricsFooter, headSha, metrics } = await reviewPr({
+      const { review, metricsFooter, headSha, metrics, workspacePath } = await reviewPr({
         prUrl: localMode ? undefined : prUrl,
         model,
         reasoningEffort,
@@ -275,7 +275,11 @@ program
         try {
           const { formatCodeQualityReport } = await import("./codequality.js");
           const { writeFileSync } = await import("node:fs");
-          writeFileSync(codeQuality, formatCodeQualityReport(review, process.env.CI_PROJECT_DIR), "utf-8");
+          writeFileSync(
+            codeQuality,
+            formatCodeQualityReport(review, process.env.CI_PROJECT_DIR ?? workspacePath),
+            "utf-8",
+          );
           log(chalk.dim(`Wrote code quality report to ${codeQuality}`));
         } catch (err) {
           log(chalk.yellow(`Failed to write code quality report: ${err}`));
@@ -298,6 +302,7 @@ program
             reviewStyle: reviewStyle ?? "hybrid",
             commitStatus,
             headSha,
+            workspacePath,
           });
         } else {
           result = await postReviewComment({

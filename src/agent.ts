@@ -133,8 +133,11 @@ export function parsePrUrl(prUrl: string): ParsedPrUrl {
   );
 }
 
-function formatLocationRelative(loc: { absolute_file_path: string }): string {
-  return relativizeWorkspacePath(loc.absolute_file_path);
+function formatLocationRelative(
+  loc: { absolute_file_path: string },
+  workspacePath?: string | null,
+): string {
+  return relativizeWorkspacePath(loc.absolute_file_path, workspacePath ?? undefined);
 }
 
 /**
@@ -251,6 +254,7 @@ export async function postReviewStructured(opts: {
   commitStatus?: boolean;
   codeQualityPath?: string | null;
   headSha?: string | null;
+  workspacePath?: string | null;
 }): Promise<PostCommentResult> {
   const {
     prUrl,
@@ -261,6 +265,7 @@ export async function postReviewStructured(opts: {
     commitStatus,
     codeQualityPath,
     headSha,
+    workspacePath,
   } = opts;
 
   const platform = detectPlatform(prUrl);
@@ -352,7 +357,7 @@ export async function postReviewStructured(opts: {
   const postingErrors: string[] = [];
 
   for (const finding of review.findings) {
-    const relPath = formatLocationRelative(finding.code_location);
+    const relPath = formatLocationRelative(finding.code_location, workspacePath);
     const priorityTag = `[P${finding.priority}]`;
     const title = /^\[P[0-3]\]/.test(finding.title)
       ? finding.title
@@ -445,7 +450,7 @@ export async function postReviewStructured(opts: {
   if (codeQualityPath) {
     try {
       const { formatCodeQualityReport } = await import("./codequality.js");
-      const report = formatCodeQualityReport(review, undefined);
+      const report = formatCodeQualityReport(review, workspacePath ?? undefined);
       const { writeFileSync } = await import("node:fs");
       writeFileSync(codeQualityPath, report, "utf-8");
       logger.info(`Wrote code quality report to ${codeQualityPath}`);
@@ -485,7 +490,7 @@ export async function reviewPr(opts: {
   bedrockTags?: Record<string, string> | null;
   localMode?: boolean;
   diffAgainst?: string;
-}): Promise<{ review: ReviewOutput; metricsFooter: string | null; headSha: string | null; metrics: ReviewMetrics }> {
+}): Promise<{ review: ReviewOutput; metricsFooter: string | null; headSha: string | null; metrics: ReviewMetrics; workspacePath: string }> {
   const {
     prUrl,
     model = "anthropic/claude-sonnet-4-5-20250929",
@@ -1015,7 +1020,7 @@ export async function reviewPr(opts: {
       metricsFooter = formatMetricsMarkdown(metrics);
     }
 
-    return { review, metricsFooter, headSha, metrics };
+    return { review, metricsFooter, headSha, metrics, workspacePath };
   } finally {
     // Restore mutated env vars
     for (const [key, val] of Object.entries(envSnapshot)) {
