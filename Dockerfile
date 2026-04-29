@@ -53,7 +53,7 @@ RUN curl -fsSL "https://github.com/cli/cli/releases/download/v2.83.0/gh_2.83.0_l
     rm -rf /tmp/gh*
 
 # Install GitLab CLI (glab)
-RUN curl -fsSL "https://gitlab.com/gitlab-org/cli/-/releases/v1.77.0/downloads/glab_1.77.0_linux_amd64.tar.gz" -o /tmp/glab.tar.gz && \
+RUN curl -fsSL "https://gitlab.com/gitlab-org/cli/-/releases/v1.93.0/downloads/glab_1.93.0_linux_amd64.tar.gz" -o /tmp/glab.tar.gz && \
     tar -xzf /tmp/glab.tar.gz -C /tmp && \
     mv /tmp/bin/glab /usr/local/bin/ && \
     rm -rf /tmp/glab* /tmp/bin
