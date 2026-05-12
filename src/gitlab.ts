@@ -211,6 +211,8 @@ export async function postGitlabMrComment(
         `projects/${encoded}/merge_requests/${mrNumber}/notes`,
         "--method",
         "POST",
+        "-H",
+        "Content-Type: application/json",
         "--input",
         "-",
       ],
@@ -377,7 +379,7 @@ export async function postGitlabInlineComment(
   try {
     return await execJson<Record<string, unknown>>(
       "glab",
-      ["api", endpoint, "--method", "POST", "--input", "-"],
+      ["api", endpoint, "--method", "POST", "-H", "Content-Type: application/json", "--input", "-"],
       {
         env,
         input: JSON.stringify(payload),
@@ -424,7 +426,7 @@ export async function createGitlabDraftNote(
   try {
     return await execJson<Record<string, unknown>>(
       "glab",
-      ["api", endpoint, "--method", "POST", "--input", "-"],
+      ["api", endpoint, "--method", "POST", "-H", "Content-Type: application/json", "--input", "-"],
       {
         env,
         input: JSON.stringify(payload),
@@ -499,10 +501,14 @@ export async function postGitlabCommitStatus(
   }
 
   try {
-    await exec("glab", ["api", endpoint, "--method", "POST", "--input", "-"], {
-      env,
-      input: JSON.stringify(payload),
-    });
+    await exec(
+      "glab",
+      ["api", endpoint, "--method", "POST", "-H", "Content-Type: application/json", "--input", "-"],
+      {
+        env,
+        input: JSON.stringify(payload),
+      },
+    );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new GitLabAPIError(`Failed to post commit status for ${sha}: ${msg}`);
@@ -683,6 +689,8 @@ export async function resolveGitlabDiscussions(
           `projects/${encoded}/merge_requests/${mrNumber}/discussions/${discussionId}`,
           "--method",
           "PUT",
+          "-H",
+          "Content-Type: application/json",
           "--input",
           "-",
         ],
