@@ -3,7 +3,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "version": "0.6.0-rc.6",
+  "version": "0.6.0-rc.7",
   "description": "AI-powered code review agent that finds bugs, security issues, and logic errors in pull requests",
   "type": "module",
   "main": "dist/index.js",

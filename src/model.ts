@@ -1,4 +1,5 @@
 import { getEnvApiKey, getProviders } from "@earendil-works/pi-ai";
+import type { ThinkingLevel } from "@earendil-works/pi-ai";
 
 export interface ParsedModel {
   provider: string;
@@ -76,19 +77,38 @@ export function parseModelString(model: string): ParsedModel {
  */
 export function mapReasoningEffort(
   effort: string | undefined,
-): "low" | "medium" | "high" | undefined {
+): ThinkingLevel | undefined {
   if (!effort) return undefined;
   switch (effort.toLowerCase()) {
+    case "minimal":
+      return "minimal";
     case "low":
       return "low";
     case "medium":
       return "medium";
     case "high":
-    case "xhigh":
       return "high";
+    case "xhigh":
+      return "xhigh";
     default:
       return undefined;
   }
+}
+
+function normalizeModelMatchValue(value: string): string {
+  return value.toLowerCase().replace(/[\s_.:/]+/g, "-");
+}
+
+export function getDefaultReasoningEffortForModel(model: {
+  id?: string;
+  name?: string;
+}): ThinkingLevel | undefined {
+  const values = [model.id, model.name].filter((value): value is string => Boolean(value));
+  const isOpus47 = values
+    .map(normalizeModelMatchValue)
+    .some((value) => value.includes("opus-4-7"));
+
+  return isOpus47 ? "xhigh" : undefined;
 }
 
 /**

@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { parseModelString, mapReasoningEffort, getApiKey } from "../src/model.js";
+import {
+  getApiKey,
+  getDefaultReasoningEffortForModel,
+  mapReasoningEffort,
+  parseModelString,
+} from "../src/model.js";
 
 describe("parseModelString", () => {
   it.each([
@@ -31,12 +36,33 @@ describe("parseModelString", () => {
 describe("mapReasoningEffort", () => {
   it.each([
     [undefined, undefined],
+    ["minimal", "minimal"],
     ["low", "low"],
     ["medium", "medium"],
     ["high", "high"],
-    ["xhigh", "high"],
+    ["xhigh", "xhigh"],
   ] as const)("maps %s to %s", (input, expected) => {
     expect(mapReasoningEffort(input as string | undefined)).toBe(expected);
+  });
+});
+
+describe("getDefaultReasoningEffortForModel", () => {
+  it("defaults Claude Opus 4.7 to xhigh", () => {
+    expect(
+      getDefaultReasoningEffortForModel({
+        id: "global.anthropic.claude-opus-4-7",
+        name: "Claude Opus 4.7",
+      }),
+    ).toBe("xhigh");
+  });
+
+  it("does not default other Opus versions to xhigh", () => {
+    expect(
+      getDefaultReasoningEffortForModel({
+        id: "global.anthropic.claude-opus-4-6-v1",
+        name: "Claude Opus 4.6",
+      }),
+    ).toBeUndefined();
   });
 });
 

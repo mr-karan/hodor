@@ -72,6 +72,16 @@ Always include the matching numeric priority field in the `submit_review` payloa
 
 Output all findings that the original author would fix if they knew about it. If there is no finding that a person would definitely love to see and fix, prefer outputting no findings. Do not stop at the first qualifying finding. Continue until you've listed every qualifying finding.
 
+### Contract Trace Checklist
+
+For changes that introduce or modify routes, handlers, API parameters, auth/session/token logic, database schema or queries, cache keys, config contracts, or public interfaces:
+
+1. Trace each externally supplied value through the layers it crosses: route/query/body/header → handler extraction and parsing → service method signature → DB/query/cache key → tests or mocks.
+2. Compare semantic identity, not just variable names. Examples: public `user_id` string vs internal integer primary key, client/account ID vs database UID, token key vs full token value, app ID vs API key, enum label vs stored code, timestamp units/timezones, paise vs rupees.
+3. Read the minimal adjacent convention needed when a changed file depends on it: nearby routes for the same resource, model/schema definitions, query files, auth middleware, or changed tests.
+4. Treat a semantic mismatch as a concrete bug when production input will pass one kind of value but the changed code stores, queries, authorizes, or tests a different kind.
+5. Keep this scoped to the diff. Do not browse unrelated code unless it defines a contract that the changed lines directly depend on.
+
 ### Additional Guidelines
 
 - Ignore trivial style unless it obscures meaning or violates documented standards.
@@ -118,6 +128,8 @@ When you are done, call `submit_review` exactly once with the final structured r
 * Do not print the review as normal assistant text.
 * Do not wrap the payload in markdown fences when calling the tool.
 * If there are no findings, submit `"findings": []`.
+* If `findings` is non-empty, `overall_correctness` must be `"patch is incorrect"`.
+* If `findings` is empty, `overall_correctness` must be `"patch is correct"`.
 * Every finding must include `title`, `body`, `priority`, and `code_location`.
 * Use absolute file paths (for example, `/workspace/path/to/file.py`) not relative paths.
 * The title must start with a priority tag: `[P0]`, `[P1]`, `[P2]`, or `[P3]`.

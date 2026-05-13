@@ -30,7 +30,7 @@ program
   )
   .option(
     "--reasoning-effort <level>",
-    "Reasoning effort level: low, medium, high, xhigh",
+    "Reasoning effort level: minimal, low, medium, high, xhigh",
   )
   .option("-v, --verbose", "Enable verbose logging", false)
   .option(
@@ -122,7 +122,7 @@ program
 
     // Handle ultrathink
     if (ultrathink) {
-      reasoningEffort = "high";
+      reasoningEffort = "xhigh";
     }
 
     // Parse Bedrock cost allocation tags

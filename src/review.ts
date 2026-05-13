@@ -51,6 +51,13 @@ export function validateReviewOutput(review: ReviewOutput): ReviewOutput {
     throw new Error("submit_review overall_explanation must be non-empty");
   }
 
+  if (review.findings.length > 0 && review.overall_correctness !== "patch is incorrect") {
+    throw new Error('submit_review overall_correctness must be "patch is incorrect" when findings is non-empty');
+  }
+  if (review.findings.length === 0 && review.overall_correctness !== "patch is correct") {
+    throw new Error('submit_review overall_correctness must be "patch is correct" when findings is empty');
+  }
+
   for (const [index, finding] of review.findings.entries()) {
     const label = `submit_review finding ${index + 1}`;
     if (finding.title.trim().length === 0) {
