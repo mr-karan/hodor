@@ -654,6 +654,14 @@ export async function listHodorDiscussions(
       const filePath = typeof position?.new_path === "string" ? position.new_path : undefined;
       const line = typeof position?.new_line === "number" ? position.new_line : undefined;
 
+      // Skip non-resolvable threads. GitLab wraps the summary-comment note in a
+      // discussion envelope with `resolvable: false`; PUT resolved=true on those
+      // returns 403, independent of the caller's project role. Only diff/review
+      // threads (resolvable: true) belong in the resolver's queue.
+      if (noteObj.resolvable !== true) {
+        continue;
+      }
+
       results.push({
         discussionId,
         noteId,

@@ -40,6 +40,7 @@ describe("GitLab paginated API helpers", () => {
             {
               id: 11,
               body: "<!-- hodor-review --> inline",
+              resolvable: true,
               resolved: false,
               position: { new_path: "src/app.ts", new_line: 9 },
             },
@@ -60,6 +61,54 @@ describe("GitLab paginated API helpers", () => {
         resolved: false,
         filePath: "src/app.ts",
         line: 9,
+      },
+    ]);
+  });
+
+  it("listHodorDiscussions skips non-resolvable summary-comment wrappers", async () => {
+    // GitLab wraps the summary comment (a regular MR note) in a discussion
+    // envelope with resolvable=false. PUT resolved=true on it returns 403
+    // regardless of caller role — so listHodorDiscussions must drop it.
+    execMock.mockResolvedValueOnce({
+      stdout: JSON.stringify([
+        {
+          id: "summary-wrapper",
+          notes: [
+            {
+              id: 100,
+              body: "<!-- hodor:sha:abc1234 -->\n<!-- hodor-review --> summary",
+              resolvable: false,
+              resolved: null,
+            },
+          ],
+        },
+        {
+          id: "diff-thread",
+          notes: [
+            {
+              id: 101,
+              body: "<!-- hodor-review --> inline finding",
+              resolvable: true,
+              resolved: false,
+              position: { new_path: "src/app.ts", new_line: 42 },
+            },
+          ],
+        },
+      ]),
+      stderr: "",
+    });
+
+    const { listHodorDiscussions } = await import("../src/gitlab.js");
+    const result = await listHodorDiscussions("acme", "app", 42, "gitlab.example.com");
+
+    expect(result).toEqual([
+      {
+        discussionId: "diff-thread",
+        noteId: 101,
+        body: "<!-- hodor-review --> inline finding",
+        resolved: false,
+        filePath: "src/app.ts",
+        line: 42,
       },
     ]);
   });
