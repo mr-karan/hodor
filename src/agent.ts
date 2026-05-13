@@ -812,7 +812,11 @@ export async function reviewPr(opts: {
       cwd: workspacePath,
       model: piModel,
       thinkingLevel,
-      tools: ["read", "bash", "grep", "find", "ls"],
+      // pi v0.74 filters customTools through the same allowlist as built-ins
+      // (see _refreshToolRegistry in @earendil-works/pi-coding-agent's
+      // agent-session.ts). The submit_review custom tool must be named here
+      // or the LLM never sees it and the agent loop exits without calling it.
+      tools: ["read", "bash", "grep", "find", "ls", "submit_review"],
       customTools: [submitReviewTool],
       authStorage,
       modelRegistry,
