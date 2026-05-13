@@ -83,7 +83,7 @@ describe("parseGlabPaginatedJson", () => {
   it("handles real-world glab note with HTML and markdown", () => {
     const note = {
       id: 71780,
-      body: 'added 1 commit\n\n<ul><li>25a479e4 - chore: remove unused deploy/ folder</li></ul>\n\n[Compare with previous version](/kite/alerts/-/merge_requests/78/diffs?diff_id=68132)',
+      body: 'added 1 commit\n\n<ul><li>25a479e4 - chore: remove unused deploy/ folder</li></ul>\n\n[Compare with previous version](/acme/alerts/-/merge_requests/78/diffs?diff_id=68132)',
       system: true,
       author: { username: "karan" },
     };

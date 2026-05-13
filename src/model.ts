@@ -1,4 +1,4 @@
-import { getEnvApiKey, getProviders } from "@mariozechner/pi-ai";
+import { getEnvApiKey, getProviders } from "@earendil-works/pi-ai";
 
 export interface ParsedModel {
   provider: string;

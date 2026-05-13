@@ -81,22 +81,9 @@ jobs:
 
 ## Setup for GitLab CI
 
-### Quick Start (Recommended)
+### Quick Start
 
-Use the shared template from `commons/gitlab-templates`:
-
-```yaml
-# .gitlab-ci.yml
-include:
-  - project: 'commons/gitlab-templates'
-    ref: master
-    file: '/hodor/.gitlab-ci-template.yml'
-
-hodor-review:
-  extends: .hodor-review
-```
-
-This handles everything: Docker image, model mapping, API keys, and IMDS credential fetching for Bedrock.
+Add a Hodor job directly to your `.gitlab-ci.yml`, or wrap the manual setup below in your own shared CI template if you manage many repositories.
 
 ### Manual Setup
 

@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
-import type { Api, Model } from "@mariozechner/pi-ai";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import { logger } from "./utils/logger.js";
 import { exec } from "./utils/exec.js";
 import {
@@ -539,19 +539,15 @@ export async function reviewPr(opts: {
     ModelRegistry,
     SessionManager,
     SettingsManager,
-    createReadTool,
-    createBashTool,
-    createGrepTool,
-    createFindTool,
-    createLsTool,
-  } = await import("@mariozechner/pi-coding-agent");
+    getAgentDir,
+  } = await import("@earendil-works/pi-coding-agent");
 
   // In-memory auth storage avoids loading ~/.pi/auth.json — env vars only.
   const authStorage = AuthStorage.inMemory();
   if (process.env.LLM_API_KEY) {
     authStorage.setRuntimeApiKey(parsed.provider, process.env.LLM_API_KEY);
   }
-  const modelRegistry = new ModelRegistry(authStorage);
+  const modelRegistry = ModelRegistry.inMemory(authStorage);
 
   // Resolve model — use registry for known models, construct manually for custom ARNs
   let piModel: Model<Api>;
@@ -753,9 +749,10 @@ export async function reviewPr(opts: {
     ].filter((p) => existsSync(p));
     const resourceLoader = new DefaultResourceLoader({
       cwd: workspacePath,
+      agentDir: getAgentDir(),
       settingsManager,
       systemPrompt: REVIEW_SYSTEM_PROMPT,
-      appendSystemPrompt: "",
+      appendSystemPrompt: [],
       noExtensions: true,
       noSkills: true,
       noPromptTemplates: true,
@@ -815,13 +812,7 @@ export async function reviewPr(opts: {
       cwd: workspacePath,
       model: piModel,
       thinkingLevel,
-      tools: [
-        createReadTool(workspacePath),
-        createBashTool(workspacePath),
-        createGrepTool(workspacePath),
-        createFindTool(workspacePath),
-        createLsTool(workspacePath),
-      ],
+      tools: ["read", "bash", "grep", "find", "ls"],
       customTools: [submitReviewTool],
       authStorage,
       modelRegistry,
