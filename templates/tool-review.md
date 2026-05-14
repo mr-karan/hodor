@@ -72,6 +72,16 @@ Always include the matching numeric priority field in the `submit_review` payloa
 
 Output all findings that the original author would fix if they knew about it. If there is no finding that a person would definitely love to see and fix, prefer outputting no findings. Do not stop at the first qualifying finding. Continue until you've listed every qualifying finding.
 
+### Contract Trace Checklist
+
+For changes that introduce or modify routes, handlers, API parameters, auth/session/token logic, database schema or queries, cache keys, config contracts, or public interfaces:
+
+1. Trace each externally supplied value through the layers it crosses: route/query/body/header → handler extraction and parsing → service method signature → DB/query/cache key → tests or mocks.
+2. Compare semantic identity, not just variable names. Examples: public `user_id` string vs internal integer primary key, client/account ID vs database UID, token key vs full token value, app ID vs API key, enum label vs stored code, timestamp units/timezones, paise vs rupees.
+3. Read the minimal adjacent convention needed when a changed file depends on it: nearby routes for the same resource, model/schema definitions, query files, auth middleware, or changed tests.
+4. Treat a semantic mismatch as a concrete bug when production input will pass one kind of value but the changed code stores, queries, authorizes, or tests a different kind.
+5. Keep this scoped to the diff. Do not browse unrelated code unless it defines a contract that the changed lines directly depend on.
+
 ### Additional Guidelines
 
 - Ignore trivial style unless it obscures meaning or violates documented standards.
@@ -82,10 +92,30 @@ Output all findings that the original author would fix if they knew about it. If
 
 {review_process_section}
 
-**Analysis Focus:**
-- Check edge cases: empty inputs, null values, boundary conditions, error paths
-- Think: What user input or race condition breaks this?
-- Focus on the changes (+ and - lines), use full file context sparingly
+### Conditional Review Lenses
+
+After identifying the changed files and diff hunks, classify which lenses apply. Apply only the relevant lenses below; do not run a broad style review just because a lens exists.
+
+- **Silent failure / error handling lens**: If the diff changes `try`/`catch`, rescue/recover blocks, fallback logic, retries, default values after failures, logging, metrics, or error returns, verify that failures are not swallowed, fallbacks are explicit and safe, and operators/users get enough context to debug the failing operation. Flag only concrete silent failures or misleading success paths.
+- **Critical test gap lens**: If the diff adds behavior, changes edge-case handling, alters async/concurrent behavior, or fixes a bug, compare changed behavior against changed or existing tests. Flag missing tests only when the gap is likely to let a meaningful regression through; do not require line coverage or tests for trivial code.
+- **Comment/documentation accuracy lens**: If the diff adds or modifies comments, docstrings, README snippets, API docs, or examples, verify the prose matches the changed code and commands. Flag comments or docs that are factually wrong, misleading, or likely to cause misuse; ignore harmless wording preferences.
+- **Type/API invariant lens**: If the diff adds or changes types, schemas, DTOs, request/response shapes, config objects, database models, enums, or public interfaces, check whether invalid states became representable, required validation moved out of the boundary, or consumers can now pass semantically wrong values. Prefer concrete invariant or compatibility bugs over abstract design advice.
+- **Simplification lens**: If the diff introduces complex branching, duplicated logic, clever one-liners, or unnecessary abstraction, mention it only when the complexity creates a plausible bug, hides an important invariant, or makes future fixes risky. Do not suggest cosmetic refactors.
+
+### Attack Surface Analysis
+
+When the diff touches the areas below, investigate them specifically — do not skip a category unless it is provably inapplicable to the changed code:
+
+- **Race conditions / TOCTOU**: Shared mutable state, non-atomic check-then-act sequences, missing locks or transactions
+- **Off-by-one / boundary errors**: Loop bounds, slice indices, size comparisons (`<` vs `<=`), pagination math, overflow
+- **Schema / contract drift**: Renamed fields, changed types, enum values, units (paise vs rupees, ms vs s), encoding assumptions, wire format changes
+- **Auth / permission gaps**: New routes or handlers missing auth middleware, privilege escalation paths, token or session misuse, missing ownership checks
+- **Rollback safety**: Migrations that cannot be rolled back cleanly, stateful side effects committed before DB transactions complete, partial-write failure modes
+- **Data loss / silent discard**: Early returns or swallowed errors that drop user data, leave state inconsistent, or suppress failures silently
+- **Observability gaps**: New error paths unreachable from logs or metrics, silent failures, missing structured context on errors
+- **Input validation**: Unvalidated user-supplied values crossing trust boundaries — SQL injection, shell injection, path traversal, template injection, deserialization
+
+Default to skepticism: a change that looks mechanical (rename, refactor, constant tweak) may still introduce one of these. If a category is provably inapplicable, skip it — but verify, don't assume.
 
 ## Final Submission
 
@@ -118,6 +148,8 @@ When you are done, call `submit_review` exactly once with the final structured r
 * Do not print the review as normal assistant text.
 * Do not wrap the payload in markdown fences when calling the tool.
 * If there are no findings, submit `"findings": []`.
+* If `findings` is non-empty, `overall_correctness` must be `"patch is incorrect"`.
+* If `findings` is empty, `overall_correctness` must be `"patch is correct"`.
 * Every finding must include `title`, `body`, `priority`, and `code_location`.
 * Use absolute file paths (for example, `/workspace/path/to/file.py`) not relative paths.
 * The title must start with a priority tag: `[P0]`, `[P1]`, `[P2]`, or `[P3]`.

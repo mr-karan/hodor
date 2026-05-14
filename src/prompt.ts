@@ -122,10 +122,13 @@ export function buildPrReviewPrompt(opts: {
     incrementalSection =
       "## Incremental Review Mode\n\n" +
       `This is a follow-up review. A previous hodor review was done at commit \`${previousReviewSha.slice(0, 8)}\`. ` +
-      "The diff below shows ONLY changes since that review. Focus on:\n" +
-      "1. New code changes introduced since the last review\n" +
-      "2. Whether previous findings (shown in MR notes above) are still applicable\n" +
-      "3. Do NOT re-report issues that are already mentioned in existing notes\n\n";
+      "The diff below shows ONLY changes since that review. Your job is to review that delta, not the whole MR again.\n\n" +
+      "Rules for incremental reviews:\n" +
+      "1. Only report bugs introduced or still affected by the new delta.\n" +
+      "2. Do not re-report issues that are already mentioned in existing notes unless the new delta changes the same code and the issue remains newly relevant.\n" +
+      "3. If the delta is small and self-contained, decide from the embedded diff and submit the review without broad repository exploration.\n" +
+      "4. For mechanical changes like route/path/string renames, verify the direct call sites or tests only when the diff itself leaves a concrete compatibility question.\n" +
+      "5. If the delta does not introduce a production bug, submit no findings.\n\n";
   }
 
   // Step 3c: Build conditional sections based on whether diff is embedded
@@ -154,11 +157,13 @@ export function buildPrReviewPrompt(opts: {
     reviewProcessSection =
       "## Review Process\n\n" +
       "1. Analyze the embedded diff above thoroughly\n" +
-      "2. Use `grep` to search for patterns if needed\n" +
+      "2. Use `grep` to search for patterns when needed\n" +
       "3. Use `read` only when surrounding context is essential\n" +
       "4. Submit your review using `submit_review`\n";
 
-    startInstruction = "Analyze the diff provided above, then submit your review using `submit_review`.";
+    startInstruction = previousReviewSha
+      ? "Analyze only the incremental diff provided above. If it is self-contained, submit your review without extra tool calls."
+      : "Analyze the diff provided above, then submit your review using `submit_review`.";
   } else {
     embeddedDiffSection = "";
 

@@ -27,6 +27,23 @@ describe("validateReviewOutput", () => {
     expect(validateReviewOutput(review)).toEqual(review);
   });
 
+  test("auto-corrects findings with a wrong verdict to 'patch is incorrect'", () => {
+    const review = makeReview({ overall_correctness: "patch is correct" });
+    const result = validateReviewOutput(review);
+    expect(result.overall_correctness).toBe("patch is incorrect");
+    expect(result.findings).toEqual(review.findings);
+  });
+
+  test("auto-corrects empty findings with a wrong verdict to 'patch is correct'", () => {
+    const review = makeReview({
+      findings: [],
+      overall_correctness: "patch is incorrect",
+      overall_explanation: "No issues were found.",
+    });
+    const result = validateReviewOutput(review);
+    expect(result.overall_correctness).toBe("patch is correct");
+  });
+
   test("rejects mismatched title and numeric priority", () => {
     const review = makeReview({
       findings: [

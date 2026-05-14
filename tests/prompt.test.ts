@@ -81,4 +81,30 @@ describe("buildPrReviewPrompt", () => {
     expect(prompt).toContain("Do not print the review as normal assistant text.");
     expect(prompt).not.toContain("Output ONLY the raw JSON object");
   });
+
+  it("includes cross-layer contract tracing guidance", () => {
+    const prompt = buildPrReviewPrompt({
+      prUrl: "https://github.com/acme/hodor/pull/42",
+      platform: "github",
+      targetBranch: "main",
+    });
+
+    expect(prompt).toContain("Contract Trace Checklist");
+    expect(prompt).toContain("public `user_id` string vs internal integer primary key");
+  });
+
+  it("includes conditional review lenses for focused specialist checks", () => {
+    const prompt = buildPrReviewPrompt({
+      prUrl: "https://github.com/acme/hodor/pull/42",
+      platform: "github",
+      targetBranch: "main",
+    });
+
+    expect(prompt).toContain("Conditional Review Lenses");
+    expect(prompt).toContain("Silent failure / error handling lens");
+    expect(prompt).toContain("Critical test gap lens");
+    expect(prompt).toContain("Comment/documentation accuracy lens");
+    expect(prompt).toContain("Type/API invariant lens");
+    expect(prompt).toContain("Simplification lens");
+  });
 });
