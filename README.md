@@ -112,7 +112,7 @@ Local mode:
 | `--prompt-file` | – | Use a custom prompt file |
 | `--workspace` | Temp dir | Workspace directory (reuse for faster multi-PR reviews) |
 | `--bedrock-tags` | – | JSON cost allocation tags for AWS Bedrock |
-| `--prometheus-push` | – | Push review metrics to a Prometheus Pushgateway |
+| `--prometheus-push` | – | Push review metrics to a Prometheus Pushgateway or VictoriaMetrics import endpoint |
 | `-v, --verbose` | Off | Stream agent reasoning and tool calls |
 
 ## Environment Variables
@@ -150,6 +150,18 @@ Fork PRs are checked out from the PR source repository when Gitea exposes the so
 
 ## CI/CD
 
+### Metrics in CI
+
+Hodor can push per-review metrics at the end of a CI run to either a Prometheus Pushgateway base URL or a VictoriaMetrics Prometheus import endpoint (`/api/v1/import/prometheus`):
+
+```bash
+hodor "$MR_OR_PR_URL" --prometheus-push "$METRICS_PUSH_URL"
+```
+
+In CI, set `METRICS_PUSH_URL` as a secret/variable and add `--prometheus-push "$METRICS_PUSH_URL"` to the Hodor command. Metrics are best-effort: push failures are logged as warnings and do not fail the review job.
+
+Each metric is labeled with `platform`, `model`, `verdict`, and for PR/MR URLs also `project` (`owner/repo`) and `mr_iid`/PR number. Exported metrics include token usage, cache read/write tokens, cache hit ratio, cost, turns, tool calls, duration, and findings by priority (`P0`–`P3`). A generic Grafana dashboard is available in [`docs/grafana/`](./docs/grafana/).
+
 ### GitHub Actions
 
 ```yaml
@@ -167,8 +179,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          METRICS_PUSH_URL: ${{ secrets.METRICS_PUSH_URL }} # optional
         run: |
-          bun run /app/dist/cli.js "https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}" --post
+          EXTRA_ARGS=""
+          if [ -n "${METRICS_PUSH_URL:-}" ]; then EXTRA_ARGS="--prometheus-push $METRICS_PUSH_URL"; fi
+          bun run /app/dist/cli.js "https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}" --post $EXTRA_ARGS
 ```
 
 ### GitLab CI
@@ -190,7 +205,10 @@ hodor-review:
     - glab auth login --hostname $CI_SERVER_HOST --token $GITLAB_TOKEN
   script:
     - MR_URL="${CI_PROJECT_URL}/-/merge_requests/${CI_MERGE_REQUEST_IID}"
-    - bun run /app/dist/cli.js "$MR_URL" --model "$HODOR_MODEL" --post --code-quality gl-code-quality-report.json --commit-status
+    - |
+      EXTRA_ARGS=""
+      if [ -n "${METRICS_PUSH_URL:-}" ]; then EXTRA_ARGS="--prometheus-push $METRICS_PUSH_URL"; fi
+      bun run /app/dist/cli.js "$MR_URL" --model "$HODOR_MODEL" --post --code-quality gl-code-quality-report.json --commit-status $EXTRA_ARGS
   artifacts:
     reports:
       codequality: gl-code-quality-report.json
@@ -213,14 +231,14 @@ Hodor automatically optimizes token usage:
 
 ## Skills
 
-Hodor discovers repository-specific review guidelines from `.pi/skills/` or `.hodor/skills/`:
+Hodor discovers repository-specific review guidelines from `.agents/skills/`, the cross-client Agent Skills convention:
 
 ```bash
-mkdir -p .hodor/skills/review-guidelines
+mkdir -p .agents/skills/review-guidelines
 ```
 
 ```markdown
-# .hodor/skills/review-guidelines/SKILL.md
+# .agents/skills/review-guidelines/SKILL.md
 ---
 name: review-guidelines
 description: Security and performance review checklist.

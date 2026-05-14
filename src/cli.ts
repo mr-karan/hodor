@@ -21,7 +21,7 @@ program
       "and analyzes the code using tools (gh, git, glab) for metadata fetching and comment posting.\n\n" +
       "For local reviews, use --local with --diff-against to review changes in your current git repository.",
   )
-  .version("0.6.0")
+  .version("0.6.0-rc.9")
   .argument("[pr-url]", "URL of the GitHub PR, GitLab MR, or Gitea/Forgejo PR to review (optional with --local)")
   .option(
     "--model <model>",
@@ -30,7 +30,7 @@ program
   )
   .option(
     "--reasoning-effort <level>",
-    "Reasoning effort level: low, medium, high, xhigh",
+    "Reasoning effort level: minimal, low, medium, high, xhigh",
   )
   .option("-v, --verbose", "Enable verbose logging", false)
   .option(
@@ -122,7 +122,7 @@ program
 
     // Handle ultrathink
     if (ultrathink) {
-      reasoningEffort = "high";
+      reasoningEffort = "xhigh";
     }
 
     // Parse Bedrock cost allocation tags
@@ -214,8 +214,13 @@ program
     try {
       // Detect platform and warn about missing tokens
       let platform: string = "local";
+      let metricsProject: string | undefined;
+      let metricsMrIid: string | undefined;
       if (!localMode && prUrl) {
         platform = detectPlatform(prUrl);
+        const parsedPr = parsePrUrl(prUrl);
+        metricsProject = `${parsedPr.owner}/${parsedPr.repo}`;
+        metricsMrIid = String(parsedPr.prNumber);
         const githubToken = process.env.GITHUB_TOKEN;
         const gitlabToken =
           process.env.GITLAB_TOKEN ??
@@ -353,14 +358,19 @@ program
 
       // Push metrics to Prometheus Pushgateway (best-effort, never fails the run)
       if (prometheusPush) {
+        const labels: Record<string, string> = {
+          platform,
+          model,
+          verdict: review.overall_correctness === "patch is correct" ? "correct" : "incorrect",
+        };
+        if (metricsProject) labels.project = metricsProject;
+        if (metricsMrIid) labels.mr_iid = metricsMrIid;
+
         await pushMetrics({
           pushgatewayUrl: prometheusPush,
           metrics,
-          labels: {
-            platform,
-            model,
-            verdict: review.overall_correctness === "patch is correct" ? "correct" : "incorrect",
-          },
+          findings: review.findings,
+          labels,
         });
       }
     } catch (err) {

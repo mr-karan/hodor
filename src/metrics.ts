@@ -2,6 +2,8 @@ import chalk from "chalk";
 import { logger } from "./utils/logger.js";
 import type { ReviewMetrics } from "./types.js";
 
+type FindingPriority = { priority: number };
+
 function tok(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
@@ -76,17 +78,26 @@ export function printMetrics(metrics: ReviewMetrics, stream: NodeJS.WritableStre
 export async function pushMetrics(opts: {
   pushgatewayUrl: string;
   metrics: ReviewMetrics;
+  findings?: FindingPriority[];
   labels?: Record<string, string>;
 }): Promise<void> {
-  const { pushgatewayUrl, metrics, labels = {} } = opts;
+  const { pushgatewayUrl, metrics, findings = [], labels = {} } = opts;
 
   // Build label string for all metrics
-  const labelPairs = Object.entries(labels)
-    .map(([k, v]) => `${k}="${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`)
-    .join(",");
-  const labelSuffix = labelPairs ? `{${labelPairs}}` : "";
+  const formatLabels = (extraLabels: Record<string, string> = {}) => {
+    const labelPairs = Object.entries({ ...labels, ...extraLabels })
+      .map(([k, v]) => `${k}="${v.replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/"/g, '\\"')}"`)
+      .join(",");
+    return labelPairs ? `{${labelPairs}}` : "";
+  };
+  const labelSuffix = formatLabels();
 
   const totalInput = metrics.inputTokens + metrics.cacheReadTokens;
+  const cacheHitRatio = totalInput > 0 ? metrics.cacheReadTokens / totalInput : 0;
+  const priorityCounts = [0, 1, 2, 3].map((priority) => ({
+    priority,
+    count: findings.filter((finding) => finding.priority === priority).length,
+  }));
   const lines = [
     `# HELP hodor_review_input_tokens_total Total input tokens (fresh + cached)`,
     `# TYPE hodor_review_input_tokens_total gauge`,
@@ -97,6 +108,17 @@ export async function pushMetrics(opts: {
     `# HELP hodor_review_cache_read_tokens_total Tokens served from prompt cache`,
     `# TYPE hodor_review_cache_read_tokens_total gauge`,
     `hodor_review_cache_read_tokens_total${labelSuffix} ${metrics.cacheReadTokens}`,
+    `# HELP hodor_review_cache_write_tokens_total Tokens written to prompt cache`,
+    `# TYPE hodor_review_cache_write_tokens_total gauge`,
+    `hodor_review_cache_write_tokens_total${labelSuffix} ${metrics.cacheWriteTokens}`,
+    `# HELP hodor_review_cache_hit_ratio Fraction of input tokens served from cache (0-1)`,
+    `# TYPE hodor_review_cache_hit_ratio gauge`,
+    `hodor_review_cache_hit_ratio${labelSuffix} ${cacheHitRatio}`,
+    `# HELP hodor_review_findings_total Number of findings at each priority level`,
+    `# TYPE hodor_review_findings_total gauge`,
+    ...priorityCounts.map(({ priority, count }) =>
+      `hodor_review_findings_total${formatLabels({ priority: `P${priority}` })} ${count}`,
+    ),
     `# HELP hodor_review_cost_dollars Cost of the review in USD`,
     `# TYPE hodor_review_cost_dollars gauge`,
     `hodor_review_cost_dollars${labelSuffix} ${metrics.cost}`,
@@ -113,9 +135,11 @@ export async function pushMetrics(opts: {
   ];
   const body = lines.join("\n");
 
-  // POST to pushgateway: /metrics/job/<job>
+  // POST to either a Prometheus Pushgateway base URL or a direct Prometheus text import endpoint.
   const baseUrl = pushgatewayUrl.replace(/\/+$/, "");
-  const url = `${baseUrl}/metrics/job/hodor`;
+  const url = baseUrl.endsWith("/api/v1/import/prometheus")
+    ? baseUrl
+    : `${baseUrl}/metrics/job/hodor`;
 
   try {
     const res = await fetch(url, {
@@ -126,11 +150,11 @@ export async function pushMetrics(opts: {
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      logger.warn(`Pushgateway returned ${res.status}: ${text.slice(0, 200)}`);
+      logger.warn(`Metrics endpoint returned ${res.status}: ${text.slice(0, 200)}`);
     } else {
-      logger.info("Metrics pushed to Pushgateway");
+      logger.info("Metrics pushed successfully");
     }
   } catch (err) {
-    logger.warn(`Failed to push metrics to Pushgateway: ${err instanceof Error ? err.message : err}`);
+    logger.warn(`Failed to push metrics: ${err instanceof Error ? err.message : err}`);
   }
 }
