@@ -168,6 +168,26 @@ The review is:
     expect(parseReviewFromAssistantText("I found no issues.")).toBeNull();
   });
 
+  it("rejects JSON that fails the submit_review schema", () => {
+    const review = parseReviewFromAssistantText(JSON.stringify({
+      findings: [
+        {
+          title: "[P1] Missing null guard",
+          body: "This crashes when the API returns a null payload.",
+          priority: 1,
+          code_location: {
+            absolute_file_path: "/workspace/src/api.ts",
+            line_range: { start: "12", end: 14 },
+          },
+        },
+      ],
+      overall_correctness: "patch is incorrect",
+      overall_explanation: "The change introduces a crash on a valid error path.",
+    }));
+
+    expect(review).toBeNull();
+  });
+
   it("marks the final recovery prompt as mandatory", () => {
     const prompt = buildSubmitReviewRecoveryPrompt(2, 2);
 

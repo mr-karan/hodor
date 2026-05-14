@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { Value } from "@sinclair/typebox/value";
 import type { AgentSession, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { logger } from "./utils/logger.js";
@@ -590,8 +591,11 @@ export function parseReviewFromAssistantText(text: string): ReviewOutput | null 
   const candidates = getJsonCandidates(text);
   for (const candidate of candidates) {
     try {
-      const parsed = JSON.parse(candidate) as ReviewOutput;
-      return validateReviewOutput(parsed);
+      const parsed = JSON.parse(candidate) as unknown;
+      if (!Value.Check(SUBMIT_REVIEW_SCHEMA, parsed)) {
+        continue;
+      }
+      return validateReviewOutput(parsed as ReviewOutput);
     } catch {
       // Keep scanning; assistant text often contains prose around the payload.
     }
