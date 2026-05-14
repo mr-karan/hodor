@@ -148,6 +148,18 @@ Fork PRs are checked out from the PR source repository when Gitea exposes the so
 
 ## CI/CD
 
+### Metrics in CI
+
+Hodor can push per-review metrics at the end of a CI run to either a Prometheus Pushgateway base URL or a VictoriaMetrics Prometheus import endpoint (`/api/v1/import/prometheus`):
+
+```bash
+hodor "$MR_OR_PR_URL" --prometheus-push "$METRICS_PUSH_URL"
+```
+
+In CI, set `METRICS_PUSH_URL` as a secret/variable and add `--prometheus-push "$METRICS_PUSH_URL"` to the Hodor command. Metrics are best-effort: push failures are logged as warnings and do not fail the review job.
+
+Each metric is labeled with `platform`, `model`, `verdict`, and for PR/MR URLs also `project` (`owner/repo`) and `mr_iid`/PR number. Exported metrics include token usage, cache read/write tokens, cache hit ratio, cost, turns, tool calls, duration, and findings by priority (`P0`–`P3`).
+
 ### GitHub Actions
 
 ```yaml
@@ -165,8 +177,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          METRICS_PUSH_URL: ${{ secrets.METRICS_PUSH_URL }} # optional
         run: |
-          bun run /app/dist/cli.js "https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}" --post
+          EXTRA_ARGS=""
+          if [ -n "${METRICS_PUSH_URL:-}" ]; then EXTRA_ARGS="--prometheus-push $METRICS_PUSH_URL"; fi
+          bun run /app/dist/cli.js "https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}" --post $EXTRA_ARGS
 ```
 
 ### GitLab CI
@@ -188,7 +203,10 @@ hodor-review:
     - glab auth login --hostname $CI_SERVER_HOST --token $GITLAB_TOKEN
   script:
     - MR_URL="${CI_PROJECT_URL}/-/merge_requests/${CI_MERGE_REQUEST_IID}"
-    - bun run /app/dist/cli.js "$MR_URL" --model "$HODOR_MODEL" --post --code-quality gl-code-quality-report.json --commit-status
+    - |
+      EXTRA_ARGS=""
+      if [ -n "${METRICS_PUSH_URL:-}" ]; then EXTRA_ARGS="--prometheus-push $METRICS_PUSH_URL"; fi
+      bun run /app/dist/cli.js "$MR_URL" --model "$HODOR_MODEL" --post --code-quality gl-code-quality-report.json --commit-status $EXTRA_ARGS
   artifacts:
     reports:
       codequality: gl-code-quality-report.json

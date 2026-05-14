@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { logger } from "./utils/logger.js";
 import { exec } from "./utils/exec.js";
@@ -713,6 +713,8 @@ export async function reviewPr(opts: {
     isTemporary = wsResult.isTemporary;
   }
 
+  let activeSession: AgentSession | undefined;
+
   try {
     let mrMetadata: MrMetadata | null = null;
     if (!localMode && platform === "gitlab") {
@@ -877,6 +879,7 @@ export async function reviewPr(opts: {
       settingsManager,
       resourceLoader,
     });
+    activeSession = session;
 
     // Inject Bedrock cost allocation tags into stream requests
     if (bedrockTags && parsed.provider === "amazon-bedrock") {
@@ -982,8 +985,8 @@ export async function reviewPr(opts: {
     logger.info("Sending prompt to agent...");
     await session.prompt(prompt);
 
-    // Check for agent errors (pi-ai swallows LLM errors into state.error)
-    const agentError = (session as unknown as { state: { error?: string } }).state?.error;
+    // Check for agent errors (pi-agent-core stores failed/aborted assistant turns in state.errorMessage)
+    const agentError = session.state.errorMessage;
     if (agentError) {
       throw new Error(`LLM request failed: ${agentError}`);
     }
@@ -993,8 +996,7 @@ export async function reviewPr(opts: {
       if (rawText) {
         logger.debug(`Last assistant text without submit_review (first 500 chars): ${rawText.slice(0, 500)}`);
       } else {
-        const messages = (session as unknown as { state: { messages: unknown[] } }).state?.messages;
-        const lastMsg = messages?.[messages.length - 1];
+        const lastMsg = session.messages.at(-1);
         logger.debug(`Last message: ${JSON.stringify(lastMsg)?.slice(0, 500)}`);
       }
       if (submitReviewCalls > 0) {
@@ -1028,9 +1030,7 @@ export async function reviewPr(opts: {
       usage?: MsgUsage;
     }
 
-    const allMessages = (
-      session as unknown as { state: { messages: AssistantMsg[] } }
-    ).state?.messages ?? [];
+    const allMessages = session.messages as AssistantMsg[];
 
     let inputTokens = 0;
     let outputTokens = 0;
@@ -1070,6 +1070,8 @@ export async function reviewPr(opts: {
 
     return { review, metricsFooter, headSha, metrics, workspacePath };
   } finally {
+    activeSession?.dispose();
+
     // Restore mutated env vars
     for (const [key, val] of Object.entries(envSnapshot)) {
       if (val === undefined) {
