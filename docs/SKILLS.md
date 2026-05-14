@@ -3,7 +3,7 @@
 Hodor uses the upstream `@mariozechner/pi-coding-agent` skills system (`agentskills.io` style).
 
 Skills are:
-- Discovered from the reviewed repository at `.pi/skills` or `.hodor/skills`
+- Discovered from the reviewed repository at `.agents/skills`
 - Advertised to the model as metadata
 - Loaded lazily by the agent with the `read` tool when relevant
 
@@ -12,11 +12,11 @@ Skills are:
 Create a skill in the repository you want Hodor to review:
 
 ```bash
-mkdir -p .pi/skills/security-review
+mkdir -p .agents/skills/security-review
 ```
 
 ```markdown
-<!-- .pi/skills/security-review/SKILL.md -->
+<!-- .agents/skills/security-review/SKILL.md -->
 ---
 name: security-review
 description: Security checklist for API and auth related pull requests.
@@ -39,10 +39,10 @@ bun run dist/cli.js <PR_URL> --workspace . --verbose
 
 ## Supported Layouts
 
-Hodor discovers skills from both `.pi/skills` and `.hodor/skills` (if either exists):
+Hodor discovers skills from `.agents/skills`:
 
-1. Flat markdown files: `.pi/skills/*.md` (or `.hodor/skills/*.md`)
-2. Subdirectory skills: `.pi/skills/<skill-name>/SKILL.md` (recommended)
+1. Subdirectory skills: `.agents/skills/<skill-name>/SKILL.md` (recommended)
+2. Flat markdown files: `.agents/skills/*.md` (also supported)
 
 Use the subdirectory `SKILL.md` format when possible because it keeps one skill per folder and avoids name collisions.
 
@@ -65,7 +65,7 @@ description: Security checklist for API and auth related pull requests.
 When Hodor starts a review:
 
 1. It initializes the SDK resource loader with the review system prompt.
-2. It discovers skills from `.pi/skills` and `.hodor/skills` in the reviewed repository.
+2. It discovers skills from `.agents/skills` in the reviewed repository.
 3. It passes skill metadata to the agent.
 4. The agent reads matching skill files on demand during review.
 
@@ -75,7 +75,7 @@ Hodor no longer inlines skill markdown into the system prompt and no longer uses
 
 If skills are not used:
 
-1. Verify files are under `.pi/skills` or `.hodor/skills` in the repository being reviewed.
+1. Verify files are under `.agents/skills` in the repository being reviewed.
 2. Ensure each skill has valid frontmatter with `description`.
-3. Prefer `.pi/skills/<name>/SKILL.md` with `name: <name>`.
+3. Prefer `.agents/skills/<name>/SKILL.md` with `name: <name>`.
 4. Run with `--verbose` and check skill discovery logs.

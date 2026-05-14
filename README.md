@@ -229,14 +229,14 @@ Hodor automatically optimizes token usage:
 
 ## Skills
 
-Hodor discovers repository-specific review guidelines from `.pi/skills/` or `.hodor/skills/`:
+Hodor discovers repository-specific review guidelines from `.agents/skills/`, the cross-client Agent Skills convention:
 
 ```bash
-mkdir -p .hodor/skills/review-guidelines
+mkdir -p .agents/skills/review-guidelines
 ```
 
 ```markdown
-# .hodor/skills/review-guidelines/SKILL.md
+# .agents/skills/review-guidelines/SKILL.md
 ---
 name: review-guidelines
 description: Security and performance review checklist.

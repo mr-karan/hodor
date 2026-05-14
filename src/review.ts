@@ -51,11 +51,13 @@ export function validateReviewOutput(review: ReviewOutput): ReviewOutput {
     throw new Error("submit_review overall_explanation must be non-empty");
   }
 
+  // Auto-correct verdict when it contradicts findings. Findings are the ground truth;
+  // the verdict field is mechanically derivable. Throwing here would prevent `terminate: true`
+  // from being returned, leaving pi's error-handling behavior undefined.
   if (review.findings.length > 0 && review.overall_correctness !== "patch is incorrect") {
-    throw new Error('submit_review overall_correctness must be "patch is incorrect" when findings is non-empty');
-  }
-  if (review.findings.length === 0 && review.overall_correctness !== "patch is correct") {
-    throw new Error('submit_review overall_correctness must be "patch is correct" when findings is empty');
+    review = { ...review, overall_correctness: "patch is incorrect" };
+  } else if (review.findings.length === 0 && review.overall_correctness !== "patch is correct") {
+    review = { ...review, overall_correctness: "patch is correct" };
   }
 
   for (const [index, finding] of review.findings.entries()) {

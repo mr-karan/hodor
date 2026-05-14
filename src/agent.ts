@@ -540,6 +540,34 @@ export async function postReviewStructured(opts: {
   };
 }
 
+// Paths that waste context without contributing reviewable logic.
+const DIFF_SKIP_PATTERNS: RegExp[] = [
+  /(?:^|\/)testdata\//,                                         // test fixture directories
+  /(?:^|\/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|go\.sum|Cargo\.lock|poetry\.lock|Gemfile\.lock|composer\.lock)$/,
+  /\.mdx?$/,                                                    // markdown docs
+];
+
+export function filterEmbeddedDiff(rawDiff: string): { filtered: string; skippedFiles: string[] } {
+  const skippedFiles: string[] = [];
+  // Each file section starts with "diff --git a/". Split while preserving the delimiter.
+  const sections = rawDiff.split(/(?=^diff --git )/m);
+  const kept: string[] = [];
+  for (const section of sections) {
+    const match = section.match(/^diff --git a\/(.*?) b\//);
+    if (!match) {
+      kept.push(section);
+      continue;
+    }
+    const filePath = match[1];
+    if (DIFF_SKIP_PATTERNS.some((re) => re.test(filePath))) {
+      skippedFiles.push(filePath);
+    } else {
+      kept.push(section);
+    }
+  }
+  return { filtered: kept.join(""), skippedFiles };
+}
+
 export async function reviewPr(opts: {
   prUrl?: string;
   model?: string;
@@ -769,11 +797,15 @@ export async function reviewPr(opts: {
             ? ["--no-pager", "diff", targetBranch]  // includes uncommitted changes
             : ["--no-pager", "diff", `origin/${targetBranch}...HEAD`];
       const { stdout: rawDiff } = await exec("git", diffArgs, { cwd: workspacePath });
-      if (Buffer.byteLength(rawDiff, "utf-8") <= MAX_EMBED_BYTES) {
-        embeddedDiff = rawDiff;
-        logger.info(`Embedding diff in prompt (${Buffer.byteLength(rawDiff, "utf-8")} bytes)`);
+      const { filtered: filteredDiff, skippedFiles } = filterEmbeddedDiff(rawDiff);
+      if (skippedFiles.length > 0) {
+        logger.info(`Filtered ${skippedFiles.length} file(s) from embedded diff: ${skippedFiles.join(", ")}`);
+      }
+      if (Buffer.byteLength(filteredDiff, "utf-8") <= MAX_EMBED_BYTES) {
+        embeddedDiff = filteredDiff;
+        logger.info(`Embedding diff in prompt (${Buffer.byteLength(filteredDiff, "utf-8")} bytes, raw: ${Buffer.byteLength(rawDiff, "utf-8")} bytes)`);
       } else {
-        logger.info(`Diff too large to embed (${Buffer.byteLength(rawDiff, "utf-8")} bytes), using command mode`);
+        logger.info(`Diff too large to embed (${Buffer.byteLength(filteredDiff, "utf-8")} bytes filtered, ${Buffer.byteLength(rawDiff, "utf-8")} bytes raw), using command mode`);
       }
     } catch (err) {
       logger.warn(`Failed to pre-fetch diff, falling back to command mode: ${err}`);
@@ -797,10 +829,8 @@ export async function reviewPr(opts: {
     const settingsManager = SettingsManager.inMemory({
       compaction: { enabled: true },
     });
-    const skillPaths = [
-      join(workspacePath, ".pi", "skills"),
-      join(workspacePath, ".hodor", "skills"),
-    ].filter((p) => existsSync(p));
+    const skillPaths = [join(workspacePath, ".agents", "skills")]
+      .filter((p) => existsSync(p));
     const resourceLoader = new DefaultResourceLoader({
       cwd: workspacePath,
       agentDir: getAgentDir(),

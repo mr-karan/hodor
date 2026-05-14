@@ -92,10 +92,20 @@ For changes that introduce or modify routes, handlers, API parameters, auth/sess
 
 {review_process_section}
 
-**Analysis Focus:**
-- Check edge cases: empty inputs, null values, boundary conditions, error paths
-- Think: What user input or race condition breaks this?
-- Focus on the changes (+ and - lines), use full file context sparingly
+### Attack Surface Analysis
+
+When the diff touches the areas below, investigate them specifically — do not skip a category unless it is provably inapplicable to the changed code:
+
+- **Race conditions / TOCTOU**: Shared mutable state, non-atomic check-then-act sequences, missing locks or transactions
+- **Off-by-one / boundary errors**: Loop bounds, slice indices, size comparisons (`<` vs `<=`), pagination math, overflow
+- **Schema / contract drift**: Renamed fields, changed types, enum values, units (paise vs rupees, ms vs s), encoding assumptions, wire format changes
+- **Auth / permission gaps**: New routes or handlers missing auth middleware, privilege escalation paths, token or session misuse, missing ownership checks
+- **Rollback safety**: Migrations that cannot be rolled back cleanly, stateful side effects committed before DB transactions complete, partial-write failure modes
+- **Data loss / silent discard**: Early returns or swallowed errors that drop user data, leave state inconsistent, or suppress failures silently
+- **Observability gaps**: New error paths unreachable from logs or metrics, silent failures, missing structured context on errors
+- **Input validation**: Unvalidated user-supplied values crossing trust boundaries — SQL injection, shell injection, path traversal, template injection, deserialization
+
+Default to skepticism: a change that looks mechanical (rename, refactor, constant tweak) may still introduce one of these. If a category is provably inapplicable, skip it — but verify, don't assume.
 
 ## Final Submission
 

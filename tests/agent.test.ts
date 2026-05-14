@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   detectPlatform,
+  filterEmbeddedDiff,
   getHodorReviewShaCandidates,
   parsePrUrl,
 } from "../src/agent.js";
@@ -215,5 +216,51 @@ describe("getHodorReviewShaCandidates", () => {
     ]);
 
     expect(shas).toEqual([SHA_NEW]);
+  });
+});
+
+const DIFF_HEADER = (path: string) =>
+  `diff --git a/${path} b/${path}\nindex abc..def 100644\n--- a/${path}\n+++ b/${path}\n@@ -1,1 +1,1 @@\n-old\n+new\n`;
+
+describe("filterEmbeddedDiff", () => {
+  it("passes through a diff with no skippable files", () => {
+    const raw = DIFF_HEADER("src/main.go") + DIFF_HEADER("src/util.go");
+    const { filtered, skippedFiles } = filterEmbeddedDiff(raw);
+    expect(skippedFiles).toEqual([]);
+    expect(filtered).toBe(raw);
+  });
+
+  it("strips testdata/ files", () => {
+    const raw = DIFF_HEADER("src/main.go") + DIFF_HEADER("testdata/fixtures/input.json") + DIFF_HEADER("pkg/testdata/results.md");
+    const { filtered, skippedFiles } = filterEmbeddedDiff(raw);
+    expect(skippedFiles).toEqual(["testdata/fixtures/input.json", "pkg/testdata/results.md"]);
+    expect(filtered).toBe(DIFF_HEADER("src/main.go"));
+  });
+
+  it("strips common lockfiles", () => {
+    const raw = DIFF_HEADER("package.json") + DIFF_HEADER("package-lock.json") + DIFF_HEADER("go.sum") + DIFF_HEADER("yarn.lock");
+    const { filtered, skippedFiles } = filterEmbeddedDiff(raw);
+    expect(skippedFiles).toEqual(["package-lock.json", "go.sum", "yarn.lock"]);
+    expect(filtered).toBe(DIFF_HEADER("package.json"));
+  });
+
+  it("strips .md and .mdx files", () => {
+    const raw = DIFF_HEADER("README.md") + DIFF_HEADER("docs/guide.mdx") + DIFF_HEADER("src/app.ts");
+    const { filtered, skippedFiles } = filterEmbeddedDiff(raw);
+    expect(skippedFiles).toEqual(["README.md", "docs/guide.mdx"]);
+    expect(filtered).toBe(DIFF_HEADER("src/app.ts"));
+  });
+
+  it("handles empty diff", () => {
+    const { filtered, skippedFiles } = filterEmbeddedDiff("");
+    expect(skippedFiles).toEqual([]);
+    expect(filtered).toBe("");
+  });
+
+  it("handles diff where all files are skipped", () => {
+    const raw = DIFF_HEADER("go.sum") + DIFF_HEADER("testdata/case1.json");
+    const { filtered, skippedFiles } = filterEmbeddedDiff(raw);
+    expect(skippedFiles).toHaveLength(2);
+    expect(filtered).toBe("");
   });
 });
