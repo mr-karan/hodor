@@ -568,6 +568,100 @@ export function filterEmbeddedDiff(rawDiff: string): { filtered: string; skipped
   return { filtered: kept.join(""), skippedFiles };
 }
 
+const SUBMIT_REVIEW_RECOVERY_ATTEMPTS = 2;
+
+export function buildSubmitReviewRecoveryPrompt(attempt: number, maxAttempts: number): string {
+  const finalAttempt =
+    attempt >= maxAttempts
+      ? "\nThis is the final automatic recovery attempt; do not end the turn without calling `submit_review`."
+      : "";
+
+  return [
+    "Your previous assistant turn ended without a valid `submit_review` tool call, so Hodor cannot capture the review.",
+    "Continue from the existing review context. Use only read-only tools and only the changed files/diff already identified.",
+    "If more evidence is needed, inspect the relevant diff or file context now.",
+    "When analysis is complete, call `submit_review` exactly once. Do not write the review as normal text.",
+    "If there are no findings, call `submit_review` with `\"findings\": []` and `\"overall_correctness\": \"patch is correct\"`.",
+    finalAttempt,
+  ].filter(Boolean).join("\n");
+}
+
+export function parseReviewFromAssistantText(text: string): ReviewOutput | null {
+  const candidates = getJsonCandidates(text);
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as ReviewOutput;
+      return validateReviewOutput(parsed);
+    } catch {
+      // Keep scanning; assistant text often contains prose around the payload.
+    }
+  }
+  return null;
+}
+
+function getJsonCandidates(text: string): string[] {
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+
+  const addCandidate = (value: string): void => {
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    candidates.push(trimmed);
+  };
+
+  addCandidate(text);
+
+  const fencedJson = /```(?:json)?\s*([\s\S]*?)```/gi;
+  for (const match of text.matchAll(fencedJson)) {
+    addCandidate(match[1] ?? "");
+  }
+
+  const firstBrace = text.indexOf("{");
+  const lastBrace = text.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    addCandidate(text.slice(firstBrace, lastBrace + 1));
+  }
+
+  return candidates;
+}
+
+function summarizeLastAssistantMessage(session: AgentSession): string {
+  const messages = session.messages as unknown as Array<Record<string, unknown>>;
+  const lastAssistant = [...messages].reverse().find((msg) => msg.role === "assistant");
+  if (!lastAssistant) {
+    return "no assistant message";
+  }
+
+  const stopReason =
+    typeof lastAssistant.stopReason === "string" ? lastAssistant.stopReason : "unknown";
+  const errorMessage =
+    typeof lastAssistant.errorMessage === "string" ? `, error=${JSON.stringify(truncateForLog(lastAssistant.errorMessage, 300))}` : "";
+  const content = Array.isArray(lastAssistant.content)
+    ? lastAssistant.content
+      .map((item) => {
+        const block = item as Record<string, unknown>;
+        const type = typeof block.type === "string" ? block.type : "unknown";
+        if (type === "toolCall" && typeof block.name === "string") {
+          return `toolCall:${block.name}`;
+        }
+        return type;
+      })
+      .join(",")
+    : "unknown";
+  const rawText = session.getLastAssistantText()?.trim();
+  const textSummary = rawText
+    ? `, text=${JSON.stringify(truncateForLog(rawText.replace(/\s+/g, " "), 500))}`
+    : "";
+
+  return `stopReason=${stopReason}, content=[${content || "none"}]${errorMessage}${textSummary}`;
+}
+
+function truncateForLog(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength - 1)}…`;
+}
+
 export async function reviewPr(opts: {
   prUrl?: string;
   model?: string;
@@ -878,7 +972,12 @@ export async function reviewPr(opts: {
           };
         }
 
-        submittedReview = validateReviewOutput(params as ReviewOutput);
+        try {
+          submittedReview = validateReviewOutput(params as ReviewOutput);
+        } catch (err) {
+          logger.warn(`Invalid submit_review payload: ${err instanceof Error ? err.message : err}`);
+          throw err;
+        }
         logger.info(
           `Received structured review via submit_review (${submittedReview.findings.length} finding(s))`,
         );
@@ -1012,27 +1111,61 @@ export async function reviewPr(opts: {
       }
     });
 
+    const throwIfAgentErrored = (): void => {
+      // pi-agent-core stores failed/aborted assistant turns in state.errorMessage.
+      const agentError = session.state.errorMessage;
+      if (agentError) {
+        throw new Error(`LLM request failed: ${agentError}`);
+      }
+    };
+
+    const recoverReviewFromAssistantText = (source: string): boolean => {
+      const rawText = session.getLastAssistantText() ?? "";
+      if (!rawText.trim()) return false;
+
+      const parsedReview = parseReviewFromAssistantText(rawText);
+      if (!parsedReview) return false;
+
+      submittedReview = parsedReview;
+      logger.warn(
+        `Recovered structured review from assistant text after ${source}; model did not call submit_review`,
+      );
+      return true;
+    };
+
     logger.info("Sending prompt to agent...");
     await session.prompt(prompt);
+    throwIfAgentErrored();
 
-    // Check for agent errors (pi-agent-core stores failed/aborted assistant turns in state.errorMessage)
-    const agentError = session.state.errorMessage;
-    if (agentError) {
-      throw new Error(`LLM request failed: ${agentError}`);
+    if (!submittedReview) {
+      recoverReviewFromAssistantText("initial agent run");
+    }
+
+    for (
+      let attempt = 1;
+      !submittedReview && attempt <= SUBMIT_REVIEW_RECOVERY_ATTEMPTS;
+      attempt++
+    ) {
+      logger.warn(
+        `Agent ended without a valid submit_review (${summarizeLastAssistantMessage(session)}); ` +
+        `requesting recovery ${attempt}/${SUBMIT_REVIEW_RECOVERY_ATTEMPTS}`,
+      );
+      await session.prompt(buildSubmitReviewRecoveryPrompt(attempt, SUBMIT_REVIEW_RECOVERY_ATTEMPTS));
+      throwIfAgentErrored();
+      recoverReviewFromAssistantText(`recovery attempt ${attempt}`);
     }
 
     if (!submittedReview) {
-      const rawText = session.getLastAssistantText() ?? "";
-      if (rawText) {
-        logger.debug(`Last assistant text without submit_review (first 500 chars): ${rawText.slice(0, 500)}`);
-      } else {
-        const lastMsg = session.messages.at(-1);
-        logger.debug(`Last message: ${JSON.stringify(lastMsg)?.slice(0, 500)}`);
-      }
+      const diagnostic = summarizeLastAssistantMessage(session);
       if (submitReviewCalls > 0) {
-        throw new Error("Agent called submit_review but did not provide a valid review payload");
+        throw new Error(
+          `Agent called submit_review but did not provide a valid review payload after ` +
+          `${SUBMIT_REVIEW_RECOVERY_ATTEMPTS} recovery attempt(s): ${diagnostic}`,
+        );
       }
-      throw new Error("Agent did not call submit_review");
+      throw new Error(
+        `Agent did not call submit_review after ${SUBMIT_REVIEW_RECOVERY_ATTEMPTS} recovery attempt(s): ${diagnostic}`,
+      );
     }
 
     const review = submittedReview as ReviewOutput;

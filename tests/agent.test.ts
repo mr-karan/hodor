@@ -1,8 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
 import {
+  buildSubmitReviewRecoveryPrompt,
   detectPlatform,
   filterEmbeddedDiff,
   getHodorReviewShaCandidates,
+  parseReviewFromAssistantText,
   parsePrUrl,
 } from "../src/agent.js";
 import { formatMetricsMarkdown } from "../src/metrics.js";
@@ -139,6 +141,38 @@ describe("formatMetricsMarkdown", () => {
 
     expect(markdown).not.toContain("cached");
     expect(markdown).not.toContain("Cost");
+  });
+});
+
+describe("submit_review recovery helpers", () => {
+  it("parses a valid review JSON object from assistant text", () => {
+    const review = parseReviewFromAssistantText(`
+The review is:
+\`\`\`json
+{
+  "findings": [],
+  "overall_correctness": "patch is correct",
+  "overall_explanation": "No production issues were found."
+}
+\`\`\`
+`);
+
+    expect(review).toEqual({
+      findings: [],
+      overall_correctness: "patch is correct",
+      overall_explanation: "No production issues were found.",
+    });
+  });
+
+  it("rejects prose that is not a structured review payload", () => {
+    expect(parseReviewFromAssistantText("I found no issues.")).toBeNull();
+  });
+
+  it("marks the final recovery prompt as mandatory", () => {
+    const prompt = buildSubmitReviewRecoveryPrompt(2, 2);
+
+    expect(prompt).toContain("without a valid `submit_review` tool call");
+    expect(prompt).toContain("final automatic recovery attempt");
   });
 });
 
