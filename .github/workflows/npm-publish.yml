@@ -34,8 +34,5 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Update npm
-        run: npm install -g npm@latest
-
       - name: Publish to npm
         run: npm publish --provenance --access public
