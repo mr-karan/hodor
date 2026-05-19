@@ -21,7 +21,7 @@ program
       "and analyzes the code using tools (gh, git, glab) for metadata fetching and comment posting.\n\n" +
       "For local reviews, use --local with --diff-against to review changes in your current git repository.",
   )
-  .version("0.6.0")
+  .version("0.6.1")
   .argument("[pr-url]", "URL of the GitHub PR, GitLab MR, or Gitea/Forgejo PR to review (optional with --local)")
   .option(
     "--model <model>",
