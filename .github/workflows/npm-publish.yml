@@ -32,7 +32,9 @@ jobs:
       - name: Setup Node.js (for npm publish)
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
 
       - name: Publish to npm
-        run: npm publish --provenance --access public
+        run: |
+          npm --version
+          npm publish --provenance --access public
