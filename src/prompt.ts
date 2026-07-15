@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { logger } from "./utils/logger.js";
-import { summarizeGitlabNotes } from "./gitlab.js";
+import { summarizeGitlabNotes, summarizeHodorNotes } from "./gitlab.js";
 import type { MrMetadata, Platform } from "./types.js";
 
 // Resolve templates directory relative to this file (works in both src/ and dist/)
@@ -293,16 +293,22 @@ export function buildMrSections(mrMetadata?: MrMetadata | null): {
   }
 
   let notesSection = "";
-  const notesSummary = summarizeGitlabNotes(mrMetadata.Notes);
-  if (notesSummary) {
-    notesSection = `## Existing MR Notes\n${notesSummary}\n`;
+  const humanNotesSummary = summarizeGitlabNotes(mrMetadata.Notes);
+  const hodorNotesSummary = summarizeHodorNotes(mrMetadata.Notes);
+  if (humanNotesSummary) {
+    notesSection += `## Existing Human MR Notes\n${humanNotesSummary}\n`;
+  }
+  if (hodorNotesSummary) {
+    notesSection +=
+      `## Prior Hodor Reviews (deduplication only)\n${hodorNotesSummary}\n` +
+      "Use this history only to avoid repeating the same finding. Re-check the current diff independently.\n";
   }
 
   let reminderSection = "";
-  if (notesSummary) {
+  if (humanNotesSummary || hodorNotesSummary) {
     reminderSection =
       "## Review Note Deduplication\n\n" +
-      "The discussions above may already cover some issues. Before reporting a finding:\n" +
+      "The human notes and prior Hodor reviews above may already cover some issues. Before reporting a finding:\n" +
       "1. Check if it's already mentioned in existing notes\n" +
       "2. Only report if your finding is materially different or more specific\n" +
       "3. If an existing note is incorrect/outdated, explain why in your finding\n\n" +

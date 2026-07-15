@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { parseGlabPaginatedJson, summarizeGitlabNotes } from "../src/gitlab.js";
+import {
+  parseGlabPaginatedJson,
+  summarizeGitlabNotes,
+  summarizeHodorNotes,
+} from "../src/gitlab.js";
 
 describe("parseGlabPaginatedJson", () => {
   it("parses a single page", () => {
@@ -137,5 +141,23 @@ describe("summarizeGitlabNotes", () => {
     expect(result).toContain("@user8");
     expect(result).toContain("@user9");
     expect(result).not.toContain("@user0");
+  });
+
+  it("separates human feedback from prior Hodor reviews", () => {
+    const notes = [
+      {
+        body: "This is human feedback about the authorization check",
+        author: { username: "alice" },
+      },
+      {
+        body: "<!-- hodor:sha:1111111111111111111111111111111111111111 -->\n<!-- hodor-review -->\n[P1] Missing authorization check",
+        author: { username: "hodor" },
+      },
+    ];
+
+    expect(summarizeGitlabNotes(notes)).toContain("@alice");
+    expect(summarizeGitlabNotes(notes)).not.toContain("@hodor");
+    expect(summarizeHodorNotes(notes)).toContain("@hodor");
+    expect(summarizeHodorNotes(notes)).not.toContain("@alice");
   });
 });

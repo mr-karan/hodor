@@ -1,5 +1,3 @@
-<a href="https://zerodha.tech"><img src="https://zerodha.tech/static/images/github-badge.svg" align="right" /></a>
-
 # Hodor
 
 > Agentic code reviewer for GitHub PRs, GitLab MRs, Gitea/Forgejo PRs, and local diffs. Powered by the [pi-coding-agent](https://github.com/badlogic/pi-mono) SDK.
@@ -113,6 +111,8 @@ Local mode:
 | `--review-style` | `hybrid` | GitLab posting style: `summary`, `inline`, or `hybrid` |
 | `--code-quality` | – | Write a CodeClimate JSON artifact for GitLab code quality reports |
 | `--commit-status` | Off | Post a pass/fail commit status to the GitLab MR head SHA |
+| `--require-delivery` | Off | Exit non-zero if requested comments, statuses, or artifacts are not delivered |
+| `--fail-on-priority` | – | Exit non-zero for findings at or above `P0`, `P1`, `P2`, or `P3` |
 | `--prompt` | – | Append custom instructions to the review prompt |
 | `--prompt-file` | – | Use a custom prompt file |
 | `--workspace` | Temp dir | Workspace directory (reuse for faster multi-PR reviews) |
@@ -165,7 +165,7 @@ hodor "$MR_OR_PR_URL" --prometheus-push "$METRICS_PUSH_URL"
 
 In CI, set `METRICS_PUSH_URL` as a secret/variable and add `--prometheus-push "$METRICS_PUSH_URL"` to the Hodor command. Metrics are best-effort: push failures are logged as warnings and do not fail the review job.
 
-Each metric is labeled with `platform`, `model`, `verdict`, and for PR/MR URLs also `project` (`owner/repo`) and `mr_iid`/PR number. Exported metrics include token usage, cache read/write tokens, cache hit ratio, cost, turns, tool calls, duration, and findings by priority (`P0`–`P3`). A generic Grafana dashboard is available in [`docs/grafana/`](./docs/grafana/).
+Each metric is labeled with `platform`, `model`, `verdict`, `outcome`, and for PR/MR URLs also `project` (`owner/repo`). MR/PR numbers are deliberately excluded to avoid unbounded time-series cardinality. Exported metrics include token usage, cache read/write tokens, cache hit ratio, cost, turns, tool calls, duration, and findings by priority (`P0`–`P3`). A generic Grafana dashboard is available in [`docs/grafana/`](./docs/grafana/).
 
 ### GitHub Actions
 
@@ -262,6 +262,8 @@ Skills are loaded automatically during reviews. See [SKILLS.md](./docs/SKILLS.md
 bun install          # Install dependencies
 bun run build        # Build
 bun run test         # Run tests
+bun run eval:list    # Validate and list review-quality eval cases
+bun run eval -- --model <provider/model> # Execute model evals (uses API credentials)
 bun run dev -- <url> # Run from source
 ```
 

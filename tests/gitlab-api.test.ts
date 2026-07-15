@@ -14,23 +14,6 @@ describe("GitLab paginated API helpers", () => {
     execJsonMock.mockReset();
   });
 
-  it("cleanupHodorComments parses paginated glab output", async () => {
-    execMock
-      .mockResolvedValueOnce({
-        stdout:
-          '[{"id":1,"body":"<!-- hodor-review --> old"}]' +
-          '[{"id":2,"body":"human comment"}]',
-        stderr: "",
-      })
-      .mockResolvedValueOnce({ stdout: "", stderr: "" });
-
-    const { cleanupHodorComments } = await import("../src/gitlab.js");
-    await expect(cleanupHodorComments("acme", "app", 42, "gitlab.example.com")).resolves.toBe(1);
-
-    expect(execMock).toHaveBeenCalledTimes(2);
-    expect(execMock.mock.calls[1][1]).toContain("DELETE");
-  });
-
   it("listHodorDiscussions parses paginated glab output", async () => {
     execMock.mockResolvedValueOnce({
       stdout: JSON.stringify([
@@ -111,71 +94,6 @@ describe("GitLab paginated API helpers", () => {
         line: 42,
       },
     ]);
-  });
-
-  it("cleanupHodorComments ignores notes that merely quote the marker", async () => {
-    execMock.mockResolvedValueOnce({
-      // First note has the marker mid-body (a human quoting it); should be skipped.
-      // Second note starts with the marker; should be deleted.
-      stdout: JSON.stringify([
-        { id: 100, body: "see this docs section: <!-- hodor-review --> example" },
-        { id: 101, body: "<!-- hodor-review -->\nReal hodor comment" },
-      ]),
-      stderr: "",
-    });
-    execMock.mockResolvedValueOnce({ stdout: "", stderr: "" });
-
-    const { cleanupHodorComments } = await import("../src/gitlab.js");
-    await expect(cleanupHodorComments("acme", "app", 42, "gitlab.example.com")).resolves.toBe(1);
-
-    // Two exec calls total: one list, one delete (only for note 101).
-    expect(execMock).toHaveBeenCalledTimes(2);
-    expect(execMock.mock.calls[1][1]).toContain("DELETE");
-    expect(execMock.mock.calls[1][1].some((arg: string) => arg.includes("/notes/101"))).toBe(true);
-  });
-
-  it("cleanupHodorComments matches notes with hodor:sha prefix before the marker", async () => {
-    // Re-review path prepends `<!-- hodor:sha:abc -->` before the canonical marker.
-    // Cleanup must still recognize that as a hodor-owned summary.
-    execMock.mockResolvedValueOnce({
-      stdout: JSON.stringify([
-        {
-          id: 200,
-          body:
-            "<!-- hodor:sha:abc1234 -->\n<!-- hodor-review -->\n\nReview summary",
-        },
-        {
-          id: 201,
-          body: "<!-- hodor:sha:def5678 -->\nNo canonical marker — should be skipped",
-        },
-      ]),
-      stderr: "",
-    });
-    execMock.mockResolvedValueOnce({ stdout: "", stderr: "" });
-
-    const { cleanupHodorComments } = await import("../src/gitlab.js");
-    await expect(cleanupHodorComments("acme", "app", 42, "gitlab.example.com")).resolves.toBe(1);
-    expect(execMock.mock.calls[1][1].some((arg: string) => arg.includes("/notes/200"))).toBe(true);
-    expect(execMock.mock.calls.every((c) => !c[1].some((a: string) => a.includes("/notes/201")))).toBe(true);
-  });
-
-  it("cleanupHodorComments warns and continues on per-note delete failures", async () => {
-    execMock.mockResolvedValueOnce({
-      stdout: JSON.stringify([
-        { id: 1, body: "<!-- hodor-review --> a" },
-        { id: 2, body: "<!-- hodor-review --> b" },
-        { id: 3, body: "<!-- hodor-review --> c" },
-      ]),
-      stderr: "",
-    });
-    // First delete fails, others succeed; total successful deletes = 2.
-    execMock.mockRejectedValueOnce(new Error("403 forbidden"));
-    execMock.mockResolvedValueOnce({ stdout: "", stderr: "" });
-    execMock.mockResolvedValueOnce({ stdout: "", stderr: "" });
-
-    const { cleanupHodorComments } = await import("../src/gitlab.js");
-    await expect(cleanupHodorComments("acme", "app", 42, "gitlab.example.com")).resolves.toBe(2);
-    expect(execMock).toHaveBeenCalledTimes(4);
   });
 });
 

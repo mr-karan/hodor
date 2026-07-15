@@ -31,6 +31,7 @@ Common labels:
 - `project`
 - `model`
 - `verdict`
+- `outcome`
 - `priority`
 
 ## Pushgateway note

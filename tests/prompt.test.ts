@@ -47,6 +47,20 @@ describe("buildMrSections", () => {
     expect(contextSection).toContain("- Author: @testuser");
     expect(contextSection).toContain("- Branches: feature → main");
   });
+
+  it("labels prior Hodor output as deduplication-only context", () => {
+    const { notesSection } = buildMrSections({
+      Notes: [
+        {
+          body: "<!-- hodor:sha:1111111111111111111111111111111111111111 -->\n<!-- hodor-review -->\nPrior finding with enough text",
+          author: { username: "hodor" },
+        },
+      ],
+    });
+
+    expect(notesSection).toContain("Prior Hodor Reviews (deduplication only)");
+    expect(notesSection).toContain("Re-check the current diff independently");
+  });
 });
 
 describe("normalizeLabelNames", () => {

@@ -78,4 +78,11 @@ export interface PostCommentResult {
   prNumber?: number;
   mrNumber?: number;
   error?: string;
+  errors?: string[];
+  summaryPosted?: boolean;
+  inlineCreated?: number;
+  inlineFailed?: number;
+  draftsPublished?: boolean;
+  commitStatusPosted?: boolean;
+  reconciledDiscussions?: number;
 }

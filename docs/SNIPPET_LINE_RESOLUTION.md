@@ -28,7 +28,7 @@ The cost of a wrong number is concrete, not cosmetic:
 
 - **GitLab inline comments are silently dropped.** `src/gitlab.ts` anchors every inline
   draft note / discussion to `position.new_line = finding.code_location.line_range.start`
-  (`createGitlabDraftNote`, `postGitlabInlineComment`). When the line doesn't sit on a
+  (`createGitlabDraftNote`). When the line doesn't sit on a
   valid diff position, the GitLab API rejects it; `isPositionErrorMessage` catches the
   error and we **warn + skip** (`src/gitlab.ts:391`). A real bug the model found never
   reaches the author.
@@ -128,7 +128,7 @@ already has it).
 
 Before the posting loop (`for (const finding of review.findings)` ~line 423), resolve each
 finding's location once and use the resolved range for both the inline anchor
-(`createGitlabDraftNote` `line:` / `postGitlabInlineComment`) and the `suggestion:-0+span`
+(`createGitlabDraftNote` `line:`) and the `suggestion:-0+span`
 computation. The summary render path (`src/render.ts`) uses the same corrected numbers.
 
 ### 4.5 Fallback behavior

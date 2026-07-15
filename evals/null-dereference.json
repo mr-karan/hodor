@@ -1,0 +1,17 @@
+{
+  "id": "null-dereference",
+  "description": "Detect an unchecked nullable lookup result",
+  "baseFiles": {
+    "src/user.ts": "export interface User { name: string }\n\nexport function displayName(user: User): string {\n  return user.name;\n}\n"
+  },
+  "changedFiles": {
+    "src/user.ts": "export interface User { name: string }\n\nexport function displayName(users: Map<string, User>, id: string): string {\n  const user = users.get(id);\n  return user.name;\n}\n"
+  },
+  "expectedFindings": [
+    {
+      "path": "src/user.ts",
+      "keywords": ["undefined"],
+      "maximumPriority": 1
+    }
+  ]
+}

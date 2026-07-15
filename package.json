@@ -3,7 +3,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "version": "0.6.2",
+  "version": "0.6.3-rc.1",
   "description": "AI-powered code review agent that finds bugs, security issues, and logic errors in pull requests",
   "type": "module",
   "main": "dist/index.js",
@@ -16,6 +16,8 @@
     "dev": "tsx src/cli.ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "eval": "tsx scripts/run-evals.ts",
+    "eval:list": "tsx scripts/run-evals.ts --list",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit"
   },

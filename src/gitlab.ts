@@ -34,6 +34,10 @@ function isHodorNote(body: unknown, marker = HODOR_REVIEW_MARKER): boolean {
   return false;
 }
 
+export function isHodorGeneratedNote(body: unknown): boolean {
+  return isHodorNote(body);
+}
+
 /**
  * Parse concatenated JSON arrays from `glab api --paginate`.
  * glab outputs `[...][...][...]` — one array per page, no delimiter.
@@ -231,6 +235,21 @@ export function summarizeGitlabNotes(
   notes: NoteEntry[] | undefined | null,
   maxEntries = 5,
 ): string {
+  return summarizeNotes(notes, maxEntries, (note) => !isHodorNote(note.body));
+}
+
+export function summarizeHodorNotes(
+  notes: NoteEntry[] | undefined | null,
+  maxEntries = 5,
+): string {
+  return summarizeNotes(notes, maxEntries, (note) => isHodorNote(note.body));
+}
+
+function summarizeNotes(
+  notes: NoteEntry[] | undefined | null,
+  maxEntries: number,
+  include: (note: NoteEntry) => boolean,
+): string {
   if (!notes || notes.length === 0) return "";
 
   const trivialPatterns = new Set([
@@ -250,6 +269,7 @@ export function summarizeGitlabNotes(
 
   const filtered: Array<{ username: string; body: string; createdAt: string }> = [];
   for (const note of notes) {
+    if (!include(note)) continue;
     const body = (note.body ?? "").trim();
     if (!body) continue;
     if (note.system) continue;
@@ -291,22 +311,12 @@ export function summarizeGitlabNotes(
     const header = timestampStr
       ? `- ${timestampStr} @${username}:`
       : `- @${username}:`;
-    const indentedBody = body.split("\n").join("\n  ");
+    const boundedBody = body.length > 2_000 ? `${body.slice(0, 1_999).trimEnd()}…` : body;
+    const indentedBody = boundedBody.split("\n").join("\n  ");
     lines.push(`${header}\n  ${indentedBody}`);
   }
 
   return lines.join("\n");
-}
-
-function isPositionErrorMessage(message: string): boolean {
-  const lower = message.toLowerCase();
-  const hasPositionHint =
-    lower.includes("line_code") ||
-    lower.includes("position") ||
-    lower.includes("must be part of the diff") ||
-    lower.includes("part of the diff");
-  const hasStatusHint = lower.includes("400") || lower.includes("422");
-  return hasPositionHint && hasStatusHint;
 }
 
 export async function getGitlabMrDiffRefs(
@@ -347,52 +357,6 @@ export async function getGitlabMrDiffRefs(
   }
 
   return { base_sha, head_sha, start_sha };
-}
-
-export async function postGitlabInlineComment(
-  owner: string,
-  repo: string,
-  mrNumber: number | string,
-  body: string,
-  filePath: string,
-  line: number,
-  diffRefs: DiffRefs,
-  host?: string | null,
-): Promise<Record<string, unknown> | null> {
-  const encoded = encodedProjectPath(owner, repo);
-  const env = glabEnv(host);
-  const endpoint = `projects/${encoded}/merge_requests/${mrNumber}/discussions`;
-
-  const payload: Record<string, unknown> = {
-    body,
-    position: {
-      base_sha: diffRefs.base_sha,
-      head_sha: diffRefs.head_sha,
-      start_sha: diffRefs.start_sha,
-      position_type: "text",
-      old_path: filePath,
-      new_path: filePath,
-      new_line: line,
-    },
-  };
-
-  try {
-    return await execJson<Record<string, unknown>>(
-      "glab",
-      ["api", endpoint, "--method", "POST", "-H", "Content-Type: application/json", "--input", "-"],
-      {
-        env,
-        input: JSON.stringify(payload),
-      },
-    );
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (isPositionErrorMessage(msg)) {
-      logger.warn(`Skipping inline comment for ${filePath}:${line}: ${msg}`);
-      return null;
-    }
-    throw new GitLabAPIError(`Failed to post inline comment to MR !${mrNumber}: ${msg}`);
-  }
 }
 
 export async function createGitlabDraftNote(
@@ -513,70 +477,6 @@ export async function postGitlabCommitStatus(
     const msg = err instanceof Error ? err.message : String(err);
     throw new GitLabAPIError(`Failed to post commit status for ${sha}: ${msg}`);
   }
-}
-
-export async function cleanupHodorComments(
-  owner: string,
-  repo: string,
-  mrNumber: number | string,
-  host?: string | null,
-  marker = HODOR_REVIEW_MARKER,
-): Promise<number> {
-  const encoded = encodedProjectPath(owner, repo);
-  const env = glabEnv(host);
-
-  let notes: Array<Record<string, unknown>>;
-  try {
-    const { stdout: rawNotes } = await exec(
-      "glab",
-      [
-        "api",
-        `projects/${encoded}/merge_requests/${mrNumber}/notes?per_page=100`,
-        "--paginate",
-      ],
-      { env },
-    );
-    notes = parseGlabPaginatedJson(rawNotes);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new GitLabAPIError(`Failed to list notes for MR !${mrNumber}: ${msg}`);
-  }
-
-  const matchedNotes = notes.filter((note) => isHodorNote(note.body, marker));
-
-  let deletedCount = 0;
-  let failedCount = 0;
-  for (const note of matchedNotes) {
-    const noteId = note.id;
-    if (typeof noteId !== "number") continue;
-
-    try {
-      await exec(
-        "glab",
-        [
-          "api",
-          `projects/${encoded}/merge_requests/${mrNumber}/notes/${noteId}`,
-          "--method",
-          "DELETE",
-        ],
-        { env },
-      );
-      deletedCount += 1;
-      logger.debug(`Deleted GitLab MR note ${noteId}`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // Inline (discussion) notes can't be deleted via /notes/{id}; log and continue
-      // so one stale note doesn't abort the whole cleanup.
-      logger.warn(`Skipping note ${noteId} on MR !${mrNumber}: ${msg}`);
-      failedCount += 1;
-    }
-  }
-
-  if (failedCount > 0) {
-    logger.warn(`Cleanup left ${failedCount} note(s) undeleted on MR !${mrNumber}`);
-  }
-
-  return deletedCount;
 }
 
 export async function listHodorDiscussions(

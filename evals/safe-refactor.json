@@ -1,0 +1,11 @@
+{
+  "id": "safe-refactor",
+  "description": "Avoid findings for a behavior-preserving extraction",
+  "baseFiles": {
+    "src/math.ts": "export function total(a: number, b: number): number {\n  return a + b;\n}\n"
+  },
+  "changedFiles": {
+    "src/math.ts": "function add(a: number, b: number): number {\n  return a + b;\n}\n\nexport function total(a: number, b: number): number {\n  return add(a, b);\n}\n"
+  },
+  "expectedFindings": []
+}

@@ -9,6 +9,11 @@ import type { AgentProgressEvent } from "./agent.js";
 import type { PostCommentResult } from "./types.js";
 import { renderMarkdown } from "./render.js";
 import { pushMetrics } from "./metrics.js";
+import {
+  hasBlockingFinding,
+  parseFailOnPriority,
+  type FailOnPriority,
+} from "./review-policy.js";
 import { setLogLevel } from "./utils/logger.js";
 
 const program = new Command();
@@ -21,7 +26,7 @@ program
       "and analyzes the code using tools (gh, git, glab) for metadata fetching and comment posting.\n\n" +
       "For local reviews, use --local with --diff-against to review changes in your current git repository.",
   )
-  .version("0.6.2")
+  .version("0.6.3-rc.1")
   .argument("[pr-url]", "URL of the GitHub PR, GitLab MR, or Gitea/Forgejo PR to review (optional with --local)")
   .option(
     "--model <model>",
@@ -60,6 +65,15 @@ program
     "--commit-status",
     "Post a pass/fail commit status to the MR head SHA",
     false,
+  )
+  .option(
+    "--require-delivery",
+    "Exit non-zero if requested comments, statuses, or artifacts are not delivered",
+    false,
+  )
+  .option(
+    "--fail-on-priority <priority>",
+    "Exit non-zero when findings at or above this severity exist: P0, P1, P2, or P3",
   )
   .option(
     "--ultrathink",
@@ -104,6 +118,8 @@ program
     const reviewStyle = cmdOpts.reviewStyle as "summary" | "inline" | "hybrid" | undefined;
     const codeQuality = cmdOpts.codeQuality as string | undefined;
     const commitStatus = cmdOpts.commitStatus as boolean;
+    const requireDelivery = cmdOpts.requireDelivery as boolean;
+    const failOnPriorityRaw = cmdOpts.failOnPriority as string | undefined;
     const ultrathink = cmdOpts.ultrathink as boolean;
     const bedrockTagsRaw = cmdOpts.bedrockTags as string | undefined;
     const prometheusPush = cmdOpts.prometheusPush as string | undefined;
@@ -129,6 +145,20 @@ program
     }
     if (full && localMode) {
       console.error(chalk.yellow("Warning: --full has no effect in --local mode (local reviews are always full)."));
+    }
+    if (requireDelivery && !post && !codeQuality) {
+      console.error(chalk.red("Error: --require-delivery requires --post or --code-quality"));
+      process.exit(1);
+    }
+
+    let failOnPriority: FailOnPriority | undefined;
+    if (failOnPriorityRaw) {
+      try {
+        failOnPriority = parseFailOnPriority(failOnPriorityRaw.toUpperCase());
+      } catch (error) {
+        console.error(chalk.red(`Error: ${error instanceof Error ? error.message : error}`));
+        process.exit(1);
+      }
     }
 
     // Auto-detect CI environment
@@ -232,12 +262,12 @@ program
       // Detect platform and warn about missing tokens
       let platform: string = "local";
       let metricsProject: string | undefined;
-      let metricsMrIid: string | undefined;
+      let metricsOutcome = "reviewed";
+      let requestedExitCode = 0;
       if (!localMode && prUrl) {
         platform = detectPlatform(prUrl);
         const parsedPr = parsePrUrl(prUrl);
         metricsProject = `${parsedPr.owner}/${parsedPr.repo}`;
-        metricsMrIid = String(parsedPr.prNumber);
         const githubToken = process.env.GITHUB_TOKEN;
         const gitlabToken =
           process.env.GITLAB_TOKEN ??
@@ -298,6 +328,7 @@ program
 
       streamLog(chalk.green("✔ Review complete!"));
 
+      let codeQualityWritten = false;
       if (codeQuality) {
         try {
           const { formatCodeQualityReport } = await import("./codequality.js");
@@ -307,9 +338,12 @@ program
             formatCodeQualityReport(review, process.env.CI_PROJECT_DIR ?? workspacePath),
             "utf-8",
           );
+          codeQualityWritten = true;
           log(chalk.dim(`Wrote code quality report to ${codeQuality}`));
         } catch (err) {
           log(chalk.yellow(`Failed to write code quality report: ${err}`));
+          metricsOutcome = "delivery_failed";
+          if (requireDelivery) requestedExitCode = 1;
         }
       }
 
@@ -330,6 +364,7 @@ program
             commitStatus,
             headSha,
             workspacePath,
+            reconcileDiscussions: full,
           });
         } else {
           result = await postReviewComment({
@@ -369,6 +404,8 @@ program
           log(chalk.bold.red(`Failed to post review: ${result.error}`));
           log(chalk.yellow("\nReview output:\n"));
           console.log(reviewText);
+          metricsOutcome = "delivery_failed";
+          if (requireDelivery) requestedExitCode = 1;
         }
       } else {
         log(chalk.bold.green("Review Complete\n"));
@@ -378,15 +415,32 @@ program
         }
       }
 
+      if (requireDelivery && codeQuality && !codeQualityWritten) {
+        requestedExitCode = 1;
+      }
+      if (failOnPriority && hasBlockingFinding(review, failOnPriority)) {
+        const maximumPriority = Number(failOnPriority.slice(1));
+        const blocking = review.findings.filter(
+          (finding) => finding.priority <= maximumPriority,
+        ).length;
+        log(
+          chalk.bold.red(
+            `Review policy failed: ${blocking} finding(s) at ${failOnPriority} or higher`,
+          ),
+        );
+        metricsOutcome = "policy_failed";
+        requestedExitCode = 1;
+      }
+
       // Push metrics to Prometheus Pushgateway (best-effort, never fails the run)
       if (prometheusPush) {
         const labels: Record<string, string> = {
           platform,
           model,
           verdict: review.overall_correctness === "patch is correct" ? "correct" : "incorrect",
+          outcome: metricsOutcome,
         };
         if (metricsProject) labels.project = metricsProject;
-        if (metricsMrIid) labels.mr_iid = metricsMrIid;
 
         await pushMetrics({
           pushgatewayUrl: prometheusPush,
@@ -395,6 +449,7 @@ program
           labels,
         });
       }
+      if (requestedExitCode !== 0) process.exitCode = requestedExitCode;
     } catch (err) {
       streamLog(chalk.red("✗ Review failed"));
       console.error(
@@ -403,7 +458,42 @@ program
       if (verbose && err instanceof Error && err.stack) {
         console.error(chalk.dim(err.stack));
       }
-      process.exit(1);
+      if (prometheusPush) {
+        let failurePlatform = "local";
+        let failureProject: string | undefined;
+        if (!localMode && prUrl) {
+          try {
+            failurePlatform = detectPlatform(prUrl);
+            const parsed = parsePrUrl(prUrl);
+            failureProject = `${parsed.owner}/${parsed.repo}`;
+          } catch {
+            // The original validation error is more useful than metrics-label parsing.
+          }
+        }
+        const labels: Record<string, string> = {
+          platform: failurePlatform,
+          model,
+          verdict: "unknown",
+          outcome: "review_failed",
+        };
+        if (failureProject) labels.project = failureProject;
+        await pushMetrics({
+          pushgatewayUrl: prometheusPush,
+          metrics: {
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            totalTokens: 0,
+            cost: 0,
+            turns: 0,
+            toolCalls: 0,
+            durationSeconds: 0,
+          },
+          labels,
+        });
+      }
+      process.exitCode = 1;
     }
   });
 
