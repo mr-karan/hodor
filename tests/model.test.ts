@@ -4,6 +4,7 @@ import {
   getDefaultReasoningEffortForModel,
   mapReasoningEffort,
   parseModelString,
+  selectReasoningEffort,
 } from "../src/model.js";
 
 describe("parseModelString", () => {
@@ -48,13 +49,11 @@ describe("mapReasoningEffort", () => {
 });
 
 describe("getDefaultReasoningEffortForModel", () => {
-  it("defaults Claude Opus 4.7 to xhigh", () => {
-    expect(
-      getDefaultReasoningEffortForModel({
-        id: "global.anthropic.claude-opus-4-7",
-        name: "Claude Opus 4.7",
-      }),
-    ).toBe("xhigh");
+  it.each([
+    ["global.anthropic.claude-opus-4-7", "Claude Opus 4.7"],
+    ["global.anthropic.claude-opus-4-8", "Claude Opus 4.8"],
+  ])("defaults %s to xhigh", (id, name) => {
+    expect(getDefaultReasoningEffortForModel({ id, name })).toBe("xhigh");
   });
 
   it("does not default other Opus versions to xhigh", () => {
@@ -64,6 +63,45 @@ describe("getDefaultReasoningEffortForModel", () => {
         name: "Claude Opus 4.6",
       }),
     ).toBeUndefined();
+  });
+});
+
+describe("selectReasoningEffort", () => {
+  const smallDiff = "diff --git a/src/a.ts b/src/a.ts\n+const enabled = true;\n";
+  const stats = { files: 1, additions: 1, deletions: 0, bytes: smallDiff.length };
+
+  it("uses high for routine incremental Opus reviews", () => {
+    expect(selectReasoningEffort({
+      modelDefault: "xhigh",
+      mode: "incremental",
+      diff: smallDiff,
+      stats,
+    })).toBe("high");
+  });
+
+  it("retains xhigh for risky diffs and explicit full reviews", () => {
+    expect(selectReasoningEffort({
+      modelDefault: "xhigh",
+      mode: "snapshot",
+      diff: "diff --git a/auth/token.ts b/auth/token.ts\n+authorize(token);\n",
+      stats,
+    })).toBe("xhigh");
+    expect(selectReasoningEffort({
+      modelDefault: "xhigh",
+      mode: "full",
+      forcedFull: true,
+      diff: smallDiff,
+      stats,
+    })).toBe("xhigh");
+  });
+
+  it("always honors an explicit setting", () => {
+    expect(selectReasoningEffort({
+      requested: "medium",
+      modelDefault: "xhigh",
+      mode: "full",
+      forcedFull: true,
+    })).toBe("medium");
   });
 });
 

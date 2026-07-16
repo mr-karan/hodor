@@ -1,6 +1,7 @@
 import { getEnvApiKey } from "@earendil-works/pi-ai/compat";
 import { getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
 import type { ThinkingLevel } from "@earendil-works/pi-ai";
+import type { DiffStats, ReviewDiffMode } from "./review-diff.js";
 
 export interface ParsedModel {
   provider: string;
@@ -107,11 +108,42 @@ export function getDefaultReasoningEffortForModel(model: {
   name?: string;
 }): ThinkingLevel | undefined {
   const values = [model.id, model.name].filter((value): value is string => Boolean(value));
-  const isOpus47 = values
+  const isAdaptiveOpus = values
     .map(normalizeModelMatchValue)
-    .some((value) => value.includes("opus-4-7"));
+    .some((value) => value.includes("opus-4-7") || value.includes("opus-4-8"));
 
-  return isOpus47 ? "xhigh" : undefined;
+  return isAdaptiveOpus ? "xhigh" : undefined;
+}
+
+const HIGH_RISK_PATH_RE = /(?:^|\/)(?:migrations?|schema|auth|security|permissions?|crypto|iam)(?:\/|\.|$)|\.tf$/im;
+const HIGH_RISK_CHANGE_RE = /^\+.*\b(?:authorization|authentication|permission|transaction|mutex|semaphore|encrypt|decrypt|credential|secret)\b/im;
+
+export function selectReasoningEffort(opts: {
+  requested?: string;
+  modelDefault?: ThinkingLevel;
+  mode: ReviewDiffMode;
+  forcedFull?: boolean;
+  diff?: string | null;
+  stats?: DiffStats | null;
+}): ThinkingLevel | undefined {
+  const requested = mapReasoningEffort(opts.requested);
+  if (requested) return requested;
+
+  const modelDefault = opts.modelDefault;
+  if (modelDefault !== "xhigh") return modelDefault;
+  if (opts.forcedFull) return modelDefault;
+
+  const risky = Boolean(
+    opts.diff && (HIGH_RISK_PATH_RE.test(opts.diff) || HIGH_RISK_CHANGE_RE.test(opts.diff)),
+  );
+  if (risky) return modelDefault;
+
+  if (opts.mode === "incremental" || opts.mode === "snapshot") return "high";
+
+  const changedLines = (opts.stats?.additions ?? 0) + (opts.stats?.deletions ?? 0);
+  if (opts.stats && opts.stats.files <= 10 && changedLines <= 500) return "high";
+
+  return modelDefault;
 }
 
 /**

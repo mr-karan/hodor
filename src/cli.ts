@@ -26,7 +26,7 @@ program
       "and analyzes the code using tools (gh, git, glab) for metadata fetching and comment posting.\n\n" +
       "For local reviews, use --local with --diff-against to review changes in your current git repository.",
   )
-  .version("0.6.3-rc.2")
+  .version("0.6.3-rc.3")
   .argument("[pr-url]", "URL of the GitHub PR, GitLab MR, or Gitea/Forgejo PR to review (optional with --local)")
   .option(
     "--model <model>",
@@ -308,7 +308,15 @@ program
       log();
 
       streamLog(chalk.dim("▶ Setting up workspace..."));
-      const { review, metricsFooter, headSha, metrics, workspacePath } = await reviewPr({
+      const {
+        review,
+        metricsFooter,
+        headSha,
+        metrics,
+        workspacePath,
+        cacheMarker,
+        reusedReview,
+      } = await reviewPr({
         prUrl: localMode ? undefined : prUrl,
         model,
         reasoningEffort,
@@ -327,6 +335,9 @@ program
       const reviewText = renderMarkdown(review);
 
       streamLog(chalk.green("✔ Review complete!"));
+      if (reusedReview) {
+        log(chalk.dim("Reused the existing review for this HEAD; no LLM request was made."));
+      }
 
       let codeQualityWritten = false;
       if (codeQuality) {
@@ -365,7 +376,15 @@ program
             headSha,
             workspacePath,
             reconcileDiscussions: full,
+            cacheMarker,
+            skipSummary: reusedReview,
           });
+        } else if (reusedReview) {
+          result = {
+            success: true,
+            platform: platform as "github" | "gitlab" | "gitea",
+            summaryPosted: true,
+          };
         } else {
           result = await postReviewComment({
             prUrl,
@@ -373,27 +392,28 @@ program
             model,
             metricsFooter,
             headSha,
+            cacheMarker,
           });
+        }
 
-          if (platform === "gitlab" && commitStatus) {
-            try {
-              const { getGitlabMrDiffRefs } = await import("./gitlab.js");
-              const parsed = parsePrUrl(prUrl);
-              const diffRefs = await getGitlabMrDiffRefs(
-                parsed.owner,
-                parsed.repo,
-                parsed.prNumber,
-                parsed.host,
-              );
-              await postGitlabReviewCommitStatus(parsed, review, diffRefs);
-            } catch (err) {
-              result = {
-                success: false,
-                platform: "gitlab",
-                mrNumber: parsePrUrl(prUrl).prNumber,
-                error: `Failed to post commit status: ${err instanceof Error ? err.message : err}`,
-              };
-            }
+        if (!useStructured && platform === "gitlab" && commitStatus) {
+          try {
+            const { getGitlabMrDiffRefs } = await import("./gitlab.js");
+            const parsed = parsePrUrl(prUrl);
+            const diffRefs = await getGitlabMrDiffRefs(
+              parsed.owner,
+              parsed.repo,
+              parsed.prNumber,
+              parsed.host,
+            );
+            await postGitlabReviewCommitStatus(parsed, review, diffRefs);
+          } catch (err) {
+            result = {
+              success: false,
+              platform: "gitlab",
+              mrNumber: parsePrUrl(prUrl).prNumber,
+              error: `Failed to post commit status: ${err instanceof Error ? err.message : err}`,
+            };
           }
         }
 
@@ -439,13 +459,18 @@ program
           model,
           verdict: review.overall_correctness === "patch is correct" ? "correct" : "incorrect",
           outcome: metricsOutcome,
+          review_mode: metrics.reviewMode ?? "unknown",
+          reasoning_effort: metrics.reasoningEffort ?? reasoningEffort ?? "none",
+          reused: metrics.reused ? "true" : "false",
         };
         if (metricsProject) labels.project = metricsProject;
 
         await pushMetrics({
           pushgatewayUrl: prometheusPush,
           metrics,
-          findings: review.findings,
+          // Reused reviews are delivery/cache events, not newly discovered
+          // findings. Keep them observable without double-counting findings.
+          findings: metrics.reused ? [] : review.findings,
           labels,
         });
       }

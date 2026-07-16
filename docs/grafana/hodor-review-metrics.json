@@ -1336,6 +1336,126 @@
         }
       ],
       "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Review cost grouped by full, incremental, snapshot, local, and reused execution modes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 36
+      },
+      "id": 15,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.6.1",
+      "targets": [
+        {
+          "datasource": {
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (review_mode) (sum_over_time(hodor_review_cost_dollars{platform=~\"$platform\",project=~\"$project\",model=~\"$model\",verdict=~\"$verdict\",review_mode!=\"\"}[$__interval]))",
+          "format": "time_series",
+          "legendFormat": "{{review_mode}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Cost by review mode",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Review cost grouped by the effective reasoning effort selected for each run.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 36
+      },
+      "id": 16,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.6.1",
+      "targets": [
+        {
+          "datasource": {
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (reasoning_effort) (sum_over_time(hodor_review_cost_dollars{platform=~\"$platform\",project=~\"$project\",model=~\"$model\",verdict=~\"$verdict\",reasoning_effort!=\"\"}[$__interval]))",
+          "format": "time_series",
+          "legendFormat": "{{reasoning_effort}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Cost by reasoning effort",
+      "type": "timeseries"
     }
   ],
   "preload": false,

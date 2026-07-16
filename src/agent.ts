@@ -18,15 +18,27 @@ import { setupWorkspace, cleanupWorkspace } from "./workspace.js";
 import { buildPrReviewPrompt } from "./prompt.js";
 import {
   getDefaultReasoningEffortForModel,
-  mapReasoningEffort,
   parseModelString,
+  selectReasoningEffort,
 } from "./model.js";
 import { formatMetricsMarkdown, printMetrics } from "./metrics.js";
 import { SUBMIT_REVIEW_SCHEMA, validateReviewOutput } from "./review.js";
 import { resolveReviewLocations } from "./resolve-location.js";
 import { REVIEW_SYSTEM_PROMPT } from "./system-prompt.js";
 import { detectPlatform, parsePrUrl } from "./platform.js";
-import { filterEmbeddedDiff, findLatestValidReviewSha } from "./review-diff.js";
+import {
+  filterEmbeddedDiff,
+  findLatestReviewBase,
+  getChangedFiles,
+  getDiffStats,
+  type DiffStats,
+  type ReviewDiffMode,
+} from "./review-diff.js";
+import {
+  buildReviewCacheMarker,
+  findCachedReview,
+  getReviewCacheKey,
+} from "./review-cache.js";
 import {
   buildSubmitReviewRecoveryPrompt,
   parseReviewFromAssistantText,
@@ -74,7 +86,15 @@ export async function reviewPr(opts: {
   diffAgainst?: string;
   full?: boolean;
   targetBranchOverride?: string;
-}): Promise<{ review: ReviewOutput; metricsFooter: string | null; headSha: string | null; metrics: ReviewMetrics; workspacePath: string }> {
+}): Promise<{
+  review: ReviewOutput;
+  metricsFooter: string | null;
+  headSha: string | null;
+  metrics: ReviewMetrics;
+  workspacePath: string;
+  cacheMarker: string | null;
+  reusedReview: boolean;
+}> {
   const {
     prUrl,
     model = "anthropic/claude-sonnet-4-5-20250929",
@@ -182,11 +202,7 @@ export async function reviewPr(opts: {
       );
     }
   }
-  const thinkingLevel =
-    mapReasoningEffort(reasoningEffort) ?? getDefaultReasoningEffortForModel(piModel);
-  if (!reasoningEffort && thinkingLevel) {
-    logger.info(`Default reasoning effort for ${piModel.name}: ${thinkingLevel}`);
-  }
+  const modelDefaultThinkingLevel = getDefaultReasoningEffortForModel(piModel);
 
   // Note: For bedrock, don't preflight-check AWS credentials because the SDK
   // resolves them from many sources (env vars, IMDS, ECS task role, IRSA,
@@ -286,19 +302,6 @@ export async function reviewPr(opts: {
       }
     }
 
-    // Detect previous Hodor review SHA for incremental mode. GitLab returns MR
-    // notes newest-first by default, so select by timestamp instead of taking
-    // the last match from API order. --full skips this entirely so the review
-    // always covers the whole source-vs-target diff.
-    const previousReviewSha = full
-      ? null
-      : await findLatestValidReviewSha(mrMetadata?.Notes, workspacePath);
-    if (full) {
-      logger.info("Full review mode: ignoring previous hodor reviews, diffing entire source-vs-target range");
-    } else if (previousReviewSha) {
-      logger.info(`Incremental mode: previous review at ${previousReviewSha.slice(0, 8)}`);
-    }
-
     // Get HEAD SHA for embedding in posted comments (skip in local mode — no posting)
     let headSha: string | null = null;
     if (!localMode) {
@@ -306,12 +309,87 @@ export async function reviewPr(opts: {
       headSha = headShaRaw.trim();
     }
 
+    // A successful Hodor summary contains a compressed, validated copy of the
+    // structured result. Reuse it for an identical review identity so pipeline
+    // retries can regenerate artifacts and retry delivery without another LLM
+    // invocation. Explicit --full reviews always bypass this fast path.
+    let reviewCacheKey: string | null = null;
+    if (!localMode && !full && headSha) {
+      reviewCacheKey = getReviewCacheKey({
+        headSha,
+        model,
+        requestedReasoningEffort: reasoningEffort,
+        customPrompt,
+        promptFile,
+      });
+      const cachedReview = findCachedReview(mrMetadata?.Notes, reviewCacheKey);
+      if (cachedReview) {
+        logger.info(`Reusing cached Hodor review for HEAD ${headSha.slice(0, 8)}`);
+        const metrics: ReviewMetrics = {
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          totalTokens: 0,
+          cost: 0,
+          turns: 0,
+          toolCalls: 0,
+          durationSeconds: 0,
+          reviewMode: "reused",
+          reasoningEffort: reasoningEffort ?? "auto",
+          diffFiles: 0,
+          diffAdditions: 0,
+          diffDeletions: 0,
+          diffBytes: 0,
+          reused: true,
+        };
+        logger.info(`Review telemetry: ${JSON.stringify({
+          reviewMode: metrics.reviewMode,
+          reasoningEffort: metrics.reasoningEffort,
+          reused: true,
+          headSha: headSha.slice(0, 12),
+          findings: cachedReview.findings.length,
+        })}`);
+        printMetrics(metrics);
+        return {
+          review: cachedReview,
+          metricsFooter: includeMetricsFooter ? formatMetricsMarkdown(metrics) : null,
+          headSha,
+          metrics,
+          workspacePath,
+          cacheMarker: null,
+          reusedReview: true,
+        };
+      }
+    }
+
+    // Prefer the latest reviewed commit. Preserve three-dot semantics while it
+    // is an ancestor; after a force-push/rebase, use a direct snapshot delta.
+    const previousReviewBase = full || localMode
+      ? null
+      : await findLatestReviewBase(mrMetadata?.Notes, workspacePath);
+    const previousReviewSha = previousReviewBase?.sha ?? null;
+    let reviewMode: ReviewDiffMode = localMode
+      ? "local"
+      : previousReviewBase?.mode ?? "full";
+    if (full) {
+      reviewMode = "full";
+      logger.info("Full review mode: ignoring previous hodor reviews, diffing entire source-vs-target range");
+    } else if (previousReviewBase) {
+      logger.info(`${previousReviewBase.mode === "snapshot" ? "Snapshot delta" : "Incremental"} mode: previous review at ${previousReviewSha?.slice(0, 8)}`);
+    }
+
     // Pre-fetch diff for embedding in prompt (avoids per-file tool calls)
     const MAX_EMBED_BYTES = 200 * 1024; // 200KB
     let embeddedDiff: string | null = null;
+    let reviewDiff: string | null = null;
+    let diffStats: DiffStats | null = null;
+    let changedFiles: string[] = [];
     try {
       const diffArgs = previousReviewSha
-        ? ["--no-pager", "diff", `${previousReviewSha}...HEAD`]
+        ? previousReviewBase?.mode === "snapshot"
+          ? ["--no-pager", "diff", previousReviewSha, "HEAD"]
+          : ["--no-pager", "diff", `${previousReviewSha}...HEAD`]
         : diffBaseSha
           ? ["--no-pager", "diff", diffBaseSha, "HEAD"]
           : localMode
@@ -322,6 +400,9 @@ export async function reviewPr(opts: {
       if (skippedFiles.length > 0) {
         logger.info(`Filtered ${skippedFiles.length} file(s) from embedded diff: ${skippedFiles.join(", ")}`);
       }
+      reviewDiff = filteredDiff;
+      diffStats = getDiffStats(filteredDiff);
+      changedFiles = getChangedFiles(filteredDiff);
       if (Buffer.byteLength(filteredDiff, "utf-8") <= MAX_EMBED_BYTES) {
         embeddedDiff = filteredDiff;
         logger.info(`Embedding diff in prompt (${Buffer.byteLength(filteredDiff, "utf-8")} bytes, raw: ${Buffer.byteLength(rawDiff, "utf-8")} bytes)`);
@@ -330,6 +411,18 @@ export async function reviewPr(opts: {
       }
     } catch (err) {
       logger.warn(`Failed to pre-fetch diff, falling back to command mode: ${err}`);
+    }
+
+    const thinkingLevel = selectReasoningEffort({
+      requested: reasoningEffort,
+      modelDefault: modelDefaultThinkingLevel,
+      mode: reviewMode,
+      forcedFull: full,
+      diff: reviewDiff,
+      stats: diffStats,
+    });
+    if (thinkingLevel) {
+      logger.info(`Reasoning effort for ${piModel.name}: ${thinkingLevel}${reasoningEffort ? " (explicit)" : " (adaptive)"}`);
     }
 
     // Build prompt (always uses JSON template; rendered to markdown post-hoc)
@@ -343,6 +436,8 @@ export async function reviewPr(opts: {
       customPromptFile: promptFile,
       embeddedDiff,
       previousReviewSha,
+      reviewDiffMode: reviewMode,
+      changedFiles,
       localMode,
     });
 
@@ -664,7 +759,31 @@ export async function reviewPr(opts: {
       turns: turnCount,
       toolCalls: toolCallCount,
       durationSeconds: Math.round(durationSeconds),
+      reviewMode,
+      reasoningEffort: thinkingLevel ?? "none",
+      diffFiles: diffStats?.files ?? 0,
+      diffAdditions: diffStats?.additions ?? 0,
+      diffDeletions: diffStats?.deletions ?? 0,
+      diffBytes: diffStats?.bytes ?? 0,
+      reused: false,
     };
+    logger.info(`Review telemetry: ${JSON.stringify({
+      reviewMode: metrics.reviewMode,
+      reasoningEffort: metrics.reasoningEffort,
+      reused: false,
+      diffFiles: metrics.diffFiles,
+      diffAdditions: metrics.diffAdditions,
+      diffDeletions: metrics.diffDeletions,
+      diffBytes: metrics.diffBytes,
+      turns: metrics.turns,
+      toolCalls: metrics.toolCalls,
+      inputTokens: metrics.inputTokens,
+      cacheReadTokens: metrics.cacheReadTokens,
+      cacheWriteTokens: metrics.cacheWriteTokens,
+      outputTokens: metrics.outputTokens,
+      cost: metrics.cost,
+      findings: review.findings.length,
+    })}`);
     printMetrics(metrics);
 
     let metricsFooter: string | null = null;
@@ -672,7 +791,19 @@ export async function reviewPr(opts: {
       metricsFooter = formatMetricsMarkdown(metrics);
     }
 
-    return { review, metricsFooter, headSha, metrics, workspacePath };
+    const cacheMarker = reviewCacheKey
+      ? buildReviewCacheMarker(reviewCacheKey, review, workspacePath)
+      : null;
+
+    return {
+      review,
+      metricsFooter,
+      headSha,
+      metrics,
+      workspacePath,
+      cacheMarker,
+      reusedReview: false,
+    };
   } finally {
     activeSession?.dispose();
 

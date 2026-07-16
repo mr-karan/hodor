@@ -233,8 +233,13 @@ See [AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md) for advanced workflows.
 Hodor automatically optimizes token usage:
 
 - **Diff embedding**: For PRs under 200KB, the diff is embedded directly in the prompt, cutting agent turns from ~60 to ~5.
-- **Incremental reviews**: On re-runs, only reviews changes since the last hodor comment (detected via SHA markers in posted comments). Pass `--full` to override this and re-review the entire source-vs-target diff from scratch.
+- **Incremental reviews**: On re-runs, only reviews changes since the last hodor comment. After a force-push or rebase, Hodor compares the last reviewed snapshot directly with the current HEAD instead of reviewing the whole MR again.
+- **Identical-HEAD reuse**: Successful summaries include a versioned, compressed review payload. Pipeline retries with the same HEAD, model, reasoning request, and prompt configuration reuse that result while still regenerating artifacts and retrying delivery.
+- **Adaptive reasoning**: Models that default to `xhigh` use `high` for routine small and incremental diffs, while risky, large, explicitly configured, and `--full` reviews retain the requested depth.
+- **Focused exploration**: Embedded diffs include a changed-file manifest and direct the agent toward bounded context reads without limiting how far it may investigate.
 - **Compaction**: SDK auto-summarizes older conversation turns when context grows too large.
+
+Pass `--full` to bypass incremental mode and identical-HEAD reuse. Pass `--reasoning-effort` to override adaptive reasoning.
 
 ## Skills
 

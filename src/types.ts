@@ -47,6 +47,13 @@ export interface ReviewMetrics {
   turns: number;
   toolCalls: number;
   durationSeconds: number;
+  reviewMode?: "full" | "incremental" | "snapshot" | "local" | "reused";
+  reasoningEffort?: string;
+  diffFiles?: number;
+  diffAdditions?: number;
+  diffDeletions?: number;
+  diffBytes?: number;
+  reused?: boolean;
 }
 
 export type ReviewPriority = 0 | 1 | 2 | 3;

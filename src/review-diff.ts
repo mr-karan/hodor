@@ -4,6 +4,20 @@ import { logger } from "./utils/logger.js";
 
 const HODOR_REVIEW_SHA_RE = /^\s*<!--\s*hodor:sha:([a-f0-9]{40})\s*-->/i;
 
+export type ReviewDiffMode = "full" | "incremental" | "snapshot" | "local" | "reused";
+
+export interface PreviousReviewBase {
+  sha: string;
+  mode: "incremental" | "snapshot";
+}
+
+export interface DiffStats {
+  files: number;
+  additions: number;
+  deletions: number;
+  bytes: number;
+}
+
 export function getHodorReviewShaCandidates(
   notes: MrMetadata["Notes"] | undefined | null,
 ): string[] {
@@ -33,31 +47,88 @@ export function getHodorReviewShaCandidates(
   return [...new Set(candidates.map(({ sha }) => sha))];
 }
 
-export async function findLatestValidReviewSha(
+export async function findLatestReviewBase(
   notes: MrMetadata["Notes"] | undefined | null,
   workspacePath: string,
-): Promise<string | null> {
+): Promise<PreviousReviewBase | null> {
   const candidates = getHodorReviewShaCandidates(notes);
   if (candidates.length === 0) return null;
 
   logger.info(`Found ${candidates.length} previous Hodor review marker(s)`);
   for (const sha of candidates) {
     try {
-      const { stdout: objectType } = await exec("git", ["cat-file", "-t", sha], {
-        cwd: workspacePath,
-      });
+      let objectType: string;
+      try {
+        ({ stdout: objectType } = await exec("git", ["cat-file", "-t", sha], {
+          cwd: workspacePath,
+        }));
+      } catch {
+        // Rewritten commits may no longer be reachable from the checked-out
+        // branch, especially in shallow CI clones. Most Git servers still let
+        // an authenticated client fetch the exact object by SHA.
+        await exec("git", ["fetch", "--quiet", "origin", sha], {
+          cwd: workspacePath,
+        });
+        ({ stdout: objectType } = await exec("git", ["cat-file", "-t", sha], {
+          cwd: workspacePath,
+        }));
+      }
       if (objectType.trim() !== "commit") throw new Error("not a commit");
-      await exec("git", ["merge-base", "--is-ancestor", sha, "HEAD"], {
-        cwd: workspacePath,
-      });
-      return sha;
+
+      try {
+        await exec("git", ["merge-base", "--is-ancestor", sha, "HEAD"], {
+          cwd: workspacePath,
+        });
+        return { sha, mode: "incremental" };
+      } catch {
+        logger.info(
+          `Previous review SHA ${sha.slice(0, 8)} is not an ancestor; using snapshot delta`,
+        );
+        return { sha, mode: "snapshot" };
+      }
     } catch {
       logger.info(
-        `Skipping previous review SHA ${sha.slice(0, 8)}; not a valid ancestor of HEAD`,
+        `Skipping previous review SHA ${sha.slice(0, 8)}; commit is unavailable`,
       );
     }
   }
   return null;
+}
+
+/** Backwards-compatible helper for callers that only accept ancestor diffs. */
+export async function findLatestValidReviewSha(
+  notes: MrMetadata["Notes"] | undefined | null,
+  workspacePath: string,
+): Promise<string | null> {
+  const base = await findLatestReviewBase(notes, workspacePath);
+  return base?.mode === "incremental" ? base.sha : null;
+}
+
+export function getDiffStats(diff: string): DiffStats {
+  let files = 0;
+  let additions = 0;
+  let deletions = 0;
+
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("diff --git ")) files++;
+    else if (line.startsWith("+") && !line.startsWith("+++")) additions++;
+    else if (line.startsWith("-") && !line.startsWith("---")) deletions++;
+  }
+
+  return {
+    files,
+    additions,
+    deletions,
+    bytes: Buffer.byteLength(diff, "utf-8"),
+  };
+}
+
+export function getChangedFiles(diff: string): string[] {
+  const files: string[] = [];
+  for (const match of diff.matchAll(/^diff --git a\/(.*?) b\/(.*?)$/gm)) {
+    files.push(match[2]);
+  }
+  return [...new Set(files)];
 }
 
 const DIFF_SKIP_PATTERNS: RegExp[] = [

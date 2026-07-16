@@ -160,5 +160,5 @@ Do not run checkout for the Hodor job unless you need it. Hodor can clone the re
 
 - Avoid running on draft PRs.
 - Skip docs-only changes in your workflow rules.
-- Use `--reasoning-effort low` for routine changes.
+- Let adaptive reasoning use `high` for routine small and incremental Opus reviews, or set `--reasoning-effort` explicitly when you need a fixed level.
 - Keep large generated files out of diffs.

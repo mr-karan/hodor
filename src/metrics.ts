@@ -21,9 +21,12 @@ function formatDuration(seconds: number): string {
 
 export function formatMetricsMarkdown(metrics: ReviewMetrics): string {
   const totalInput = metrics.inputTokens + metrics.cacheReadTokens;
-  const parts = [`in \`${tok(totalInput)}\``];
+  const parts = [`in \`${tok(totalInput)}\``, `fresh \`${tok(metrics.inputTokens)}\``];
   if (metrics.cacheReadTokens > 0) {
-    parts.push(`cached \`${tok(metrics.cacheReadTokens)}\``);
+    parts.push(`cache read \`${tok(metrics.cacheReadTokens)}\``);
+  }
+  if (metrics.cacheWriteTokens > 0) {
+    parts.push(`cache write \`${tok(metrics.cacheWriteTokens)}\``);
   }
   parts.push(`out \`${tok(metrics.outputTokens)}\``);
 
@@ -53,6 +56,9 @@ export function printMetrics(metrics: ReviewMetrics, stream: NodeJS.WritableStre
   if (metrics.cacheReadTokens > 0) {
     const hitPct = ((metrics.cacheReadTokens / totalInput) * 100).toFixed(0);
     tokenLine += dim(` (${tok(metrics.cacheReadTokens)} cached ${hitPct}% · ${tok(metrics.inputTokens)} fresh)`);
+  }
+  if (metrics.cacheWriteTokens > 0) {
+    tokenLine += dim(` · ${tok(metrics.cacheWriteTokens)} cache write`);
   }
   tokenLine += `  ${bold(tok(metrics.outputTokens))} out`;
   tokenLine += dim(`  (${tok(metrics.totalTokens)} total)`);
@@ -131,6 +137,21 @@ export async function pushMetrics(opts: {
     `# HELP hodor_review_duration_seconds Review duration in seconds`,
     `# TYPE hodor_review_duration_seconds gauge`,
     `hodor_review_duration_seconds${labelSuffix} ${metrics.durationSeconds}`,
+    `# HELP hodor_review_diff_files Number of files included in the reviewed diff`,
+    `# TYPE hodor_review_diff_files gauge`,
+    `hodor_review_diff_files${labelSuffix} ${metrics.diffFiles ?? 0}`,
+    `# HELP hodor_review_diff_additions Added lines included in the reviewed diff`,
+    `# TYPE hodor_review_diff_additions gauge`,
+    `hodor_review_diff_additions${labelSuffix} ${metrics.diffAdditions ?? 0}`,
+    `# HELP hodor_review_diff_deletions Deleted lines included in the reviewed diff`,
+    `# TYPE hodor_review_diff_deletions gauge`,
+    `hodor_review_diff_deletions${labelSuffix} ${metrics.diffDeletions ?? 0}`,
+    `# HELP hodor_review_diff_bytes Size of the reviewed diff in bytes`,
+    `# TYPE hodor_review_diff_bytes gauge`,
+    `hodor_review_diff_bytes${labelSuffix} ${metrics.diffBytes ?? 0}`,
+    `# HELP hodor_review_reused Whether an existing identical-HEAD review was reused`,
+    `# TYPE hodor_review_reused gauge`,
+    `hodor_review_reused${labelSuffix} ${metrics.reused ? 1 : 0}`,
     "",
   ];
   const body = lines.join("\n");

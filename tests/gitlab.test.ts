@@ -160,4 +160,15 @@ describe("summarizeGitlabNotes", () => {
     expect(summarizeHodorNotes(notes)).toContain("@hodor");
     expect(summarizeHodorNotes(notes)).not.toContain("@alice");
   });
+
+  it("strips machine cache payloads from reviewer context", () => {
+    const summary = summarizeHodorNotes([{
+      body: `<!-- hodor:sha:${"1".repeat(40)} -->\n<!-- hodor:cache:v1:${"A".repeat(500)} -->\n<!-- hodor-review -->\n[P1] Preserve the authorization check`,
+      author: { username: "hodor" },
+    }]);
+
+    expect(summary).toContain("Preserve the authorization check");
+    expect(summary).not.toContain("hodor:cache");
+    expect(summary).not.toContain("A".repeat(100));
+  });
 });

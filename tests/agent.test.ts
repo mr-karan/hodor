@@ -112,7 +112,7 @@ describe("formatMetricsMarkdown", () => {
       inputTokens: 1000,
       outputTokens: 80,
       cacheReadTokens: 900,
-      cacheWriteTokens: 0,
+      cacheWriteTokens: 125,
       totalTokens: 1080,
       cost: 1.2345,
       turns: 3,
@@ -127,7 +127,8 @@ describe("formatMetricsMarkdown", () => {
     expect(markdown).toContain("8 tool calls");
     expect(markdown).toContain("2m 5s");
     expect(markdown).toContain("in `1.9K`"); // totalInput = inputTokens (1000) + cacheReadTokens (900)
-    expect(markdown).toContain("cached `900`");
+    expect(markdown).toContain("cache read `900`");
+    expect(markdown).toContain("cache write `125`");
     expect(markdown).toContain("out `80`");
     expect(markdown).toContain("Cost: `$1.2345`");
   });

@@ -84,6 +84,25 @@ describe("normalizeLabelNames", () => {
 });
 
 describe("buildPrReviewPrompt", () => {
+  it("uses a direct snapshot diff after rewritten history", () => {
+    const sha = "1".repeat(40);
+    const prompt = buildPrReviewPrompt({
+      prUrl: "https://github.com/acme/hodor/pull/42",
+      platform: "github",
+      targetBranch: "main",
+      previousReviewSha: sha,
+      reviewDiffMode: "snapshot",
+      embeddedDiff: "diff --git a/src/a.ts b/src/a.ts\n+const ok = true;",
+      changedFiles: ["src/a.ts"],
+    });
+
+    expect(prompt).toContain(`git --no-pager diff ${sha} HEAD`);
+    expect(prompt).not.toContain(`${sha}...HEAD`);
+    expect(prompt).toContain("Snapshot Delta Mode");
+    expect(prompt).toContain("Changed files (1)");
+    expect(prompt).toContain("Do not run another command to list changed files");
+  });
+
   it("uses the tool submission contract by default", () => {
     const prompt = buildPrReviewPrompt({
       prUrl: "https://github.com/acme/hodor/pull/42",

@@ -26,9 +26,9 @@ export GIT_PAGER=cat
 ```
 
 **Available commands:**
-- `{pr_diff_cmd}` - List changed files ONLY (run this FIRST, not full diff)
+- `{pr_diff_cmd}` - List changed files ONLY when the prompt did not embed the diff and manifest
 - `{git_diff_cmd} -- path/to/file` - See changes for ONE specific file at a time
-- `read` - Read full file with context (use sparingly, only when needed)
+- `read` - Read bounded line ranges for context (use sparingly; avoid entire large files)
 - `grep` - Search for patterns across multiple files efficiently
 - `submit_review` - Submit the final structured review when analysis is complete
 

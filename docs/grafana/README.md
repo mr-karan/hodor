@@ -23,6 +23,11 @@ Expected series:
 - `hodor_review_turns_total`
 - `hodor_review_tool_calls_total`
 - `hodor_review_duration_seconds`
+- `hodor_review_diff_files`
+- `hodor_review_diff_additions`
+- `hodor_review_diff_deletions`
+- `hodor_review_diff_bytes`
+- `hodor_review_reused`
 - `hodor_review_findings_total{priority="P0"..."P3"}`
 
 Common labels:
@@ -32,7 +37,12 @@ Common labels:
 - `model`
 - `verdict`
 - `outcome`
+- `review_mode` (`full`, `incremental`, `snapshot`, `local`, or `reused`)
+- `reasoning_effort`
+- `reused`
 - `priority`
+
+Hodor also writes one structured `Review telemetry` log event per completed run. Use that event for exact per-review investigation and retain the low-cardinality metrics above for dashboards and alerts.
 
 ## Pushgateway note
 

@@ -73,6 +73,38 @@ describe("GitLab review publication", () => {
     ).toBe(false);
   });
 
+  it("embeds the cache marker in summaries and skips duplicate summaries on reuse", async () => {
+    const { postReviewStructured } = await import("../src/publisher.js");
+    const cacheMarker = "<!-- hodor:cache:v1:abc123 -->";
+
+    await postReviewStructured({
+      prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42",
+      review: review([]),
+      reviewStyle: "hybrid",
+      headSha: "d".repeat(40),
+      cacheMarker,
+    });
+    const summaryCall = mocks.exec.mock.calls.find((call) =>
+      (call[1] as string[]).some((arg) => arg.includes("/notes")),
+    );
+    expect(String((summaryCall?.[2] as { input?: string })?.input)).toContain(cacheMarker);
+
+    mocks.exec.mockClear();
+    const result = await postReviewStructured({
+      prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42",
+      review: review([]),
+      reviewStyle: "hybrid",
+      headSha: "d".repeat(40),
+      skipSummary: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(mocks.exec.mock.calls.some((call) => {
+      const args = call[1] as string[];
+      return args.some((arg) => arg.endsWith("/notes")) && args.includes("--method");
+    })).toBe(false);
+  });
+
   it("reconciles stale fingerprinted discussions only after posting a full review", async () => {
     mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
       if (args.some((arg) => arg.includes("/discussions?"))) {

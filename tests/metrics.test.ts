@@ -12,6 +12,13 @@ const baseMetrics: ReviewMetrics = {
   turns: 4,
   toolCalls: 9,
   durationSeconds: 42,
+  reviewMode: "snapshot",
+  reasoningEffort: "high",
+  diffFiles: 2,
+  diffAdditions: 7,
+  diffDeletions: 3,
+  diffBytes: 2048,
+  reused: false,
 };
 
 describe("pushMetrics", () => {
@@ -48,6 +55,9 @@ describe("pushMetrics", () => {
     expect(body).toContain("hodor_review_findings_total{platform=\"gitlab\",model=\"anthropic/claude\",verdict=\"incorrect\",project=\"acme/web-app\",mr_iid=\"732\",priority=\"P1\"} 1");
     expect(body).toContain("hodor_review_findings_total{platform=\"gitlab\",model=\"anthropic/claude\",verdict=\"incorrect\",project=\"acme/web-app\",mr_iid=\"732\",priority=\"P2\"} 2");
     expect(body).toContain("hodor_review_findings_total{platform=\"gitlab\",model=\"anthropic/claude\",verdict=\"incorrect\",project=\"acme/web-app\",mr_iid=\"732\",priority=\"P3\"} 0");
+    expect(body).toContain("hodor_review_diff_files{platform=\"gitlab\",model=\"anthropic/claude\",verdict=\"incorrect\",project=\"acme/web-app\",mr_iid=\"732\"} 2");
+    expect(body).toContain("hodor_review_diff_additions{platform=\"gitlab\",model=\"anthropic/claude\",verdict=\"incorrect\",project=\"acme/web-app\",mr_iid=\"732\"} 7");
+    expect(body).toContain("hodor_review_reused{platform=\"gitlab\",model=\"anthropic/claude\",verdict=\"incorrect\",project=\"acme/web-app\",mr_iid=\"732\"} 0");
   });
 
   it("emits zero cache hit ratio when there are no input tokens", async () => {

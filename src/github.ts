@@ -25,6 +25,7 @@ export async function fetchGithubPrInfo(
     "changedFiles",
     "labels",
     "comments",
+    "reviews",
     "state",
     "isDraft",
     "createdAt",
@@ -59,6 +60,10 @@ export function normalizeGithubMetadata(
     | Record<string, unknown>
     | Array<Record<string, unknown>>
     | undefined;
+  const reviews = raw.reviews as
+    | Record<string, unknown>
+    | Array<Record<string, unknown>>
+    | undefined;
 
   return {
     title: raw.title as string | undefined,
@@ -71,7 +76,10 @@ export function normalizeGithubMetadata(
       username: author.login ?? author.name,
       name: author.name,
     },
-    Notes: githubCommentsToNotes(comments),
+    Notes: [
+      ...githubCommentsToNotes(comments),
+      ...githubCommentsToNotes(reviews),
+    ],
   };
 }
 

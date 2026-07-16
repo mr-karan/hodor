@@ -20,6 +20,7 @@ const DEFAULT_GITLAB_HOST = "gitlab.com";
  * human notes that quote the marker incidentally (e.g., a code block discussing hodor).
  */
 const HODOR_NOTE_PREFIX_RE = /^\s*<!--\s*hodor[-:]/;
+const HODOR_CACHE_MARKER_RE = /<!--\s*hodor:cache:v1:[A-Za-z0-9_-]+\s*-->\s*/g;
 
 function isHodorNote(body: unknown, marker = HODOR_REVIEW_MARKER): boolean {
   if (typeof body !== "string") return false;
@@ -270,7 +271,9 @@ function summarizeNotes(
   const filtered: Array<{ username: string; body: string; createdAt: string }> = [];
   for (const note of notes) {
     if (!include(note)) continue;
-    const body = (note.body ?? "").trim();
+    // Cache payloads are machine-only and can be large. Never feed their
+    // compressed representation back into reviewer context.
+    const body = (note.body ?? "").replace(HODOR_CACHE_MARKER_RE, "").trim();
     if (!body) continue;
     if (note.system) continue;
     if (body.length < 20) continue;

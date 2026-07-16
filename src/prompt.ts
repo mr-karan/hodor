@@ -3,6 +3,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { logger } from "./utils/logger.js";
 import { summarizeGitlabNotes, summarizeHodorNotes } from "./gitlab.js";
+import type { ReviewDiffMode } from "./review-diff.js";
 import type { MrMetadata, Platform } from "./types.js";
 
 // Resolve templates directory relative to this file (works in both src/ and dist/)
@@ -21,6 +22,8 @@ export function buildPrReviewPrompt(opts: {
   customPromptFile?: string | null;
   embeddedDiff?: string | null;
   previousReviewSha?: string | null;
+  reviewDiffMode?: ReviewDiffMode;
+  changedFiles?: string[];
   localMode?: boolean;
 }): string {
   const {
@@ -33,6 +36,8 @@ export function buildPrReviewPrompt(opts: {
     customPromptFile,
     embeddedDiff,
     previousReviewSha,
+    reviewDiffMode,
+    changedFiles = [],
     localMode = false,
   } = opts;
 
@@ -71,11 +76,14 @@ export function buildPrReviewPrompt(opts: {
   let prDiffCmd: string;
   let gitDiffCmd: string;
 
-  // Incremental mode: three-dot diff from previous review SHA (excludes upstream changes)
+  // Normal incremental mode uses a merge-base-aware three-dot diff. If history
+  // was rewritten, compare the previously reviewed and current snapshots
+  // directly; ancestry no longer describes the change the reviewer needs.
   if (previousReviewSha) {
-    prDiffCmd = `git --no-pager diff ${previousReviewSha}...HEAD --name-only`;
-    gitDiffCmd = `git --no-pager diff ${previousReviewSha}...HEAD`;
-    logger.info(`Incremental review: diffing from ${previousReviewSha.slice(0, 8)} to HEAD`);
+    const separator = reviewDiffMode === "snapshot" ? " " : "...";
+    prDiffCmd = `git --no-pager diff ${previousReviewSha}${separator}HEAD --name-only`;
+    gitDiffCmd = `git --no-pager diff ${previousReviewSha}${separator}HEAD`;
+    logger.info(`${reviewDiffMode === "snapshot" ? "Snapshot" : "Incremental"} review: diffing from ${previousReviewSha.slice(0, 8)} to HEAD`);
   } else if (localMode) {
     // Plain two-arg diff includes uncommitted (staged + unstaged) changes
     prDiffCmd = `git --no-pager diff ${targetBranch} --name-only`;
@@ -98,9 +106,11 @@ export function buildPrReviewPrompt(opts: {
   // Diff explanation
   let diffExplanation: string;
   if (previousReviewSha) {
-    diffExplanation =
-      `**Incremental mode**: Showing only changes since the last hodor review ` +
-      `(commit \`${previousReviewSha.slice(0, 8)}\`).`;
+    diffExplanation = reviewDiffMode === "snapshot"
+      ? `**Snapshot delta mode**: The MR history was rewritten. This directly compares the last reviewed snapshot ` +
+        `(commit \`${previousReviewSha.slice(0, 8)}\`) with the current HEAD; it does not imply ancestry.`
+      : `**Incremental mode**: Showing only changes since the last hodor review ` +
+        `(commit \`${previousReviewSha.slice(0, 8)}\`).`;
   } else if (diffBaseSha) {
     diffExplanation =
       `**GitLab CI Advantage**: This uses GitLab's pre-calculated merge base SHA ` +
@@ -120,9 +130,12 @@ export function buildPrReviewPrompt(opts: {
   let incrementalSection = "";
   if (previousReviewSha) {
     incrementalSection =
-      "## Incremental Review Mode\n\n" +
+      `## ${reviewDiffMode === "snapshot" ? "Snapshot Delta" : "Incremental Review"} Mode\n\n` +
       `This is a follow-up review. A previous hodor review was done at commit \`${previousReviewSha.slice(0, 8)}\`. ` +
-      "The diff below shows ONLY changes since that review. Your job is to review that delta, not the whole MR again.\n\n" +
+      (reviewDiffMode === "snapshot"
+        ? "The branch history was rewritten, so the diff below compares that reviewed snapshot directly with the current HEAD. "
+        : "The diff below shows ONLY changes since that review. ") +
+      "Your job is to review that delta, not the whole MR again.\n\n" +
       "Rules for incremental reviews:\n" +
       "1. Only report bugs introduced or still affected by the new delta.\n" +
       "2. Do not re-report issues that are already mentioned in existing notes unless the new delta changes the same code and the issue remains newly relevant.\n" +
@@ -138,10 +151,14 @@ export function buildPrReviewPrompt(opts: {
   let startInstruction: string;
 
   if (embeddedDiff) {
+    const changedFileManifest = changedFiles.length > 0
+      ? `\nChanged files (${changedFiles.length}):\n${changedFiles.map((file) => `- \`${file}\``).join("\n")}\n`
+      : "";
     embeddedDiffSection =
       "## Full Diff (Pre-fetched)\n\n" +
       "The complete diff for this PR is provided below. Analyze it directly. " +
-      "Use `read` or `grep` only if you need additional file context beyond what the diff shows.\n\n" +
+      "Do not run another command to list changed files. Use `read` or `grep` only if you need additional file context beyond what the diff shows.\n" +
+      changedFileManifest + "\n" +
       "````diff\n" + embeddedDiff + "\n````\n";
 
     diffFetchInstructions =
@@ -158,8 +175,9 @@ export function buildPrReviewPrompt(opts: {
       "## Review Process\n\n" +
       "1. Analyze the embedded diff above thoroughly\n" +
       "2. Use `grep` to search for patterns when needed\n" +
-      "3. Use `read` only when surrounding context is essential\n" +
-      "4. Submit your review using `submit_review`\n";
+      "3. Use bounded line-range reads when surrounding context is essential; avoid reading entire large files\n" +
+      "4. Do not repeat a diff, grep, or read operation whose result is already in context\n" +
+      "5. Submit your review using `submit_review`\n";
 
     startInstruction = previousReviewSha
       ? "Analyze only the incremental diff provided above. If it is self-contained, submit your review without extra tool calls."
