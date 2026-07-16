@@ -41,6 +41,7 @@ describe("mapReasoningEffort", () => {
     ["medium", "medium"],
     ["high", "high"],
     ["xhigh", "xhigh"],
+    ["max", "max"],
   ] as const)("maps %s to %s", (input, expected) => {
     expect(mapReasoningEffort(input as string | undefined)).toBe(expected);
   });

@@ -1,4 +1,5 @@
-import { getEnvApiKey, getProviders } from "@earendil-works/pi-ai";
+import { getEnvApiKey } from "@earendil-works/pi-ai/compat";
+import { getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
 import type { ThinkingLevel } from "@earendil-works/pi-ai";
 
 export interface ParsedModel {
@@ -26,7 +27,7 @@ export function parseModelString(model: string): ParsedModel {
   if (parts.length >= 2) {
     const first = parts[0].toLowerCase();
     const provider = PROVIDER_ALIASES[first] ?? first;
-    const knownProviders = new Set<string>(getProviders());
+    const knownProviders = new Set<string>(getBuiltinProviders());
 
     if (provider === "amazon-bedrock") {
       // Strip optional "converse/" prefix from model ID for backwards compatibility.
@@ -75,11 +76,6 @@ export function parseModelString(model: string): ParsedModel {
  * Map reasoning effort strings to pi-ai thinking levels.
  * Returns undefined for no reasoning.
  */
-// NOTE: There is no "max" thinking level yet. The Anthropic API (Opus 4.7+) and
-// upcoming OpenAI models expose a "max" reasoning tier, but the pi-ai SDK's
-// ThinkingLevel union tops out at "xhigh", so "max" is unreachable from here.
-// Tracked upstream: https://github.com/earendil-works/pi/issues/6097
-// When pi-ai adds "max", add a case below and bump the full-review job to use it.
 export function mapReasoningEffort(
   effort: string | undefined,
 ): ThinkingLevel | undefined {
@@ -95,6 +91,8 @@ export function mapReasoningEffort(
       return "high";
     case "xhigh":
       return "xhigh";
+    case "max":
+      return "max";
     default:
       return undefined;
   }

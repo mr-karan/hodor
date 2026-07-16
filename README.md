@@ -289,7 +289,7 @@ Hodor is written in TypeScript and runs on [Bun](https://bun.sh). Key components
 | `src/metrics.ts` | Token usage and cost formatting |
 | `templates/` | Review prompt template (JSON schema) |
 
-The agent runtime is provided by [`@mariozechner/pi-coding-agent`](https://github.com/badlogic/pi-mono) with [`@mariozechner/pi-ai`](https://github.com/badlogic/pi-mono) for LLM access. The agent session gets read-only tools (bash, read, grep, find, ls) and a review prompt, then autonomously analyzes the PR.
+The agent runtime is provided by [`@earendil-works/pi-coding-agent`](https://github.com/earendil-works/pi) with [`@earendil-works/pi-ai`](https://github.com/earendil-works/pi) for LLM access. The agent session gets read-only tools (bash, read, grep, find, ls) and a review prompt, then autonomously analyzes the PR.
 
 ---
 
