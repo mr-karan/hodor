@@ -24,7 +24,11 @@ import {
 import { formatMetricsMarkdown, printMetrics } from "./metrics.js";
 import { SUBMIT_REVIEW_SCHEMA, validateReviewOutput } from "./review.js";
 import { resolveReviewLocations } from "./resolve-location.js";
-import { REVIEW_SYSTEM_PROMPT } from "./system-prompt.js";
+import { buildReviewSystemPrompt } from "./system-prompt.js";
+import {
+  loadDefaultReviewInstructions,
+  validateReviewInstructions,
+} from "./review-instructions.js";
 import { detectPlatform, parsePrUrl } from "./platform.js";
 import {
   filterEmbeddedDiff,
@@ -75,8 +79,8 @@ export async function reviewPr(opts: {
   prUrl?: string;
   model?: string;
   reasoningEffort?: string;
-  customPrompt?: string | null;
-  promptFile?: string | null;
+  reviewInstructions?: string | null;
+  additionalInstructions?: string | null;
   cleanup?: boolean;
   workspaceDir?: string | null;
   includeMetricsFooter?: boolean;
@@ -99,8 +103,8 @@ export async function reviewPr(opts: {
     prUrl,
     model = "anthropic/claude-sonnet-4-5-20250929",
     reasoningEffort,
-    customPrompt,
-    promptFile,
+    reviewInstructions,
+    additionalInstructions,
     cleanup = true,
     workspaceDir,
     includeMetricsFooter = false,
@@ -111,6 +115,17 @@ export async function reviewPr(opts: {
     full = false,
     targetBranchOverride,
   } = opts;
+
+  const effectiveReviewInstructions = reviewInstructions == null
+    ? loadDefaultReviewInstructions()
+    : validateReviewInstructions(reviewInstructions, "review instructions");
+  const effectiveAdditionalInstructions = additionalInstructions == null
+    ? null
+    : validateReviewInstructions(additionalInstructions, "additional instructions");
+  const composedSystemPrompt = buildReviewSystemPrompt({
+    reviewInstructions: effectiveReviewInstructions,
+    additionalInstructions: effectiveAdditionalInstructions,
+  });
 
   logger.info(`Starting PR review for: ${localMode ? "local diff" : prUrl}`);
 
@@ -319,8 +334,8 @@ export async function reviewPr(opts: {
         headSha,
         model,
         requestedReasoningEffort: reasoningEffort,
-        customPrompt,
-        promptFile,
+        reviewInstructions: effectiveReviewInstructions,
+        additionalInstructions: effectiveAdditionalInstructions,
       });
       const cachedReview = findCachedReview(mrMetadata?.Notes, reviewCacheKey);
       if (cachedReview) {
@@ -425,15 +440,13 @@ export async function reviewPr(opts: {
       logger.info(`Reasoning effort for ${piModel.name}: ${thinkingLevel}${reasoningEffort ? " (explicit)" : " (adaptive)"}`);
     }
 
-    // Build prompt (always uses JSON template; rendered to markdown post-hoc)
+    // Build the dynamic review task sent as the first user message.
     const prompt = buildPrReviewPrompt({
       prUrl: prUrl ?? `local diff (against ${targetBranch})`,
       platform,
       targetBranch,
       diffBaseSha,
       mrMetadata,
-      customInstructions: customPrompt,
-      customPromptFile: promptFile,
       embeddedDiff,
       previousReviewSha,
       reviewDiffMode: reviewMode,
@@ -451,8 +464,8 @@ export async function reviewPr(opts: {
       cwd: workspacePath,
       agentDir: getAgentDir(),
       settingsManager,
-      systemPrompt: REVIEW_SYSTEM_PROMPT,
-      appendSystemPrompt: [],
+      systemPromptOverride: () => composedSystemPrompt,
+      appendSystemPromptOverride: () => [],
       noExtensions: true,
       noSkills: true,
       noPromptTemplates: true,

@@ -4,7 +4,8 @@ import {
   buildPrReviewPrompt,
   normalizeLabelNames,
 } from "../src/prompt.js";
-
+import { loadDefaultReviewInstructions } from "../src/review-instructions.js";
+import { buildReviewSystemPrompt } from "../src/system-prompt.js";
 describe("buildMrSections", () => {
   it("handles string labels", () => {
     const metadata = {
@@ -103,41 +104,36 @@ describe("buildPrReviewPrompt", () => {
     expect(prompt).toContain("Do not run another command to list changed files");
   });
 
-  it("uses the tool submission contract by default", () => {
-    const prompt = buildPrReviewPrompt({
+  it("keeps the submission protocol in the effective system prompt", () => {
+    const task = buildPrReviewPrompt({
       prUrl: "https://github.com/acme/hodor/pull/42",
       platform: "github",
       targetBranch: "main",
     });
+    const systemPrompt = buildReviewSystemPrompt({
+      reviewInstructions: loadDefaultReviewInstructions(),
+    });
 
-    expect(prompt).toContain("submit_review");
-    expect(prompt).toContain("Do not print the review as normal assistant text.");
-    expect(prompt).not.toContain("Output ONLY the raw JSON object");
+    expect(task).toContain("submit_review");
+    expect(task).not.toContain("Call `submit_review` exactly once");
+    expect(systemPrompt).toContain("Call `submit_review` exactly once");
+    expect(systemPrompt).toContain("Do not print the final review as normal assistant text.");
   });
 
-  it("includes cross-layer contract tracing guidance", () => {
-    const prompt = buildPrReviewPrompt({
+  it("keeps generic review lenses in the effective system prompt, not the dynamic task", () => {
+    const task = buildPrReviewPrompt({
       prUrl: "https://github.com/acme/hodor/pull/42",
       platform: "github",
       targetBranch: "main",
     });
-
-    expect(prompt).toContain("Contract Trace Checklist");
-    expect(prompt).toContain("public `user_id` string vs internal integer primary key");
-  });
-
-  it("includes conditional review lenses for focused specialist checks", () => {
-    const prompt = buildPrReviewPrompt({
-      prUrl: "https://github.com/acme/hodor/pull/42",
-      platform: "github",
-      targetBranch: "main",
+    const systemPrompt = buildReviewSystemPrompt({
+      reviewInstructions: loadDefaultReviewInstructions(),
     });
 
-    expect(prompt).toContain("Conditional Review Lenses");
-    expect(prompt).toContain("Silent failure / error handling lens");
-    expect(prompt).toContain("Critical test gap lens");
-    expect(prompt).toContain("Comment/documentation accuracy lens");
-    expect(prompt).toContain("Type/API invariant lens");
-    expect(prompt).toContain("Simplification lens");
+    expect(task).not.toContain("Conditional Lenses");
+    expect(task).not.toContain("For error handling, retries, fallbacks");
+    expect(systemPrompt).toContain("## Conditional Lenses");
+    expect(systemPrompt).toContain("For error handling, retries, fallbacks");
+    expect(systemPrompt).toContain("For changed behavior, edge cases");
   });
 });

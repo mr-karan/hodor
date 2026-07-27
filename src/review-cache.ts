@@ -1,11 +1,10 @@
 import { createHash } from "node:crypto";
 import { gzipSync, gunzipSync } from "node:zlib";
-import { readFileSync } from "node:fs";
 import { validateReviewOutput } from "./review.js";
 import { relativizeWorkspacePath } from "./utils/path.js";
 import type { NoteEntry, ReviewOutput } from "./types.js";
 
-export const REVIEW_PROMPT_VERSION = "2026-07-16.1";
+export const REVIEW_PROMPT_VERSION = "2026-07-27.1";
 
 const CACHE_MARKER_RE = /<!--\s*hodor:cache:v1:([A-Za-z0-9_-]+)\s*-->/;
 
@@ -18,14 +17,9 @@ export function getReviewCacheKey(opts: {
   headSha: string;
   model: string;
   requestedReasoningEffort?: string;
-  customPrompt?: string | null;
-  promptFile?: string | null;
+  reviewInstructions: string;
+  additionalInstructions?: string | null;
 }): string {
-  let promptFileContents = "";
-  if (opts.promptFile) {
-    promptFileContents = readFileSync(opts.promptFile, "utf-8");
-  }
-
   return createHash("sha256")
     .update(JSON.stringify({
       version: REVIEW_PROMPT_VERSION,
@@ -34,8 +28,8 @@ export function getReviewCacheKey(opts: {
       // "auto" deliberately stays stable when an identical HEAD changes from
       // a full review to an empty incremental diff on a pipeline retry.
       reasoning: opts.requestedReasoningEffort?.toLowerCase() ?? "auto",
-      customPrompt: opts.customPrompt ?? "",
-      promptFileContents,
+      reviewInstructions: opts.reviewInstructions,
+      additionalInstructions: opts.additionalInstructions ?? "",
     }))
     .digest("hex");
 }

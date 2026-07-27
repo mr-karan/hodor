@@ -1,16 +1,10 @@
 import { readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { getTemplatePath } from "./templates.js";
 import { logger } from "./utils/logger.js";
 import { summarizeGitlabNotes, summarizeHodorNotes } from "./gitlab.js";
 import type { ReviewDiffMode } from "./review-diff.js";
 import type { MrMetadata, Platform } from "./types.js";
 
-// Resolve templates directory relative to this file (works in both src/ and dist/)
-function getTemplatesDir(): string {
-  const currentDir = dirname(fileURLToPath(import.meta.url));
-  return resolve(currentDir, "..", "templates");
-}
 
 export function buildPrReviewPrompt(opts: {
   prUrl: string;
@@ -18,8 +12,6 @@ export function buildPrReviewPrompt(opts: {
   targetBranch?: string;
   diffBaseSha?: string | null;
   mrMetadata?: MrMetadata | null;
-  customInstructions?: string | null;
-  customPromptFile?: string | null;
   embeddedDiff?: string | null;
   previousReviewSha?: string | null;
   reviewDiffMode?: ReviewDiffMode;
@@ -32,8 +24,6 @@ export function buildPrReviewPrompt(opts: {
     targetBranch = "main",
     diffBaseSha,
     mrMetadata,
-    customInstructions,
-    customPromptFile,
     embeddedDiff,
     previousReviewSha,
     reviewDiffMode,
@@ -41,22 +31,11 @@ export function buildPrReviewPrompt(opts: {
     localMode = false,
   } = opts;
 
-  // Step 1: Determine template (always tool submission; rendered to markdown post-hoc)
-  let templateFile: string;
-  if (customPromptFile) {
-    templateFile = customPromptFile;
-    logger.info(`Using custom prompt file: ${templateFile}`);
-  } else {
-    templateFile = resolve(getTemplatesDir(), "tool-review.md");
-    logger.info("Using tool-based review template");
-  }
-
-  // Step 2: Load template
   let templateText: string;
   try {
-    templateText = readFileSync(templateFile, "utf-8");
-  } catch (err) {
-    throw new Error(`Failed to load prompt template from ${templateFile}: ${err}`);
+    templateText = readFileSync(getTemplatePath("review-task.md"), "utf-8");
+  } catch (error) {
+    throw new Error(`Failed to load the review task template: ${error}`);
   }
 
   // Validate ref inputs to prevent shell injection via branch/SHA names.
@@ -137,11 +116,11 @@ export function buildPrReviewPrompt(opts: {
         : "The diff below shows ONLY changes since that review. ") +
       "Your job is to review that delta, not the whole MR again.\n\n" +
       "Rules for incremental reviews:\n" +
-      "1. Only report bugs introduced or still affected by the new delta.\n" +
+      "1. Only report findings introduced or still affected by the new delta.\n" +
       "2. Do not re-report issues that are already mentioned in existing notes unless the new delta changes the same code and the issue remains newly relevant.\n" +
       "3. If the delta is small and self-contained, decide from the embedded diff and submit the review without broad repository exploration.\n" +
       "4. For mechanical changes like route/path/string renames, verify the direct call sites or tests only when the diff itself leaves a concrete compatibility question.\n" +
-      "5. If the delta does not introduce a production bug, submit no findings.\n\n";
+      "5. If the delta does not produce a qualifying finding under the selected review instructions, submit no findings.\n\n";
   }
 
   // Step 3c: Build conditional sections based on whether diff is embedded
@@ -219,13 +198,10 @@ export function buildPrReviewPrompt(opts: {
       `Start by running \`${prDiffCmd}\` to list the changed files, then analyze each file individually using \`${gitDiffCmd} -- path/to/file\`.`;
   }
 
-  // Step 4: Interpolate
-  let prompt = templateText
+  return templateText
     .replace(/\{pr_url\}/g, prUrl)
     .replace(/\{pr_diff_cmd\}/g, prDiffCmd)
     .replace(/\{git_diff_cmd\}/g, gitDiffCmd)
-    .replace(/\{target_branch\}/g, targetBranch)
-    .replace(/\{diff_explanation\}/g, diffExplanation)
     .replace(/\{mr_context_section\}/g, contextSection)
     .replace(/\{mr_notes_section\}/g, notesSection)
     .replace(/\{mr_reminder_section\}/g, reminderSection)
@@ -234,14 +210,6 @@ export function buildPrReviewPrompt(opts: {
     .replace(/\{diff_fetch_instructions\}/g, diffFetchInstructions)
     .replace(/\{review_process_section\}/g, reviewProcessSection)
     .replace(/\{start_instruction\}/g, startInstruction);
-
-  // Step 5: Append custom instructions
-  if (customInstructions) {
-    prompt += `\n\n## Additional Instructions\n\n${customInstructions}\n`;
-    logger.info("Appended custom instructions to prompt");
-  }
-
-  return prompt;
 }
 
 export function buildMrSections(mrMetadata?: MrMetadata | null): {

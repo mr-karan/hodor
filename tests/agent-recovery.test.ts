@@ -5,6 +5,10 @@ const mocks = vi.hoisted(() => ({
   createAgentSession: vi.fn(),
   exec: vi.fn(),
   prompts: [] as string[],
+  resourceLoaderOptions: [] as Array<{
+    systemPromptOverride?: () => string;
+    appendSystemPromptOverride?: () => string[];
+  }>,
   promptResponses: [] as Array<
     | { kind: "text"; text: string }
     | { kind: "tool" }
@@ -40,6 +44,13 @@ vi.mock("../src/utils/exec.js", () => ({
 
 vi.mock("@earendil-works/pi-coding-agent", () => {
   class MockResourceLoader {
+    constructor(opts: {
+      systemPromptOverride?: () => string;
+      appendSystemPromptOverride?: () => string[];
+    }) {
+      mocks.resourceLoaderOptions.push(opts);
+    }
+
     async reload(): Promise<void> {}
     getSkills(): { skills: unknown[]; diagnostics: unknown[] } {
       return { skills: [], diagnostics: [] };
@@ -81,6 +92,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => {
 describe("reviewPr submit_review recovery", () => {
   beforeEach(() => {
     mocks.prompts.length = 0;
+    mocks.resourceLoaderOptions.length = 0;
     mocks.promptResponses = [
       { kind: "text", text: "I found no issues." },
       { kind: "tool" },
@@ -209,6 +221,33 @@ describe("reviewPr submit_review recovery", () => {
         },
       };
     });
+  });
+
+  it("passes selected instructions as the system prompt without leaking them into the user task", async () => {
+    const customProfile = "# Custom profile\nReview tenant-boundary regressions.";
+    const additionalInstructions = "Prioritize authorization checks.";
+
+    await reviewPr({
+      localMode: true,
+      workspaceDir: "/tmp/hodor-recovery",
+      cleanup: false,
+      model: "anthropic/test-model",
+      reviewInstructions: customProfile,
+      additionalInstructions,
+    });
+
+    const loader = mocks.resourceLoaderOptions[mocks.resourceLoaderOptions.length - 1];
+    const systemPrompt = loader.systemPromptOverride?.() ?? "";
+
+    expect(systemPrompt).toContain(customProfile);
+    expect(systemPrompt).toContain(additionalInstructions);
+    expect(systemPrompt.indexOf(customProfile)).toBeLessThan(systemPrompt.indexOf(additionalInstructions));
+    expect(systemPrompt.indexOf(additionalInstructions)).toBeLessThan(
+      systemPrompt.indexOf("<HODOR_REVIEW_PROTOCOL>"),
+    );
+    expect(loader.appendSystemPromptOverride?.()).toEqual([]);
+    expect(mocks.prompts[0]).not.toContain(customProfile);
+    expect(mocks.prompts[0]).not.toContain(additionalInstructions);
   });
 
   it("asks the same session to recover when the first run ends without submit_review", async () => {

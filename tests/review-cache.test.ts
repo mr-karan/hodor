@@ -26,6 +26,7 @@ describe("review cache", () => {
     const key = getReviewCacheKey({
       headSha: "a".repeat(40),
       model: "anthropic/claude-opus-4-7",
+      reviewInstructions: "default review profile",
     });
     const marker = buildReviewCacheMarker(key, review, "/builds/private/team/widget");
     const cached = findCachedReview([{
@@ -42,15 +43,39 @@ describe("review cache", () => {
     const oldKey = getReviewCacheKey({
       headSha: "a".repeat(40),
       model: "anthropic/claude-opus-4-7",
+      reviewInstructions: "default review profile",
     });
     const newKey = getReviewCacheKey({
       headSha: "a".repeat(40),
       model: "anthropic/claude-opus-4-7",
       requestedReasoningEffort: "high",
+      reviewInstructions: "default review profile",
     });
     const marker = buildReviewCacheMarker(oldKey, review);
 
     expect(findCachedReview([{ body: `${marker}\n<!-- hodor-review -->` }], newKey)).toBeNull();
+  });
+
+  it("changes cache identity when the effective profile or additional instructions change", () => {
+    const base = {
+      headSha: "a".repeat(40),
+      model: "anthropic/claude-opus-4-7",
+      reviewInstructions: "Review authentication changes.",
+    };
+
+    const sameContent = getReviewCacheKey(base);
+    const changedProfile = getReviewCacheKey({
+      ...base,
+      reviewInstructions: "Review authorization changes.",
+    });
+    const changedAdditionalInstructions = getReviewCacheKey({
+      ...base,
+      additionalInstructions: "Prioritize tenant isolation.",
+    });
+
+    expect(getReviewCacheKey({ ...base })).toBe(sameContent);
+    expect(changedProfile).not.toBe(sameContent);
+    expect(changedAdditionalInstructions).not.toBe(sameContent);
   });
 
   it("ignores malformed cache markers", () => {

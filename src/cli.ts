@@ -14,6 +14,7 @@ import {
   parseFailOnPriority,
   type FailOnPriority,
 } from "./review-policy.js";
+import { loadReviewInstructionsFile } from "./review-instructions.js";
 import { setLogLevel } from "./utils/logger.js";
 
 const program = new Command();
@@ -43,10 +44,13 @@ program
     "Post the review directly to the PR/MR as a comment",
     false,
   )
-  .option("--prompt <text>", "Custom inline prompt text")
   .option(
-    "--prompt-file <path>",
-    "Path to file containing custom prompt instructions",
+    "--additional-instructions <text>",
+    "Additional review instructions appended after the selected review profile",
+  )
+  .option(
+    "--review-instructions <path>",
+    "Path to a custom review instruction profile",
   )
   .option(
     "--workspace <dir>",
@@ -112,8 +116,8 @@ program
     const post = cmdOpts.post as boolean;
     const model = cmdOpts.model as string;
     let reasoningEffort = cmdOpts.reasoningEffort as string | undefined;
-    const prompt = cmdOpts.prompt as string | undefined;
-    const promptFile = cmdOpts.promptFile as string | undefined;
+    const additionalInstructions = cmdOpts.additionalInstructions as string | undefined;
+    const reviewInstructionsPath = cmdOpts.reviewInstructions as string | undefined;
     const workspace = cmdOpts.workspace as string | undefined;
     const reviewStyle = cmdOpts.reviewStyle as "summary" | "inline" | "hybrid" | undefined;
     const codeQuality = cmdOpts.codeQuality as string | undefined;
@@ -259,6 +263,9 @@ program
     }
 
     try {
+      const reviewInstructions = reviewInstructionsPath
+        ? loadReviewInstructionsFile(reviewInstructionsPath)
+        : undefined;
       // Detect platform and warn about missing tokens
       let platform: string = "local";
       let metricsProject: string | undefined;
@@ -302,6 +309,10 @@ program
         }
       }
       log(chalk.dim(`Model: ${model}`));
+      log(chalk.dim(`Review instructions: ${reviewInstructionsPath ?? "bundled default"}`));
+      if (additionalInstructions) {
+        log(chalk.dim("Additional instructions: supplied"));
+      }
       if (reasoningEffort) {
         log(chalk.dim(`Reasoning Effort: ${reasoningEffort}`));
       }
@@ -320,8 +331,8 @@ program
         prUrl: localMode ? undefined : prUrl,
         model,
         reasoningEffort,
-        customPrompt: prompt,
-        promptFile,
+        reviewInstructions,
+        additionalInstructions,
         cleanup: !workspace,
         workspaceDir: workspace,
         includeMetricsFooter: post && !localMode,

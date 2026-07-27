@@ -2,9 +2,9 @@
 
 # Hodor
 
-> Agentic code reviewer for GitHub PRs, GitLab MRs, Gitea/Forgejo PRs, and local diffs. Powered by the [pi-coding-agent](https://github.com/badlogic/pi-mono) SDK.
+> Agentic code reviewer for GitHub PRs, GitLab MRs, Gitea/Forgejo PRs, and local diffs.
 
-Hodor runs as a stateful agent with tools (`bash`, `grep`, `read`, `git diff`) to autonomously analyze code changes, find bugs, and post structured reviews.
+Hodor uses read-only tools to analyze code changes, identify bugs, and post structured reviews.
 
 ## Install
 
@@ -60,14 +60,32 @@ npx @mrkaran/hodor <PR_URL> --reasoning-effort high
 # Force a full review of the entire branch (ignore previous incremental reviews)
 npx @mrkaran/hodor <PR_URL> --full
 
-# Custom review instructions
-npx @mrkaran/hodor <PR_URL> --prompt "Focus on SQL injection and auth bypasses"
-
 # Verbose mode (watch the agent think)
 npx @mrkaran/hodor <PR_URL> -v
 ```
 
 > If you installed globally with `npm install -g`, replace `npx @mrkaran/hodor` with `hodor`.
+
+## Review instructions
+
+Choose the default review profile, a custom security profile, or a one-off focus for a review:
+
+```bash
+# Default profile
+npx @mrkaran/hodor <PR_URL>
+
+# Custom profile that replaces the bundled default
+npx @mrkaran/hodor <PR_URL> \
+  --review-instructions ./review-profiles/security.md
+
+# One-off request added after the selected profile
+npx @mrkaran/hodor <PR_URL> \
+  --additional-instructions "Focus on authorization changes in the admin API."
+```
+
+A review profile applies to the whole run. A custom profile replaces the bundled default profile. Additional instructions are additive. Repository-specific rules remain in `.agents/skills/` and are used when relevant. Hodor's review rules take precedence if these inputs conflict.
+
+See [Review instructions](./docs/REVIEW_INSTRUCTIONS.md) for complete security and code-quality profiles, local and CI examples, migration guidance, and file validation troubleshooting.
 
 ## Local Mode
 
@@ -102,24 +120,24 @@ Local mode:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model` | `anthropic/claude-sonnet-4-5-20250929` | LLM model as `provider/model-id`. Recommended: Anthropic, OpenAI, Bedrock, OpenRouter. Other pi-ai providers (e.g., Mistral, Gemini, xAI, Groq) are best-effort. See [docs/MODELS.md](./docs/MODELS.md). |
-| `--reasoning-effort` | – | Extended thinking: `low`, `medium`, `high` |
+| `--model` | `anthropic/claude-sonnet-4-5-20250929` | LLM model as `provider/model-id`. Recommended: Anthropic, OpenAI, Bedrock, OpenRouter. Other configured providers such as Mistral, Gemini, xAI, and Groq are best-effort. See [docs/MODELS.md](./docs/MODELS.md). |
+| `--reasoning-effort` | None | Extended thinking: `low`, `medium`, `high` |
 | `--ultrathink` | Off | Maximum reasoning effort |
 | `--full` | Off | Review the entire source-vs-target diff from scratch, ignoring previous hodor reviews (disables incremental mode) |
-| `--target-branch` | – | Override the target branch to diff against under `--full` (default: the PR/MR's target branch) |
+| `--target-branch` | None | Override the target branch to diff against under `--full` (default: the PR/MR's target branch) |
 | `--local` | Off | Review local git changes (no PR URL required) |
 | `--diff-against` | `origin/main` | Git ref to diff against in `--local` mode |
 | `--post` | Off | Post review as a comment on the PR/MR |
 | `--review-style` | `hybrid` | GitLab posting style: `summary`, `inline`, or `hybrid` |
-| `--code-quality` | – | Write a CodeClimate JSON artifact for GitLab code quality reports |
+| `--code-quality` | None | Write a CodeClimate JSON artifact for GitLab code quality reports |
 | `--commit-status` | Off | Post a pass/fail commit status to the GitLab MR head SHA |
 | `--require-delivery` | Off | Exit non-zero if requested comments, statuses, or artifacts are not delivered |
-| `--fail-on-priority` | – | Exit non-zero for findings at or above `P0`, `P1`, `P2`, or `P3` |
-| `--prompt` | – | Append custom instructions to the review prompt |
-| `--prompt-file` | – | Use a custom prompt file |
+| `--fail-on-priority` | None | Exit non-zero for findings at or above `P0`, `P1`, `P2`, or `P3` |
+| `--review-instructions` | None | Read a custom review profile from a file. It replaces the bundled default profile for this run. |
+| `--additional-instructions` | None | Add one-off review instructions after the selected profile. |
 | `--workspace` | Temp dir | Workspace directory (reuse for faster multi-PR reviews) |
-| `--bedrock-tags` | – | JSON cost allocation tags for AWS Bedrock |
-| `--prometheus-push` | – | Push review metrics to a Prometheus Pushgateway or VictoriaMetrics import endpoint |
+| `--bedrock-tags` | None | JSON cost allocation tags for AWS Bedrock |
+| `--prometheus-push` | None | Push review metrics to a Prometheus Pushgateway or VictoriaMetrics import endpoint |
 | `-v, --verbose` | Off | Stream agent reasoning and tool calls |
 
 ## Environment Variables
@@ -167,7 +185,7 @@ hodor "$MR_OR_PR_URL" --prometheus-push "$METRICS_PUSH_URL"
 
 In CI, set `METRICS_PUSH_URL` as a secret/variable and add `--prometheus-push "$METRICS_PUSH_URL"` to the Hodor command. Metrics are best-effort: push failures are logged as warnings and do not fail the review job.
 
-Each metric is labeled with `platform`, `model`, `verdict`, `outcome`, and for PR/MR URLs also `project` (`owner/repo`). MR/PR numbers are deliberately excluded to avoid unbounded time-series cardinality. Exported metrics include token usage, cache read/write tokens, cache hit ratio, cost, turns, tool calls, duration, and findings by priority (`P0`–`P3`). A generic Grafana dashboard is available in [`docs/grafana/`](./docs/grafana/).
+Each metric is labeled with `platform`, `model`, `verdict`, `outcome`, and for PR/MR URLs also `project` (`owner/repo`). MR/PR numbers are deliberately excluded to avoid unbounded time-series cardinality. Exported metrics include token usage, cache read/write tokens, cache hit ratio, cost, turns, tool calls, duration, and findings by priority (`P0` to `P3`). A generic Grafana dashboard is available in [`docs/grafana/`](./docs/grafana/).
 
 ### GitHub Actions
 
@@ -234,10 +252,10 @@ Hodor automatically optimizes token usage:
 
 - **Diff embedding**: For PRs under 200KB, the diff is embedded directly in the prompt, cutting agent turns from ~60 to ~5.
 - **Incremental reviews**: On re-runs, only reviews changes since the last hodor comment. After a force-push or rebase, Hodor compares the last reviewed snapshot directly with the current HEAD instead of reviewing the whole MR again.
-- **Identical-HEAD reuse**: Successful summaries include a versioned, compressed review payload. Pipeline retries with the same HEAD, model, reasoning request, and prompt configuration reuse that result while still regenerating artifacts and retrying delivery.
+- **Identical-HEAD reuse**: Successful summaries include a versioned, compressed review payload. Pipeline retries with the same HEAD, model, reasoning request, review profile, and additional instructions reuse that result while still regenerating artifacts and retrying delivery.
 - **Adaptive reasoning**: Models that default to `xhigh` use `high` for routine small and incremental diffs, while risky, large, explicitly configured, and `--full` reviews retain the requested depth.
 - **Focused exploration**: Embedded diffs include a changed-file manifest and direct the agent toward bounded context reads without limiting how far it may investigate.
-- **Compaction**: SDK auto-summarizes older conversation turns when context grows too large.
+- **Compaction**: Hodor auto-summarizes older conversation turns when context grows too large.
 
 Pass `--full` to bypass incremental mode and identical-HEAD reuse. Pass `--reasoning-effort` to override adaptive reasoning.
 
@@ -285,16 +303,18 @@ Hodor is written in TypeScript and runs on [Bun](https://bun.sh). Key components
 | `src/cli.ts` | Commander.js CLI entry point |
 | `src/agent.ts` | Core review orchestration, URL parsing, comment posting |
 | `src/workspace.ts` | CI detection, repo cloning, branch checkout |
-| `src/prompt.ts` | Prompt template building and interpolation |
+| `src/prompt.ts` | Dynamic review task construction from PR or local-diff context |
+| `src/review-instructions.ts` | Default review profile loading and custom profile validation |
+| `src/system-prompt.ts` | Review profile, additional instructions, and Hodor review protocol composition |
 | `src/model.ts` | Model string parsing, API key resolution |
 | `src/gitlab.ts` | GitLab API via `glab` CLI (comments, inline notes, draft notes, commit status) |
 | `src/github.ts` | GitHub API via `gh` CLI |
 | `src/render.ts` | JSON review output → markdown rendering |
 | `src/codequality.ts` | CodeClimate JSON artifact for GitLab code quality widget |
 | `src/metrics.ts` | Token usage and cost formatting |
-| `templates/` | Review prompt template (JSON schema) |
+| `templates/` | Bundled default review profile and dynamic review task template |
 
-The agent runtime is provided by [`@earendil-works/pi-coding-agent`](https://github.com/earendil-works/pi) with [`@earendil-works/pi-ai`](https://github.com/earendil-works/pi) for LLM access. The agent session gets read-only tools (bash, read, grep, find, ls) and a review prompt, then autonomously analyzes the PR.
+Hodor gives its read-only review agent the selected review profile, optional additional instructions, Hodor's review protocol, and a task built from the PR or local diff. The agent then analyzes the changed code and reports structured findings.
 
 ---
 
