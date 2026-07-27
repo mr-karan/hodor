@@ -23,7 +23,7 @@ function runCli(args: string[]): { status: number; output: string } {
 
 describe("CLI policy validation", () => {
   it("reports the release version", () => {
-    expect(runCli(["--version"])).toEqual({ status: 0, output: "0.6.3-rc.3\n" });
+    expect(runCli(["--version"])).toEqual({ status: 0, output: "0.7.0-rc.1\n" });
   });
 
   it("rejects invalid priority thresholds before starting a review", () => {
