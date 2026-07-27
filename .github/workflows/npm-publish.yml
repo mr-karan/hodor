@@ -29,6 +29,11 @@ jobs:
       - name: Run tests
         run: bun run test
 
+      - name: Scan public release content
+        env:
+          HODOR_PUBLIC_RELEASE_DENYLIST_B64: ${{ secrets.HODOR_PUBLIC_RELEASE_DENYLIST_B64 }}
+        run: bun scripts/check-public-release.ts
+
       - name: Setup Node.js (for npm publish)
         uses: actions/setup-node@v4
         with:

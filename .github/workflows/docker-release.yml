@@ -21,6 +21,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Scan public release content
+        env:
+          HODOR_PUBLIC_RELEASE_DENYLIST_B64: ${{ secrets.HODOR_PUBLIC_RELEASE_DENYLIST_B64 }}
+        run: bun scripts/check-public-release.ts
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
