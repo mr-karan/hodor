@@ -16,6 +16,16 @@ describe("review system prompt", () => {
     expect(prompt).toContain("<HODOR_REVIEW_PROTOCOL>");
   });
 
+  it("keeps structured review output constraints outside replaceable profiles", () => {
+    const prompt = buildReviewSystemPrompt({ reviewInstructions: "CUSTOM_PROFILE" });
+
+    expect(prompt).toContain("imperative and at most 80 characters");
+    expect(prompt).toContain("one concise natural-language paragraph");
+    expect(prompt).toContain("exact contiguous current-source text");
+    expect(prompt).toContain("same `line_range`");
+    expect(prompt).toContain("one to three sentences");
+  });
+
   it("uses a custom profile verbatim instead of adding the bundled profile", () => {
     const customProfile = "# Release profile\nReport only authorization regressions.";
     const prompt = buildReviewSystemPrompt({ reviewInstructions: customProfile });

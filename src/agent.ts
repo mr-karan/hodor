@@ -1,6 +1,15 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import {
+  createAgentSession,
+  DefaultResourceLoader,
+  getAgentDir,
+  ModelRuntime,
+  SessionManager,
+  SettingsManager,
+} from "@earendil-works/pi-coding-agent";
 import type { AgentSession, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { logger } from "./utils/logger.js";
 import { exec } from "./utils/exec.js";
@@ -149,28 +158,19 @@ export async function reviewPr(opts: {
   // Snapshot env vars we may mutate, restore in finally block.
   const envSnapshot: Record<string, string | undefined> = {
     AWS_REGION: process.env.AWS_REGION,
+    AWS_DEFAULT_REGION: process.env.AWS_DEFAULT_REGION,
   };
 
-  // Import pi SDK
-  const {
-    AuthStorage,
-    createAgentSession,
-    DefaultResourceLoader,
-    ModelRegistry,
-    SessionManager,
-    SettingsManager,
-    getAgentDir,
-  } = await import("@earendil-works/pi-coding-agent");
-
-  // In-memory auth storage avoids loading ~/.pi/auth.json — env vars only.
-  const authStorage = AuthStorage.inMemory();
+  const modelRuntime = await ModelRuntime.create({
+    credentials: new InMemoryCredentialStore(),
+    modelsPath: null,
+  });
   if (process.env.LLM_API_KEY) {
-    authStorage.setRuntimeApiKey(parsed.provider, process.env.LLM_API_KEY);
+    await modelRuntime.setRuntimeApiKey(parsed.provider, process.env.LLM_API_KEY);
   }
-  const modelRegistry = ModelRegistry.inMemory(authStorage);
 
   // Resolve model — use registry for known models, construct manually for custom ARNs
-  let piModel: Model<Api>;
+  let piModel = modelRuntime.getModel(parsed.provider, parsed.modelId) as Model<Api> | undefined;
   if (parsed.modelId.startsWith("arn:")) {
     // Custom bedrock ARN (inference profile, cross-region, etc.)
     // Extract region from ARN: arn:aws:bedrock:<region>:<account>:...
@@ -193,11 +193,8 @@ export async function reviewPr(opts: {
       maxTokens: 16384,
     } as Model<Api>;
     logger.info(`Custom bedrock ARN model — region: ${region}`);
-  } else {
-    const registryModel = modelRegistry.find(parsed.provider, parsed.modelId);
-    if (registryModel) {
-      piModel = registryModel;
-    } else if (parsed.provider === "openrouter") {
+  } else if (!piModel) {
+    if (parsed.provider === "openrouter") {
       piModel = {
         id: parsed.modelId,
         name: parsed.modelId,
@@ -223,7 +220,7 @@ export async function reviewPr(opts: {
   // resolves them from many sources (env vars, IMDS, ECS task role, IRSA,
   // ~/.aws/credentials, etc.) and we can't reliably detect all of them.
   if (parsed.provider !== "amazon-bedrock") {
-    const resolvedKey = await modelRegistry.getApiKeyForProvider(parsed.provider);
+    const resolvedKey = await modelRuntime.getAuth(piModel);
     if (!resolvedKey) {
       throw new Error(
         `No API key found for provider "${parsed.provider}". Set the provider-specific environment variable, configure pi auth, or set LLM_API_KEY.`,
@@ -537,8 +534,7 @@ export async function reviewPr(opts: {
       // or the LLM never sees it and the agent loop exits without calling it.
       tools: ["read", "bash", "grep", "find", "ls", "submit_review"],
       customTools: [submitReviewTool],
-      authStorage,
-      modelRegistry,
+      modelRuntime,
       sessionManager: SessionManager.inMemory(),
       settingsManager,
       resourceLoader,

@@ -15,6 +15,7 @@ describe("parseModelString", () => {
     ["mistral/mistral-large-latest", "mistral", "mistral-large-latest"],
     ["google/gemini-2.5-pro", "google", "gemini-2.5-pro"],
     ["bedrock/anthropic.claude-opus-4-6-v1", "amazon-bedrock", "anthropic.claude-opus-4-6-v1"],
+    ["bedrock/converse/global.anthropic.claude-opus-5", "amazon-bedrock", "global.anthropic.claude-opus-5"],
     ["bedrock/converse/arn:aws:bedrock:ap-south-1:123:inference-profile/xyz", "amazon-bedrock", "arn:aws:bedrock:ap-south-1:123:inference-profile/xyz"],
     ["claude-sonnet-4-5", "anthropic", "claude-sonnet-4-5"],
     ["gpt-5", "openai", "gpt-5"],
@@ -52,6 +53,7 @@ describe("getDefaultReasoningEffortForModel", () => {
   it.each([
     ["global.anthropic.claude-opus-4-7", "Claude Opus 4.7"],
     ["global.anthropic.claude-opus-4-8", "Claude Opus 4.8"],
+    ["global.anthropic.claude-opus-5", "Claude Opus 5"],
   ])("defaults %s to xhigh", (id, name) => {
     expect(getDefaultReasoningEffortForModel({ id, name })).toBe("xhigh");
   });

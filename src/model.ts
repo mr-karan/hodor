@@ -110,7 +110,7 @@ export function getDefaultReasoningEffortForModel(model: {
   const values = [model.id, model.name].filter((value): value is string => Boolean(value));
   const isAdaptiveOpus = values
     .map(normalizeModelMatchValue)
-    .some((value) => value.includes("opus-4-7") || value.includes("opus-4-8"));
+    .some((value) => value.includes("opus-4-7") || value.includes("opus-4-8") || value.includes("opus-5"));
 
   return isAdaptiveOpus ? "xhigh" : undefined;
 }

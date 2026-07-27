@@ -58,15 +58,13 @@ vi.mock("@earendil-works/pi-coding-agent", () => {
   }
 
   return {
-    AuthStorage: {
-      inMemory: () => ({ setRuntimeApiKey: vi.fn() }),
-    },
     createAgentSession: mocks.createAgentSession,
     DefaultResourceLoader: MockResourceLoader,
     getAgentDir: () => "/tmp/pi-agent",
-    ModelRegistry: {
-      inMemory: () => ({
-        find: () => ({
+    ModelRuntime: {
+      create: async () => ({
+        setRuntimeApiKey: vi.fn(),
+        getModel: () => ({
           id: "test-model",
           name: "test-model",
           provider: "anthropic",
@@ -77,7 +75,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => {
           contextWindow: 200000,
           maxTokens: 8192,
         }),
-        getApiKeyForProvider: async () => "test-key",
+        getAuth: async () => ({ apiKey: "test-key" }),
       }),
     },
     SessionManager: {

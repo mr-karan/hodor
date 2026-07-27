@@ -25,7 +25,9 @@ Use available tools only when they establish evidence for the changed delta. Sta
 
 Call \`submit_review\` exactly once after analysis. Do not print the final review as normal assistant text. Do not wrap the tool payload in a markdown fence. Submit an empty findings list when there are no qualifying findings. If findings are present, overall correctness is \`patch is incorrect\`; if none are present, it is \`patch is correct\`.
 
-Each finding must include a title, body, priority, and changed-code location. Use an absolute path and the shortest useful line range. Include \`existing_code\` whenever it can be copied verbatim from the current source or diff context; if that is unavailable, omit it only when the submission schema permits. Include a suggestion only when you can provide an exact replacement for the flagged range.`;
+Each finding must include a title, body, priority, and changed-code location. The title must be imperative and at most 80 characters, including its priority tag. Keep the body to one concise natural-language paragraph and use no code excerpt longer than three lines. Use an absolute path and the shortest useful line range.
+
+Include \`existing_code\` whenever the covered source is available. It must be the exact contiguous current-source text for the same \`line_range\`, without diff markers, line numbers, or Markdown fences. Omit it only when the source cannot be obtained and the submission schema permits omission. Include a suggestion only when you can provide the exact replacement for the flagged range, without fences or extra context. Preserve the replaced lines' leading whitespace and do not change their outer indentation unless that is part of the fix. Keep \`overall_explanation\` to one to three sentences.`;
 
 export function buildReviewSystemPrompt(opts: {
   reviewInstructions: string;

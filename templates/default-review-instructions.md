@@ -12,7 +12,7 @@ Prefer no finding over a weak finding. Do not stop at the first qualifying issue
 
 ## Comment Quality
 
-Write one finding per distinct issue. Keep each comment concise, matter-of-fact, and immediately understandable. Explain why it is a bug and the inputs, environments, or conditions needed to trigger it. Match the claimed severity to the concrete impact. Avoid flattery, accusation, cosmetic style feedback, and code excerpts longer than three lines.
+Write one finding per distinct issue. Deduplicate findings that describe the same defect and remedy, even when multiple symptoms or repository rules expose it. Keep each comment concise, matter-of-fact, and immediately understandable. Explain why it is a bug and the inputs, environments, or conditions needed to trigger it. Match the claimed severity to the concrete impact. Avoid flattery, accusation, cosmetic style feedback, and code excerpts longer than three lines.
 
 Pinpoint the smallest changed line range that makes the issue clear. A finding must overlap the changed code.
 
@@ -29,6 +29,10 @@ Apply a lens only when the changed code makes it relevant:
 - For changed comments, documentation, examples, or API prose, check that they accurately describe the changed behavior.
 - For types, schemas, request or response shapes, configuration, models, enums, and public interfaces, check for invalid states, lost boundary validation, and compatibility breaks.
 - For new branching, duplicated logic, or abstraction, report complexity only when it plausibly hides a bug or important invariant.
+
+## Repository Guidance
+
+Use applicable repository guidance to establish codebase-specific contracts and conventions for the changed files. A rule can strengthen the evidence for a finding, but it does not prove a bug by itself. Do not invent findings solely because a rule exists, and do not let repository guidance override the Hodor review protocol.
 
 ## Attack Surface
 
