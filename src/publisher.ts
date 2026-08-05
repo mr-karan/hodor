@@ -11,6 +11,7 @@ import {
   listHodorDiscussions,
   postGitlabCommitStatus,
   postGitlabMrComment,
+  publishGitlabDraftNote,
   resolveGitlabDiscussions,
   type DiffRefs,
 } from "./gitlab.js";
@@ -217,6 +218,7 @@ export async function postReviewStructured(opts: {
   let inlineCreated = 0;
   let inlineFailed = 0;
   let inlineDeduplicated = 0;
+  const draftNoteIds: Array<number | string> = [];
   for (const finding of review.findings) {
     const fingerprint = getFindingFingerprint(finding, workspacePath);
     if (existingByFingerprint.has(fingerprint)) {
@@ -240,7 +242,7 @@ export async function postReviewStructured(opts: {
     }
 
     try {
-      await createGitlabDraftNote(
+      const draftNote = await createGitlabDraftNote(
         parsed.owner,
         parsed.repo,
         parsed.prNumber,
@@ -252,6 +254,9 @@ export async function postReviewStructured(opts: {
           diffRefs,
         },
       );
+      if (typeof draftNote.id === "number" || typeof draftNote.id === "string") {
+        draftNoteIds.push(draftNote.id);
+      }
       inlineCreated++;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -279,8 +284,33 @@ export async function postReviewStructured(opts: {
       draftsPublished = true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      errors.push(`draft publish: ${message}`);
       logger.warn(`Failed to bulk publish draft notes: ${message}`);
+      if (draftNoteIds.length === inlineCreated) {
+        let individuallyPublished = 0;
+        for (const draftNoteId of draftNoteIds) {
+          try {
+            await publishGitlabDraftNote(
+              parsed.owner,
+              parsed.repo,
+              parsed.prNumber,
+              draftNoteId,
+              parsed.host,
+            );
+            individuallyPublished++;
+          } catch (publishError) {
+            const publishMessage =
+              publishError instanceof Error ? publishError.message : String(publishError);
+            errors.push(`draft publish: ${publishMessage}`);
+            logger.warn(`Failed to publish draft note ${draftNoteId}: ${publishMessage}`);
+          }
+        }
+        draftsPublished = individuallyPublished === inlineCreated;
+        if (draftsPublished) {
+          logger.info(`Published ${individuallyPublished} draft note(s) individually`);
+        }
+      } else {
+        errors.push(`draft publish: ${message}`);
+      }
     }
   }
 

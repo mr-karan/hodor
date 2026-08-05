@@ -190,4 +190,42 @@ describe("GitLab review publication", () => {
       ),
     ).toBe(false);
   });
+
+  it("publishes drafts individually when GitLab bulk publishing fails", async () => {
+    mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.some((arg) => arg.includes("merge_requests/42")) && !args.includes("--method")) {
+        return {
+          diff_refs: {
+            base_sha: "a".repeat(40),
+            head_sha: "b".repeat(40),
+            start_sha: "c".repeat(40),
+          },
+        };
+      }
+      if (args.some((arg) => arg.endsWith("/draft_notes"))) return { id: 123 };
+      return {};
+    });
+    mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.some((arg) => arg.endsWith("/draft_notes/bulk_publish"))) {
+        throw new Error("500 Internal Server Error");
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const { postReviewStructured } = await import("../src/publisher.js");
+
+    const result = await postReviewStructured({
+      prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42",
+      review: review([finding]),
+      reviewStyle: "hybrid",
+      workspacePath: "/workspace",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.draftsPublished).toBe(true);
+    expect(
+      mocks.exec.mock.calls.some((call) =>
+        (call[1] as string[]).some((arg) => arg.endsWith("/draft_notes/123/publish")),
+      ),
+    ).toBe(true);
+  });
 });

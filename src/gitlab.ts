@@ -431,6 +431,33 @@ export async function bulkPublishGitlabDraftNotes(
   }
 }
 
+export async function publishGitlabDraftNote(
+  owner: string,
+  repo: string,
+  mrNumber: number | string,
+  draftNoteId: number | string,
+  host?: string | null,
+): Promise<void> {
+  const encoded = encodedProjectPath(owner, repo);
+  const env = glabEnv(host);
+
+  try {
+    await exec(
+      "glab",
+      [
+        "api",
+        `projects/${encoded}/merge_requests/${mrNumber}/draft_notes/${draftNoteId}/publish`,
+        "--method",
+        "PUT",
+      ],
+      { env },
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new GitLabAPIError(`Failed to publish draft note ${draftNoteId} for MR !${mrNumber}: ${msg}`);
+  }
+}
+
 type GitlabCommitStatusState = "pending" | "running" | "success" | "failed" | "canceled";
 
 export async function postGitlabCommitStatus(
