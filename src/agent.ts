@@ -26,8 +26,11 @@ import {
 import { setupWorkspace, cleanupWorkspace } from "./workspace.js";
 import { buildPrReviewPrompt } from "./prompt.js";
 import {
+  buildBedrockArnModel,
+  extractBedrockArnRegion,
   getDefaultReasoningEffortForModel,
   parseModelString,
+  qualifiesForSingleTurnReview,
   selectReasoningEffort,
 } from "./model.js";
 import { formatMetricsMarkdown, printMetrics } from "./metrics.js";
@@ -99,6 +102,7 @@ export async function reviewPr(opts: {
   diffAgainst?: string;
   full?: boolean;
   targetBranchOverride?: string;
+  tinyDiffFastPath?: boolean;
 }): Promise<{
   review: ReviewOutput;
   metricsFooter: string | null;
@@ -123,6 +127,7 @@ export async function reviewPr(opts: {
     diffAgainst,
     full = false,
     targetBranchOverride,
+    tinyDiffFastPath = false,
   } = opts;
 
   const effectiveReviewInstructions = reviewInstructions == null
@@ -172,27 +177,35 @@ export async function reviewPr(opts: {
   // Resolve model — use registry for known models, construct manually for custom ARNs
   let piModel = modelRuntime.getModel(parsed.provider, parsed.modelId) as Model<Api> | undefined;
   if (parsed.modelId.startsWith("arn:")) {
-    // Custom bedrock ARN (inference profile, cross-region, etc.)
-    // Extract region from ARN: arn:aws:bedrock:<region>:<account>:...
-    const arnParts = parsed.modelId.split(":");
-    const region = arnParts.length >= 4 ? arnParts[3] : "us-east-1";
+    // Custom bedrock ARN (application/system inference profile, provisioned
+    // throughput, etc.).
+    const region = extractBedrockArnRegion(parsed.modelId);
     // Set AWS_REGION so the BedrockRuntimeClient uses the correct endpoint
     if (!process.env.AWS_REGION && !process.env.AWS_DEFAULT_REGION) {
       process.env.AWS_REGION = region;
     }
-    piModel = {
-      id: parsed.modelId,
-      name: parsed.modelId,
-      api: "bedrock-converse-stream",
-      provider: "amazon-bedrock",
-      baseUrl: `https://bedrock-runtime.${region}.amazonaws.com`,
-      reasoning: false,
-      input: ["text"] as ("text" | "image")[],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 200000,
-      maxTokens: 16384,
-    } as Model<Api>;
-    logger.info(`Custom bedrock ARN model — region: ${region}`);
+
+    const baseModel = parsed.baseModelId
+      ? (modelRuntime.getModel(parsed.provider, parsed.baseModelId) as Model<Api> | undefined)
+      : undefined;
+    if (parsed.baseModelId && !baseModel) {
+      throw new Error(
+        `Base model "${parsed.baseModelId}" for Bedrock ARN "${parsed.modelId}" was not found in the installed pi-ai registry.`,
+      );
+    }
+
+    piModel = buildBedrockArnModel({ arn: parsed.modelId, baseModel, region });
+    if (baseModel) {
+      logger.info(
+        `Custom bedrock ARN model — region: ${region}, capabilities from ${baseModel.id}`,
+      );
+    } else {
+      logger.warn(
+        `Custom bedrock ARN model — region: ${region}, no base model given. ` +
+          `Prompt caching, reasoning, and cost reporting are disabled. ` +
+          `Append "@<base-model-id>" to the model string (e.g. "${model}@global.anthropic.claude-opus-5") to restore them.`,
+      );
+    }
   } else if (!piModel) {
     if (parsed.provider === "openrouter") {
       piModel = {
@@ -354,12 +367,18 @@ export async function reviewPr(opts: {
           diffDeletions: 0,
           diffBytes: 0,
           reused: true,
+          fastPath: false,
         };
         logger.info(`Review telemetry: ${JSON.stringify({
+          project: `${owner}/${repo}`,
+          mr: prNumber,
+          headSha: headSha.slice(0, 12),
+          model,
+          outcome: "reused",
           reviewMode: metrics.reviewMode,
           reasoningEffort: metrics.reasoningEffort,
+          fastPath: false,
           reused: true,
-          headSha: headSha.slice(0, 12),
           findings: cachedReview.findings.length,
         })}`);
         printMetrics(metrics);
@@ -437,6 +456,18 @@ export async function reviewPr(opts: {
       logger.info(`Reasoning effort for ${piModel.name}: ${thinkingLevel}${reasoningEffort ? " (explicit)" : " (adaptive)"}`);
     }
 
+    const singleTurn = tinyDiffFastPath && qualifiesForSingleTurnReview({
+      diff: reviewDiff,
+      stats: diffStats,
+      embedded: embeddedDiff != null,
+    });
+    if (singleTurn) {
+      logger.info(
+        `Single-turn fast path: tiny low-risk diff (${diffStats?.files} file(s), ` +
+          `${(diffStats?.additions ?? 0) + (diffStats?.deletions ?? 0)} changed line(s)); exposing only submit_review`,
+      );
+    }
+
     // Build the dynamic review task sent as the first user message.
     const prompt = buildPrReviewPrompt({
       prUrl: prUrl ?? `local diff (against ${targetBranch})`,
@@ -449,6 +480,7 @@ export async function reviewPr(opts: {
       reviewDiffMode: reviewMode,
       changedFiles,
       localMode,
+      singleTurn,
     });
 
     const startTime = Date.now();
@@ -532,7 +564,9 @@ export async function reviewPr(opts: {
       // (see _refreshToolRegistry in @earendil-works/pi-coding-agent's
       // agent-session.ts). The submit_review custom tool must be named here
       // or the LLM never sees it and the agent loop exits without calling it.
-      tools: ["read", "bash", "grep", "find", "ls", "submit_review"],
+      tools: singleTurn
+        ? ["submit_review"]
+        : ["read", "bash", "grep", "find", "ls", "submit_review"],
       customTools: [submitReviewTool],
       modelRuntime,
       sessionManager: SessionManager.inMemory(),
@@ -775,10 +809,17 @@ export async function reviewPr(opts: {
       diffDeletions: diffStats?.deletions ?? 0,
       diffBytes: diffStats?.bytes ?? 0,
       reused: false,
+      fastPath: singleTurn,
     };
     logger.info(`Review telemetry: ${JSON.stringify({
+      project: localMode ? null : `${owner}/${repo}`,
+      mr: localMode ? null : prNumber,
+      headSha: headSha?.slice(0, 12) ?? null,
+      model,
+      outcome: "reviewed",
       reviewMode: metrics.reviewMode,
       reasoningEffort: metrics.reasoningEffort,
+      fastPath: singleTurn,
       reused: false,
       diffFiles: metrics.diffFiles,
       diffAdditions: metrics.diffAdditions,

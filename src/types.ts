@@ -54,6 +54,8 @@ export interface ReviewMetrics {
   diffDeletions?: number;
   diffBytes?: number;
   reused?: boolean;
+  /** Whether the single-turn tiny-diff fast path gated tools to submit_review. */
+  fastPath?: boolean;
 }
 
 export type ReviewPriority = 0 | 1 | 2 | 3;

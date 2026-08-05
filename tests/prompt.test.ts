@@ -104,6 +104,65 @@ describe("buildPrReviewPrompt", () => {
     expect(prompt).toContain("Do not run another command to list changed files");
   });
 
+  it("advertises inspection tools by default", () => {
+    const prompt = buildPrReviewPrompt({
+      prUrl: "https://github.com/acme/hodor/pull/42",
+      platform: "github",
+      targetBranch: "main",
+      embeddedDiff: "diff --git a/src/a.ts b/src/a.ts\n+const ok = true;",
+      changedFiles: ["src/a.ts"],
+    });
+
+    expect(prompt).toContain("`grep` searches for directly relevant code");
+    expect(prompt).toContain("`read` provides bounded surrounding context");
+    expect(prompt).not.toContain("It is the only tool available");
+  });
+
+  it("withholds inspection tools on the single-turn fast path", () => {
+    const prompt = buildPrReviewPrompt({
+      prUrl: "https://github.com/acme/hodor/pull/42",
+      platform: "github",
+      targetBranch: "main",
+      embeddedDiff: "diff --git a/src/a.ts b/src/a.ts\n+const ok = true;",
+      changedFiles: ["src/a.ts"],
+      singleTurn: true,
+    });
+
+    expect(prompt).toContain("It is the only tool available for this review");
+    expect(prompt).toContain("call `submit_review` now, in this turn");
+    expect(prompt).toContain("No file-inspection tools are available");
+    expect(prompt).not.toContain("`grep` searches for directly relevant code");
+    expect(prompt).not.toContain("`read` provides bounded surrounding context");
+  });
+
+  it("keeps the incremental rules consistent with the single-turn fast path", () => {
+    const prompt = buildPrReviewPrompt({
+      prUrl: "https://github.com/acme/hodor/pull/42",
+      platform: "github",
+      targetBranch: "main",
+      previousReviewSha: "2".repeat(40),
+      reviewDiffMode: "incremental",
+      embeddedDiff: "diff --git a/src/a.ts b/src/a.ts\n+const ok = true;",
+      changedFiles: ["src/a.ts"],
+      singleTurn: true,
+    });
+
+    expect(prompt).not.toContain("verify the direct call sites or tests");
+    expect(prompt).toContain("No file-inspection tools are available");
+  });
+
+  it("ignores the fast path when there is no embedded diff to reason from", () => {
+    const prompt = buildPrReviewPrompt({
+      prUrl: "https://github.com/acme/hodor/pull/42",
+      platform: "github",
+      targetBranch: "main",
+      singleTurn: true,
+    });
+
+    expect(prompt).toContain("`grep` searches for directly relevant code");
+    expect(prompt).not.toContain("It is the only tool available");
+  });
+
   it("keeps the submission protocol in the effective system prompt", () => {
     const task = buildPrReviewPrompt({
       prUrl: "https://github.com/acme/hodor/pull/42",

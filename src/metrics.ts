@@ -152,6 +152,9 @@ export async function pushMetrics(opts: {
     `# HELP hodor_review_reused Whether an existing identical-HEAD review was reused`,
     `# TYPE hodor_review_reused gauge`,
     `hodor_review_reused${labelSuffix} ${metrics.reused ? 1 : 0}`,
+    `# HELP hodor_review_fast_path Whether the single-turn tiny-diff fast path gated tools to submit_review`,
+    `# TYPE hodor_review_fast_path gauge`,
+    `hodor_review_fast_path${labelSuffix} ${metrics.fastPath ? 1 : 0}`,
     "",
   ];
   const body = lines.join("\n");

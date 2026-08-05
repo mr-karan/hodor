@@ -1,9 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
+  buildBedrockArnModel,
+  extractBedrockArnRegion,
   getApiKey,
   getDefaultReasoningEffortForModel,
+  isHighRiskDiff,
   mapReasoningEffort,
   parseModelString,
+  qualifiesForSingleTurnReview,
   selectReasoningEffort,
 } from "../src/model.js";
 
@@ -32,6 +36,157 @@ describe("parseModelString", () => {
 
   it("throws on unknown provider prefixes", () => {
     expect(() => parseModelString("unknown/foo")).toThrow(/Unsupported provider/);
+  });
+
+  it("leaves baseModelId unset for plain bedrock models", () => {
+    expect(parseModelString("bedrock/converse/global.anthropic.claude-opus-5").baseModelId)
+      .toBeUndefined();
+  });
+
+  it("parses the base model backing an inference profile ARN", () => {
+    const arn = "arn:aws:bedrock:ap-south-1:123:application-inference-profile/abc123";
+    const result = parseModelString(
+      `bedrock/converse/${arn}@global.anthropic.claude-opus-5`,
+    );
+    expect(result.provider).toBe("amazon-bedrock");
+    expect(result.modelId).toBe(arn);
+    expect(result.baseModelId).toBe("global.anthropic.claude-opus-5");
+  });
+
+  it.each([
+    "bedrock/converse/arn:aws:bedrock:ap-south-1:123:application-inference-profile/abc@",
+    "bedrock/converse/@global.anthropic.claude-opus-5",
+  ])("rejects a half-specified base model hint (%s)", (input) => {
+    expect(() => parseModelString(input)).toThrow(/Invalid bedrock model/);
+  });
+});
+
+describe("buildBedrockArnModel", () => {
+  const arn = "arn:aws:bedrock:ap-south-1:123:application-inference-profile/abc123";
+  // Shape mirrors the pi-ai registry entry for global.anthropic.claude-opus-5.
+  const baseModel = {
+    id: "global.anthropic.claude-opus-5",
+    name: "Claude Opus 5 (Global)",
+    api: "bedrock-converse-stream",
+    provider: "amazon-bedrock",
+    baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+  } as never;
+
+  it("derives the region from the ARN", () => {
+    expect(extractBedrockArnRegion(arn)).toBe("ap-south-1");
+    expect(extractBedrockArnRegion("arn:aws:bedrock")).toBe("us-east-1");
+  });
+
+  it("inherits capabilities and cost from the base model", () => {
+    const model = buildBedrockArnModel({ arn, baseModel }) as Record<string, unknown>;
+
+    expect(model.id).toBe(arn);
+    expect(model.reasoning).toBe(true);
+    expect(model.cost).toEqual({ input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 });
+    expect(model.contextWindow).toBe(1_000_000);
+    expect(model.maxTokens).toBe(128_000);
+    expect(model.baseUrl).toBe("https://bedrock-runtime.ap-south-1.amazonaws.com");
+  });
+
+  // pi-ai gates prompt caching, adaptive thinking and xhigh effort on substring
+  // matches over the model id/name. The ARN matches none of them, so the name
+  // must carry the registry id or those features silently switch off.
+  it("keeps a name that satisfies pi-ai's capability matchers", () => {
+    const model = buildBedrockArnModel({ arn, baseModel }) as Record<string, unknown>;
+    const candidates = [model.id, model.name]
+      .filter((value): value is string => typeof value === "string")
+      .flatMap((value) => {
+        const lower = value.toLowerCase();
+        return [lower, lower.replace(/[\s_.:]+/g, "-")];
+      });
+
+    expect(candidates.some((c) => c.includes("claude"))).toBe(true);
+    expect(candidates.some((c) => c.includes("opus-5"))).toBe(true);
+    expect(candidates.some((c) => c.includes("anthropic.claude") || c.includes("anthropic-claude")))
+      .toBe(true);
+  });
+
+  it("keeps adaptive reasoning defaults reachable through the ARN", () => {
+    const model = buildBedrockArnModel({ arn, baseModel }) as { id?: string; name?: string };
+    expect(getDefaultReasoningEffortForModel(model)).toBe("xhigh");
+  });
+
+  it("falls back to a capability-free descriptor without a base model", () => {
+    const model = buildBedrockArnModel({ arn }) as Record<string, unknown>;
+    expect(model.reasoning).toBe(false);
+    expect(model.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    expect(model.name).toBe(arn);
+  });
+});
+
+describe("isHighRiskDiff", () => {
+  it("flags security-sensitive paths and semantics", () => {
+    expect(isHighRiskDiff("diff --git a/auth/token.ts b/auth/token.ts\n+const x = 1;\n")).toBe(true);
+    expect(isHighRiskDiff("diff --git a/db/migrations/001.sql b/db/migrations/001.sql\n+ALTER TABLE t;\n")).toBe(true);
+    expect(isHighRiskDiff("diff --git a/src/ui.ts b/src/ui.ts\n+const permission = check();\n")).toBe(true);
+  });
+
+  it("does not flag routine changes", () => {
+    expect(isHighRiskDiff("diff --git a/src/ui.ts b/src/ui.ts\n+const label = 'Save';\n")).toBe(false);
+  });
+
+  // Regex state leaking between calls would make the predicate alternate.
+  it("is stable across repeated calls", () => {
+    const diff = "diff --git a/auth/token.ts b/auth/token.ts\n+const x = 1;\n";
+    expect([isHighRiskDiff(diff), isHighRiskDiff(diff), isHighRiskDiff(diff)])
+      .toEqual([true, true, true]);
+  });
+});
+
+describe("qualifiesForSingleTurnReview", () => {
+  const tinyDiff = "diff --git a/src/ui.ts b/src/ui.ts\n+const label = 'Save';\n";
+  const tinyStats = { files: 1, additions: 1, deletions: 0, bytes: tinyDiff.length };
+
+  it("accepts a tiny embedded low-risk diff", () => {
+    expect(qualifiesForSingleTurnReview({ diff: tinyDiff, stats: tinyStats, embedded: true }))
+      .toBe(true);
+  });
+
+  it("requires the diff to be embedded", () => {
+    expect(qualifiesForSingleTurnReview({ diff: tinyDiff, stats: tinyStats, embedded: false }))
+      .toBe(false);
+  });
+
+  it("rejects high-risk diffs regardless of size", () => {
+    const riskyDiff = "diff --git a/auth/token.ts b/auth/token.ts\n+const t = 1;\n";
+    expect(qualifiesForSingleTurnReview({
+      diff: riskyDiff,
+      stats: { files: 1, additions: 1, deletions: 0, bytes: riskyDiff.length },
+      embedded: true,
+    })).toBe(false);
+  });
+
+  it("rejects diffs above the file or line budget", () => {
+    expect(qualifiesForSingleTurnReview({
+      diff: tinyDiff,
+      stats: { files: 6, additions: 1, deletions: 0, bytes: 100 },
+      embedded: true,
+    })).toBe(false);
+    expect(qualifiesForSingleTurnReview({
+      diff: tinyDiff,
+      stats: { files: 1, additions: 40, deletions: 11, bytes: 100 },
+      embedded: true,
+    })).toBe(false);
+  });
+
+  it("rejects an empty or unknown diff", () => {
+    expect(qualifiesForSingleTurnReview({
+      diff: "",
+      stats: { files: 0, additions: 0, deletions: 0, bytes: 0 },
+      embedded: true,
+    })).toBe(false);
+    expect(qualifiesForSingleTurnReview({ diff: tinyDiff, stats: null, embedded: true }))
+      .toBe(false);
   });
 });
 

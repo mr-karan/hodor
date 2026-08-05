@@ -1,11 +1,19 @@
 import { getEnvApiKey } from "@earendil-works/pi-ai/compat";
 import { getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
-import type { ThinkingLevel } from "@earendil-works/pi-ai";
+import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
 import type { DiffStats, ReviewDiffMode } from "./review-diff.js";
 
 export interface ParsedModel {
   provider: string;
   modelId: string;
+  /**
+   * Registry model id whose descriptor should back a custom Bedrock ARN.
+   * Application inference profile ARNs do not contain the model name, and
+   * pi-ai gates prompt caching, adaptive thinking, and cost accounting on
+   * substring matches against the model id/name. Without this hint those
+   * capabilities silently switch off.
+   */
+  baseModelId?: string;
 }
 
 const PROVIDER_ALIASES: Record<string, string> = {
@@ -35,6 +43,20 @@ export function parseModelString(model: string): ParsedModel {
       let modelId = parts.slice(1).join("/");
       if (modelId.startsWith("converse/")) {
         modelId = modelId.slice("converse/".length);
+      }
+      // "<arn>@<base-model-id>" names the registry model backing an inference
+      // profile ARN. "@" cannot appear in a Bedrock ARN, so it is unambiguous.
+      const separator = modelId.indexOf("@");
+      if (separator !== -1) {
+        const baseModelId = modelId.slice(separator + 1).trim();
+        modelId = modelId.slice(0, separator).trim();
+        if (!modelId || !baseModelId) {
+          throw new Error(
+            `Invalid bedrock model "${trimmed}". Use "bedrock/<arn>@<base-model-id>", ` +
+              `for example "bedrock/arn:aws:bedrock:ap-south-1:123:application-inference-profile/abc@global.anthropic.claude-opus-5".`,
+          );
+        }
+        return { provider, modelId, baseModelId };
       }
       return { provider, modelId };
     }
@@ -71,6 +93,56 @@ export function parseModelString(model: string): ParsedModel {
 
   // Default to anthropic for unknown models
   return { provider: "anthropic", modelId: trimmed };
+}
+
+/** Region from arn:aws:bedrock:<region>:<account>:..., falling back to us-east-1. */
+export function extractBedrockArnRegion(arn: string): string {
+  const parts = arn.split(":");
+  return parts.length >= 4 && parts[3] ? parts[3] : "us-east-1";
+}
+
+/**
+ * Build the model descriptor for a custom Bedrock ARN.
+ *
+ * pi-ai decides prompt caching, adaptive thinking, and per-token cost by
+ * substring-matching the model id and name. An application inference profile
+ * ARN — the only mechanism AWS bills against cost allocation tags — carries
+ * neither the vendor nor the model version, so a hand-rolled descriptor
+ * silently loses caching, drops the thinking config, and reports zero cost.
+ * Inheriting the registry descriptor and overriding only the id keeps every
+ * capability matcher working behind the opaque ARN.
+ */
+export function buildBedrockArnModel(opts: {
+  arn: string;
+  baseModel?: Model<Api> | null;
+  region?: string;
+}): Model<Api> {
+  const region = opts.region ?? extractBedrockArnRegion(opts.arn);
+  const baseUrl = `https://bedrock-runtime.${region}.amazonaws.com`;
+
+  if (opts.baseModel) {
+    return {
+      ...opts.baseModel,
+      id: opts.arn,
+      // Keep the registry id as the name so pi-ai's capability matchers still
+      // see the vendor and model version behind the ARN.
+      name: opts.baseModel.id,
+      baseUrl,
+    } as Model<Api>;
+  }
+
+  return {
+    id: opts.arn,
+    name: opts.arn,
+    api: "bedrock-converse-stream",
+    provider: "amazon-bedrock",
+    baseUrl,
+    reasoning: false,
+    input: ["text"] as ("text" | "image")[],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 200000,
+    maxTokens: 16384,
+  } as Model<Api>;
 }
 
 /**
@@ -118,6 +190,36 @@ export function getDefaultReasoningEffortForModel(model: {
 const HIGH_RISK_PATH_RE = /(?:^|\/)(?:migrations?|schema|auth|security|permissions?|crypto|iam)(?:\/|\.|$)|\.tf$/im;
 const HIGH_RISK_CHANGE_RE = /^\+.*\b(?:authorization|authentication|permission|transaction|mutex|semaphore|encrypt|decrypt|credential|secret)\b/im;
 
+/** Diffs touching security-sensitive paths or semantics keep full investigation budget. */
+export function isHighRiskDiff(diff: string): boolean {
+  return HIGH_RISK_PATH_RE.test(diff) || HIGH_RISK_CHANGE_RE.test(diff);
+}
+
+const SINGLE_TURN_MAX_FILES = 5;
+const SINGLE_TURN_MAX_CHANGED_LINES = 50;
+
+/**
+ * Whether the embedded diff is the whole story, so the review can be decided in
+ * one turn without exploratory tool calls.
+ *
+ * Tiny reviews spend most of their cost re-sending the conversation on each
+ * exploratory turn rather than on the diff itself, so removing those turns
+ * removes both the repeated context and the reasoning that drives it. High-risk
+ * diffs keep tool access regardless of size.
+ */
+export function qualifiesForSingleTurnReview(opts: {
+  diff?: string | null;
+  stats?: DiffStats | null;
+  embedded: boolean;
+}): boolean {
+  if (!opts.embedded || !opts.stats) return false;
+  const { files, additions, deletions } = opts.stats;
+  if (files === 0 || files > SINGLE_TURN_MAX_FILES) return false;
+  if (additions + deletions > SINGLE_TURN_MAX_CHANGED_LINES) return false;
+  if (opts.diff && isHighRiskDiff(opts.diff)) return false;
+  return true;
+}
+
 export function selectReasoningEffort(opts: {
   requested?: string;
   modelDefault?: ThinkingLevel;
@@ -133,10 +235,7 @@ export function selectReasoningEffort(opts: {
   if (modelDefault !== "xhigh") return modelDefault;
   if (opts.forcedFull) return modelDefault;
 
-  const risky = Boolean(
-    opts.diff && (HIGH_RISK_PATH_RE.test(opts.diff) || HIGH_RISK_CHANGE_RE.test(opts.diff)),
-  );
-  if (risky) return modelDefault;
+  if (opts.diff && isHighRiskDiff(opts.diff)) return modelDefault;
 
   if (opts.mode === "incremental" || opts.mode === "snapshot") return "high";
 

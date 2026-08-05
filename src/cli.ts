@@ -15,7 +15,7 @@ import {
   type FailOnPriority,
 } from "./review-policy.js";
 import { loadReviewInstructionsFile } from "./review-instructions.js";
-import { setLogLevel } from "./utils/logger.js";
+import { logger, setLogLevel } from "./utils/logger.js";
 
 const program = new Command();
 
@@ -86,7 +86,9 @@ program
   )
   .option(
     "--bedrock-tags <json>",
-    "JSON object of cost allocation tags for Bedrock requests (e.g., '{\"team\":\"platform\"}')",
+    "JSON object of Bedrock requestMetadata for filtering model invocation logs (e.g., '{\"team\":\"platform\"}'). " +
+      "NOT billing tags: AWS ignores this for cost allocation. For per-team cost in Cost Explorer, " +
+      "pass a tagged application inference profile ARN via --model instead.",
   )
   .option(
     "--prometheus-push <url>",
@@ -111,6 +113,11 @@ program
     "--target-branch <ref>",
     "Override the target branch to diff against for a full review (default: the MR/PR's target branch). Only used with --full.",
   )
+  .option(
+    "--tiny-diff-fast-path",
+    "For tiny, low-risk, fully embedded diffs, expose only submit_review so the review completes in one turn (cheaper; no repository exploration)",
+    false,
+  )
   .action(async (prUrl: string | undefined, cmdOpts: Record<string, unknown>) => {
     const verbose = cmdOpts.verbose as boolean;
     const post = cmdOpts.post as boolean;
@@ -131,6 +138,7 @@ program
     const diffAgainst = cmdOpts.diffAgainst as string;
     const full = cmdOpts.full as boolean;
     const targetBranchOverride = cmdOpts.targetBranch as string | undefined;
+    const tinyDiffFastPath = cmdOpts.tinyDiffFastPath as boolean;
 
     if (!localMode && !prUrl) {
       console.error(chalk.red("Error: pr-url is required unless --local is specified"));
@@ -342,6 +350,7 @@ program
         diffAgainst,
         full,
         targetBranchOverride,
+        tinyDiffFastPath,
       });
       const reviewText = renderMarkdown(review);
 
@@ -473,6 +482,7 @@ program
           review_mode: metrics.reviewMode ?? "unknown",
           reasoning_effort: metrics.reasoningEffort ?? reasoningEffort ?? "none",
           reused: metrics.reused ? "true" : "false",
+          fast_path: metrics.fastPath ? "true" : "false",
         };
         if (metricsProject) labels.project = metricsProject;
 
@@ -494,18 +504,35 @@ program
       if (verbose && err instanceof Error && err.stack) {
         console.error(chalk.dim(err.stack));
       }
-      if (prometheusPush) {
-        let failurePlatform = "local";
-        let failureProject: string | undefined;
-        if (!localMode && prUrl) {
-          try {
-            failurePlatform = detectPlatform(prUrl);
-            const parsed = parsePrUrl(prUrl);
-            failureProject = `${parsed.owner}/${parsed.repo}`;
-          } catch {
-            // The original validation error is more useful than metrics-label parsing.
-          }
+      let failurePlatform = "local";
+      let failureProject: string | undefined;
+      if (!localMode && prUrl) {
+        try {
+          failurePlatform = detectPlatform(prUrl);
+          const parsed = parsePrUrl(prUrl);
+          failureProject = `${parsed.owner}/${parsed.repo}`;
+        } catch {
+          // The original validation error is more useful than metrics-label parsing.
         }
+      }
+
+      // Failures are the expensive outlier case: a review can burn a full
+      // budget of turns and then die before submit_review. Emit the same
+      // telemetry shape as a successful review so they aren't invisible.
+      logger.info(`Review telemetry: ${JSON.stringify({
+        project: failureProject ?? null,
+        mr: null,
+        headSha: null,
+        model,
+        outcome: "review_failed",
+        reviewMode: null,
+        reasoningEffort: reasoningEffort ?? "auto",
+        fastPath: null,
+        reused: false,
+        error: err instanceof Error ? err.message : String(err),
+      })}`);
+
+      if (prometheusPush) {
         const labels: Record<string, string> = {
           platform: failurePlatform,
           model,

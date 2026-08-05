@@ -14,13 +14,7 @@ Review the change at {pr_url}. The branch is checked out in the workspace.
 
 {diff_fetch_instructions}
 
-## Runtime Tools
-
-- `{pr_diff_cmd}` lists the changed files when a diff is not embedded.
-- `{git_diff_cmd} -- path/to/file` shows the delta for one changed file.
-- `read` provides bounded surrounding context.
-- `grep` searches for directly relevant code and contracts.
-- `submit_review` submits the completed review.
+{runtime_tools_section}
 
 {review_process_section}
 
