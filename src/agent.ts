@@ -48,6 +48,7 @@ import { detectPlatform, parsePrUrl } from "./platform.js";
 import {
   filterEmbeddedDiff,
   findLatestReviewBase,
+  getReviewDiffArgs,
   getChangedFiles,
   getDiffStats,
   type DiffStats,
@@ -443,15 +444,14 @@ export async function reviewPr(opts: {
     let diffStats: DiffStats | null = null;
     let changedFiles: string[] = [];
     try {
-      const diffArgs = previousReviewSha
-        ? previousReviewBase?.mode === "snapshot"
-          ? ["--no-pager", "diff", previousReviewSha, "HEAD"]
-          : ["--no-pager", "diff", `${previousReviewSha}...HEAD`]
-        : diffBaseSha
-          ? ["--no-pager", "diff", diffBaseSha, "HEAD"]
-          : localMode
-            ? ["--no-pager", "diff", targetBranch]  // includes uncommitted changes
-            : ["--no-pager", "diff", `origin/${targetBranch}...HEAD`];
+      const diffArgs = getReviewDiffArgs({
+        platform,
+        targetBranch,
+        diffBaseSha,
+        previousReviewSha,
+        reviewDiffMode: previousReviewBase?.mode,
+        localMode,
+      });
       const { stdout: rawDiff } = await exec("git", diffArgs, { cwd: workspacePath });
       const { filtered: filteredDiff, skippedFiles } = filterEmbeddedDiff(rawDiff);
       if (skippedFiles.length > 0) {

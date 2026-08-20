@@ -1,4 +1,4 @@
-import type { MrMetadata } from "./types.js";
+import type { MrMetadata, Platform } from "./types.js";
 import { exec } from "./utils/exec.js";
 import { logger } from "./utils/logger.js";
 
@@ -11,11 +11,48 @@ export interface PreviousReviewBase {
   mode: "incremental" | "snapshot";
 }
 
+export interface ReviewDiffArgsOptions {
+  platform: Platform;
+  targetBranch: string;
+  diffBaseSha?: string | null;
+  previousReviewSha?: string | null;
+  reviewDiffMode?: ReviewDiffMode;
+  localMode?: boolean;
+}
+
 export interface DiffStats {
   files: number;
   additions: number;
   deletions: number;
   bytes: number;
+}
+
+/**
+ * Build the git diff arguments used by both the embedded diff and the prompt.
+ *
+ * A rewritten GitLab MR branch must be compared with the current MR base. The
+ * previously reviewed SHA is from the old branch history; diffing from it
+ * directly also includes target-branch commits brought in by a rebase.
+ */
+export function getReviewDiffArgs(options: ReviewDiffArgsOptions): string[] {
+  const {
+    platform,
+    targetBranch,
+    diffBaseSha,
+    previousReviewSha,
+    reviewDiffMode,
+    localMode = false,
+  } = options;
+  const rebasedGitlabReview = platform === "gitlab" && reviewDiffMode === "snapshot";
+
+  if (previousReviewSha && !rebasedGitlabReview) {
+    return reviewDiffMode === "snapshot"
+      ? ["--no-pager", "diff", previousReviewSha, "HEAD"]
+      : ["--no-pager", "diff", `${previousReviewSha}...HEAD`];
+  }
+  if (localMode) return ["--no-pager", "diff", targetBranch];
+  if (diffBaseSha) return ["--no-pager", "diff", diffBaseSha, "HEAD"];
+  return ["--no-pager", "diff", `origin/${targetBranch}...HEAD`];
 }
 
 export function getHodorReviewShaCandidates(

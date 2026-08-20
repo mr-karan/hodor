@@ -40,7 +40,7 @@ The agent follows a strict process to avoid reviewing the entire codebase:
 **Critical Rules**:
 - Use three-dot diff (`origin/main...HEAD`) to show only PR changes
 - Disable git pager with `git --no-pager` to avoid interactive prompts
-- For GitLab CI, use `CI_MERGE_REQUEST_DIFF_BASE_SHA` for deterministic diffs
+- For GitLab CI, calculate the current merge base from the target branch; use `CI_MERGE_REQUEST_DIFF_BASE_SHA` only as a fallback
 
 ## Build, Test, and Development Commands
 ```bash
