@@ -95,6 +95,58 @@ export function parseModelString(model: string): ParsedModel {
   return { provider: "anthropic", modelId: trimmed };
 }
 
+/** Regional prefixes Bedrock uses for cross-region / in-country inference profile ids. */
+const BEDROCK_REGIONAL_PREFIXES = ["global", "us", "eu", "apac", "in", "jp", "au", "ca"];
+
+/**
+ * Strip a regional inference-profile prefix ("in.", "us.", "global.", ...) from
+ * a Bedrock model id, returning the unprefixed id, or null when there is no
+ * recognized prefix. pi-ai's registry catalogs store the unprefixed id, so
+ * this lets a launch-day prefix ("in.openai.gpt-5.6-terra") resolve prompt
+ * caching, reasoning, and cost from the registry entry ("openai.gpt-5.6-terra")
+ * before the installed registry catches up.
+ */
+export function stripBedrockRegionalPrefix(modelId: string): string | null {
+  const dot = modelId.indexOf(".");
+  if (dot <= 0) return null;
+  const prefix = modelId.slice(0, dot).toLowerCase();
+  if (!BEDROCK_REGIONAL_PREFIXES.includes(prefix)) return null;
+  return modelId.slice(dot + 1);
+}
+
+export function isOpenAiBedrockModel(model: {
+  provider?: string;
+  id?: string;
+  name?: string;
+}): boolean {
+  if (model.provider !== "amazon-bedrock") return false;
+  return [model.id, model.name]
+    .filter((value): value is string => Boolean(value))
+    .some((value) => value.toLowerCase().includes("openai"));
+}
+
+export function addOpenAiBedrockReasoning(
+  payload: unknown,
+  effort: ThinkingLevel,
+): unknown {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+
+  const request = payload as Record<string, unknown>;
+  const existingFields = request.additionalModelRequestFields;
+  const additionalModelRequestFields =
+    existingFields && typeof existingFields === "object" && !Array.isArray(existingFields)
+      ? existingFields as Record<string, unknown>
+      : {};
+
+  return {
+    ...request,
+    additionalModelRequestFields: {
+      ...additionalModelRequestFields,
+      reasoning: { effort },
+    },
+  };
+}
+
 /** Region from arn:aws:bedrock:<region>:<account>:..., falling back to us-east-1. */
 export function extractBedrockArnRegion(arn: string): string {
   const parts = arn.split(":");

@@ -1,14 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
+  addOpenAiBedrockReasoning,
   buildBedrockArnModel,
   extractBedrockArnRegion,
   getApiKey,
   getDefaultReasoningEffortForModel,
   isHighRiskDiff,
+  isOpenAiBedrockModel,
   mapReasoningEffort,
   parseModelString,
   qualifiesForSingleTurnReview,
   selectReasoningEffort,
+  stripBedrockRegionalPrefix,
 } from "../src/model.js";
 
 describe("parseModelString", () => {
@@ -53,11 +56,68 @@ describe("parseModelString", () => {
     expect(result.baseModelId).toBe("global.anthropic.claude-opus-5");
   });
 
+  it("parses the base model backing a regional inference profile id", () => {
+    const result = parseModelString(
+      "bedrock/in.openai.gpt-5.6-terra@openai.gpt-5.6-terra",
+    );
+    expect(result.modelId).toBe("in.openai.gpt-5.6-terra");
+    expect(result.baseModelId).toBe("openai.gpt-5.6-terra");
+  });
+
   it.each([
     "bedrock/converse/arn:aws:bedrock:ap-south-1:123:application-inference-profile/abc@",
     "bedrock/converse/@global.anthropic.claude-opus-5",
   ])("rejects a half-specified base model hint (%s)", (input) => {
     expect(() => parseModelString(input)).toThrow(/Invalid bedrock model/);
+  });
+});
+
+describe("stripBedrockRegionalPrefix", () => {
+  it.each([
+    ["in.openai.gpt-5.6-terra", "openai.gpt-5.6-terra"],
+    ["global.anthropic.claude-opus-5", "anthropic.claude-opus-5"],
+    ["apac.amazon.nova-pro-v1:0", "amazon.nova-pro-v1:0"],
+  ])("strips the prefix from %s", (modelId, expected) => {
+    expect(stripBedrockRegionalPrefix(modelId)).toBe(expected);
+  });
+
+  it.each([
+    "openai.gpt-5.6-sol",
+    "anthropic.claude-opus-5",
+    "custom.example.model",
+  ])("does not strip an unrecognized prefix from %s", (modelId) => {
+    expect(stripBedrockRegionalPrefix(modelId)).toBeNull();
+  });
+});
+
+describe("OpenAI Bedrock reasoning", () => {
+  it("recognizes registry and regional OpenAI Bedrock models", () => {
+    expect(isOpenAiBedrockModel({
+      provider: "amazon-bedrock",
+      id: "in.openai.gpt-5.6-terra",
+    })).toBe(true);
+    expect(isOpenAiBedrockModel({
+      provider: "amazon-bedrock",
+      id: "arn:aws:bedrock:ap-south-1:123:application-inference-profile/abc",
+      name: "openai.gpt-5.6-sol",
+    })).toBe(true);
+    expect(isOpenAiBedrockModel({
+      provider: "amazon-bedrock",
+      id: "global.anthropic.claude-opus-5",
+    })).toBe(false);
+  });
+
+  it("adds reasoning effort without discarding other provider fields", () => {
+    expect(addOpenAiBedrockReasoning({
+      modelId: "global.openai.gpt-5.6-sol",
+      additionalModelRequestFields: { trace: true },
+    }, "medium")).toEqual({
+      modelId: "global.openai.gpt-5.6-sol",
+      additionalModelRequestFields: {
+        trace: true,
+        reasoning: { effort: "medium" },
+      },
+    });
   });
 });
 

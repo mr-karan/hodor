@@ -26,12 +26,15 @@ import {
 import { setupWorkspace, cleanupWorkspace } from "./workspace.js";
 import { buildPrReviewPrompt } from "./prompt.js";
 import {
+  addOpenAiBedrockReasoning,
   buildBedrockArnModel,
   extractBedrockArnRegion,
   getDefaultReasoningEffortForModel,
+  isOpenAiBedrockModel,
   parseModelString,
   qualifiesForSingleTurnReview,
   selectReasoningEffort,
+  stripBedrockRegionalPrefix,
 } from "./model.js";
 import { formatMetricsMarkdown, printMetrics } from "./metrics.js";
 import { SUBMIT_REVIEW_SCHEMA, validateReviewOutput } from "./review.js";
@@ -207,7 +210,30 @@ export async function reviewPr(opts: {
       );
     }
   } else if (!piModel) {
-    if (parsed.provider === "openrouter") {
+    if (parsed.provider === "amazon-bedrock") {
+      // Bedrock adds regional inference-profile prefixes before pi-ai's model
+      // catalog catches up. Inherit capabilities from the unprefixed registry
+      // model, while sending the original regional id to Bedrock.
+      const inferredBaseModelId = stripBedrockRegionalPrefix(parsed.modelId);
+      const baseModelId = parsed.baseModelId ?? inferredBaseModelId;
+      const baseModel = baseModelId
+        ? (modelRuntime.getModel(parsed.provider, baseModelId) as Model<Api> | undefined)
+        : undefined;
+      if (!baseModel) {
+        const hint = parsed.baseModelId
+          ? `Base model "${parsed.baseModelId}" was not found in the installed pi-ai registry.`
+          : `Append "@<base-model-id>" if this is a custom inference profile.`;
+        throw new Error(
+          `Unsupported Bedrock model "${parsed.modelId}". ${hint}`,
+        );
+      }
+
+      const region = process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? "us-east-1";
+      piModel = buildBedrockArnModel({ arn: parsed.modelId, baseModel, region });
+      logger.info(
+        `Regional bedrock model, region: ${region}, capabilities from ${baseModel.id}`,
+      );
+    } else if (parsed.provider === "openrouter") {
       piModel = {
         id: parsed.modelId,
         name: parsed.modelId,
@@ -575,16 +601,39 @@ export async function reviewPr(opts: {
     });
     activeSession = session;
 
-    // Inject Bedrock cost allocation tags into stream requests
-    if (bedrockTags && parsed.provider === "amazon-bedrock") {
+    // Inject Hodor-specific Bedrock fields into stream requests.
+    const openAiReasoning = thinkingLevel && isOpenAiBedrockModel(piModel)
+      ? thinkingLevel
+      : undefined;
+    if (parsed.provider === "amazon-bedrock" && (bedrockTags || openAiReasoning)) {
+      type PayloadHook = (payload: unknown, model: unknown) => unknown | Promise<unknown>;
+      type BedrockStreamOptions = Record<string, unknown> & { onPayload?: PayloadHook };
       type AgentWithStream = { agent: { streamFn: (...args: unknown[]) => unknown } };
       const agent = (session as unknown as AgentWithStream).agent;
       const originalStreamFn = agent.streamFn;
       agent.streamFn = (...args: unknown[]) => {
-        const options = (args[2] ?? {}) as Record<string, unknown>;
-        return originalStreamFn(args[0], args[1], { ...options, requestMetadata: bedrockTags });
+        const options = (args[2] ?? {}) as BedrockStreamOptions;
+        const originalOnPayload = options.onPayload;
+        const onPayload: PayloadHook | undefined = openAiReasoning
+          ? async (payload, model) => {
+              const transformed = originalOnPayload
+                ? await originalOnPayload(payload, model)
+                : undefined;
+              return addOpenAiBedrockReasoning(
+                transformed === undefined ? payload : transformed,
+                openAiReasoning,
+              );
+            }
+          : originalOnPayload;
+        return originalStreamFn(args[0], args[1], {
+          ...options,
+          ...(bedrockTags ? { requestMetadata: bedrockTags } : {}),
+          ...(onPayload ? { onPayload } : {}),
+        });
       };
-      logger.info(`Bedrock cost allocation tags: ${JSON.stringify(bedrockTags)}`);
+      if (bedrockTags) {
+        logger.info(`Bedrock cost allocation tags: ${JSON.stringify(bedrockTags)}`);
+      }
     }
 
     // Subscribe to agent events for progress + metrics tracking
