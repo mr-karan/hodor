@@ -104,6 +104,22 @@ describe("buildPrReviewPrompt", () => {
     expect(prompt).toContain("Do not run another command to list changed files");
   });
 
+  it("uses the current GitLab MR base after a rebased follow-up review", () => {
+    const previousReviewSha = "1".repeat(40);
+    const currentMrBaseSha = "2".repeat(40);
+    const prompt = buildPrReviewPrompt({
+      prUrl: "https://gitlab.com/acme/hodor/-/merge_requests/42",
+      platform: "gitlab",
+      targetBranch: "main",
+      diffBaseSha: currentMrBaseSha,
+      previousReviewSha,
+      reviewDiffMode: "snapshot",
+    });
+
+    expect(prompt).toContain(`git --no-pager diff ${currentMrBaseSha} HEAD`);
+    expect(prompt).not.toContain(`git --no-pager diff ${previousReviewSha} HEAD`);
+  });
+
   it("advertises inspection tools by default", () => {
     const prompt = buildPrReviewPrompt({
       prUrl: "https://github.com/acme/hodor/pull/42",

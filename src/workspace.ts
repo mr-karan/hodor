@@ -97,6 +97,40 @@ async function detectCiWorkspace(owner: string, repo: string): Promise<CiWorkspa
   return { path: null, targetBranch: null, diffBaseSha: null };
 }
 
+async function resolveGitlabDiffBaseSha(
+  workspace: string,
+  targetBranch: string | null,
+  fallbackSha: string | null,
+): Promise<string | null> {
+  if (!targetBranch) return fallbackSha;
+
+  try {
+    await exec("git", ["fetch", "--no-tags", "origin", targetBranch], { cwd: workspace });
+    const { stdout } = await exec("git", ["merge-base", "HEAD", "FETCH_HEAD"], { cwd: workspace });
+    const mergeBase = stdout.trim();
+    if (mergeBase) {
+      logger.info(`Calculated current GitLab MR diff base: ${mergeBase.slice(0, 8)}`);
+      return mergeBase;
+    }
+  } catch (err) {
+    logger.warn(`Could not calculate current GitLab MR diff base: ${err}`);
+  }
+
+  try {
+    const { stdout } = await exec("git", ["merge-base", "HEAD", `origin/${targetBranch}`], { cwd: workspace });
+    const mergeBase = stdout.trim();
+    if (mergeBase) {
+      logger.info(`Calculated GitLab MR diff base from origin/${targetBranch}: ${mergeBase.slice(0, 8)}`);
+      return mergeBase;
+    }
+  } catch {
+    // Keep the CI-provided SHA as a last-resort compatibility fallback.
+  }
+
+  if (fallbackSha) logger.warn(`Falling back to CI_MERGE_REQUEST_DIFF_BASE_SHA: ${fallbackSha.slice(0, 8)}`);
+  return fallbackSha;
+}
+
 // ---------------------------------------------------------------------------
 // Repo identity check
 // ---------------------------------------------------------------------------
@@ -437,13 +471,20 @@ export async function setupWorkspace(opts: {
   try {
     const ci = await detectCiWorkspace(owner, repo);
     let detectedTargetBranch = ci.targetBranch;
-    const detectedDiffBaseSha = ci.diffBaseSha;
+    let detectedDiffBaseSha = ci.diffBaseSha;
 
     let workspace: string;
     let isTemporary = false;
 
     if (ci.path) {
       workspace = ci.path;
+      if (platform === "gitlab" && ci.targetBranch) {
+        detectedDiffBaseSha = await resolveGitlabDiffBaseSha(
+          workspace,
+          ci.targetBranch,
+          detectedDiffBaseSha,
+        );
+      }
       if (platform === "github" && !detectedTargetBranch) {
         detectedTargetBranch = await getGithubBaseBranch(workspace, prNumber);
       }

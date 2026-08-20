@@ -125,4 +125,43 @@ describe("setupWorkspace", () => {
       isTemporary: false,
     });
   });
+
+  it("recalculates the GitLab MR base after a force-pushed rebase", async () => {
+    process.env.GITLAB_CI = "true";
+    process.env.CI_PROJECT_DIR = "/builds/group/repo";
+    process.env.CI_PROJECT_PATH = "group/repo";
+    process.env.CI_MERGE_REQUEST_TARGET_BRANCH_NAME = "main";
+    process.env.CI_MERGE_REQUEST_DIFF_BASE_SHA = "stale-base-sha";
+
+    execMock.mockImplementation(async (cmd: string, args: string[]) => {
+      if (cmd === "git" && args.join(" ") === "remote get-url origin") {
+        return { stdout: "git@gitlab.example.com:group/repo.git\n", stderr: "" };
+      }
+      if (cmd === "git" && args[0] === "merge-base") {
+        return { stdout: "current-base-sha\n", stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+
+    const { setupWorkspace } = await import("../src/workspace.js");
+    const result = await setupWorkspace({
+      platform: "gitlab",
+      owner: "group",
+      repo: "repo",
+      prNumber: "42",
+      host: "gitlab.example.com",
+    });
+
+    expect(result.diffBaseSha).toBe("current-base-sha");
+    expect(execMock).toHaveBeenCalledWith(
+      "git",
+      ["fetch", "--no-tags", "origin", "main"],
+      { cwd: "/builds/group/repo" },
+    );
+    expect(execMock).toHaveBeenCalledWith(
+      "git",
+      ["merge-base", "HEAD", "FETCH_HEAD"],
+      { cwd: "/builds/group/repo" },
+    );
+  });
 });

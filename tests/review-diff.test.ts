@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   findLatestReviewBase,
+  getReviewDiffArgs,
   getChangedFiles,
   getDiffStats,
 } from "../src/review-diff.js";
@@ -40,6 +41,32 @@ describe("findLatestReviewBase", () => {
       sha,
       mode: "snapshot",
     });
+  });
+});
+
+describe("getReviewDiffArgs", () => {
+  it("uses the current GitLab MR base after a rewritten review history", () => {
+    expect(getReviewDiffArgs({
+      platform: "gitlab",
+      targetBranch: "main",
+      diffBaseSha: "2".repeat(40),
+      previousReviewSha: "1".repeat(40),
+      reviewDiffMode: "snapshot",
+    })).toEqual([
+      "--no-pager", "diff", "2".repeat(40), "HEAD",
+    ]);
+  });
+
+  it("keeps incremental diffs anchored to the previous review", () => {
+    expect(getReviewDiffArgs({
+      platform: "gitlab",
+      targetBranch: "main",
+      diffBaseSha: "2".repeat(40),
+      previousReviewSha: "1".repeat(40),
+      reviewDiffMode: "incremental",
+    })).toEqual([
+      "--no-pager", "diff", `${"1".repeat(40)}...HEAD`,
+    ]);
   });
 });
 

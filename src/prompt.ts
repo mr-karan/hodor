@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { getTemplatePath } from "./templates.js";
 import { logger } from "./utils/logger.js";
 import { summarizeGitlabNotes, summarizeHodorNotes } from "./gitlab.js";
+import { getReviewDiffArgs } from "./review-diff.js";
 import type { ReviewDiffMode } from "./review-diff.js";
 import type { MrMetadata, Platform } from "./types.js";
 
@@ -32,6 +33,9 @@ export function buildPrReviewPrompt(opts: {
     localMode = false,
     singleTurn = false,
   } = opts;
+  const rebasedGitlabReview = platform === "gitlab" && reviewDiffMode === "snapshot";
+  const hasPreviousReviewDelta = Boolean(previousReviewSha && !rebasedGitlabReview);
+  const previousReviewShaText = previousReviewSha ?? "";
 
   let templateText: string;
   try {
@@ -53,51 +57,34 @@ export function buildPrReviewPrompt(opts: {
     throw new Error(`Invalid previous review SHA: ${previousReviewSha}`);
   }
 
-  // Prepare platform-specific commands
-  let prDiffCmd: string;
-  let gitDiffCmd: string;
-
-  // Normal incremental mode uses a merge-base-aware three-dot diff. If history
-  // was rewritten, compare the previously reviewed and current snapshots
-  // directly; ancestry no longer describes the change the reviewer needs.
-  if (previousReviewSha) {
-    const separator = reviewDiffMode === "snapshot" ? " " : "...";
-    prDiffCmd = `git --no-pager diff ${previousReviewSha}${separator}HEAD --name-only`;
-    gitDiffCmd = `git --no-pager diff ${previousReviewSha}${separator}HEAD`;
-    logger.info(`${reviewDiffMode === "snapshot" ? "Snapshot" : "Incremental"} review: diffing from ${previousReviewSha.slice(0, 8)} to HEAD`);
-  } else if (localMode) {
-    // Plain two-arg diff includes uncommitted (staged + unstaged) changes
-    prDiffCmd = `git --no-pager diff ${targetBranch} --name-only`;
-    gitDiffCmd = `git --no-pager diff ${targetBranch}`;
-  } else if (platform === "github" || platform === "gitea") {
-    prDiffCmd = `git --no-pager diff origin/${targetBranch}...HEAD --name-only`;
-    gitDiffCmd = `git --no-pager diff origin/${targetBranch}...HEAD`;
-  } else {
-    // gitlab
-    if (diffBaseSha) {
-      prDiffCmd = `git --no-pager diff ${diffBaseSha} HEAD --name-only`;
-      gitDiffCmd = `git --no-pager diff ${diffBaseSha} HEAD`;
-      logger.info(`Using GitLab CI_MERGE_REQUEST_DIFF_BASE_SHA: ${diffBaseSha.slice(0, 8)}`);
-    } else {
-      prDiffCmd = `git --no-pager diff origin/${targetBranch}...HEAD --name-only`;
-      gitDiffCmd = `git --no-pager diff origin/${targetBranch}...HEAD`;
-    }
+  const diffArgs = getReviewDiffArgs({
+    platform,
+    targetBranch,
+    diffBaseSha,
+    previousReviewSha,
+    reviewDiffMode,
+    localMode,
+  });
+  const gitDiffCmd = `git ${diffArgs.join(" ")}`;
+  const prDiffCmd = `${gitDiffCmd} --name-only`;
+  if (hasPreviousReviewDelta) {
+    logger.info(`${reviewDiffMode === "snapshot" ? "Snapshot" : "Incremental"} review: diffing from ${previousReviewSha?.slice(0, 8)} to HEAD`);
+  } else if (rebasedGitlabReview) {
+    logger.info("Rebased GitLab review: diffing from the current MR base to HEAD");
   }
 
   // Diff explanation
   let diffExplanation: string;
-  if (previousReviewSha) {
+  if (hasPreviousReviewDelta) {
     diffExplanation = reviewDiffMode === "snapshot"
       ? `**Snapshot delta mode**: The MR history was rewritten. This directly compares the last reviewed snapshot ` +
-        `(commit \`${previousReviewSha.slice(0, 8)}\`) with the current HEAD; it does not imply ancestry.`
+        `(commit \`${previousReviewShaText.slice(0, 8)}\`) with the current HEAD; it does not imply ancestry.`
       : `**Incremental mode**: Showing only changes since the last hodor review ` +
-        `(commit \`${previousReviewSha.slice(0, 8)}\`).`;
+        `(commit \`${previousReviewShaText.slice(0, 8)}\`).`;
   } else if (diffBaseSha) {
     diffExplanation =
-      `**GitLab CI Advantage**: This uses GitLab's pre-calculated merge base SHA ` +
-      `(\`CI_MERGE_REQUEST_DIFF_BASE_SHA\`), which matches exactly what the GitLab UI shows. ` +
-      `This is more reliable than three-dot syntax because it handles force pushes, rebases, ` +
-      `and messy histories correctly.`;
+      `**GitLab CI Advantage**: This uses the merge base resolved from the current target branch, ` +
+      `which matches the current GitLab MR diff after force pushes and rebases.`;
   } else {
     diffExplanation =
       `**Three-dot syntax** shows ONLY changes introduced on the source branch, ` +
@@ -113,10 +100,10 @@ export function buildPrReviewPrompt(opts: {
 
   // Step 3b: Build incremental review section
   let incrementalSection = "";
-  if (previousReviewSha) {
+  if (hasPreviousReviewDelta) {
     incrementalSection =
       `## ${reviewDiffMode === "snapshot" ? "Snapshot Delta" : "Incremental Review"} Mode\n\n` +
-      `This is a follow-up review. A previous hodor review was done at commit \`${previousReviewSha.slice(0, 8)}\`. ` +
+      `This is a follow-up review. A previous hodor review was done at commit \`${previousReviewShaText.slice(0, 8)}\`. ` +
       (reviewDiffMode === "snapshot"
         ? "The branch history was rewritten, so the diff below compares that reviewed snapshot directly with the current HEAD. "
         : "The diff below shows ONLY changes since that review. ") +
@@ -181,7 +168,7 @@ export function buildPrReviewPrompt(opts: {
         "4. Do not repeat a diff, grep, or read operation whose result is already in context\n" +
         "5. Submit your review using `submit_review`\n";
 
-      startInstruction = previousReviewSha
+      startInstruction = hasPreviousReviewDelta
         ? "Analyze only the incremental diff provided above. If it is self-contained, submit your review without extra tool calls."
         : "Analyze the diff provided above, then submit your review using `submit_review`.";
     }
