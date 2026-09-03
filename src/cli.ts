@@ -4,6 +4,7 @@ import { writeFileSync } from "node:fs";
 import { Command } from "commander";
 import chalk from "chalk";
 import "dotenv/config";
+import packageJson from "../package.json" with { type: "json" };
 
 import { detectPlatform, parsePrUrl, postReviewComment, postReviewStructured, reviewPr } from "./agent.js";
 import type { AgentProgressEvent } from "./agent.js";
@@ -31,7 +32,7 @@ program
       "and analyzes the code using tools (gh, git, glab) for metadata fetching and comment posting.\n\n" +
       "For local reviews, use --local with --diff-against to review changes in your current git repository.",
   )
-  .version("0.7.0")
+  .version(packageJson.version)
   .argument("[pr-url]", "URL of the GitHub PR, GitLab MR, or Gitea/Forgejo PR to review (optional with --local)")
   .option(
     "--model <model>",

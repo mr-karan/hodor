@@ -1,8 +1,14 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const cwd = process.cwd();
+const packageVersion = (
+  JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf-8")) as {
+    version: string;
+  }
+).version;
 
 function runCli(args: string[]): { status: number; output: string } {
   try {
@@ -23,7 +29,7 @@ function runCli(args: string[]): { status: number; output: string } {
 
 describe("CLI policy validation", () => {
   it("reports the release version", () => {
-    expect(runCli(["--version"])).toEqual({ status: 0, output: "0.7.0\n" });
+    expect(runCli(["--version"])).toEqual({ status: 0, output: `${packageVersion}\n` });
   });
 
   it("rejects invalid priority thresholds before starting a review", () => {
