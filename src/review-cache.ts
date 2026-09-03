@@ -64,7 +64,8 @@ export function findCachedReview(
   if (!notes) return null;
 
   const newestFirst = [...notes].sort((a, b) =>
-    Date.parse(b.created_at ?? "") - Date.parse(a.created_at ?? ""),
+    Date.parse(b.updated_at ?? b.created_at ?? "") -
+    Date.parse(a.updated_at ?? a.created_at ?? ""),
   );
 
   for (const note of newestFirst) {

@@ -26,6 +26,15 @@ describe("review system prompt", () => {
     expect(prompt).toContain("one to three sentences");
   });
 
+  it("forbids builds, tests, and probing for tools that are not offered", () => {
+    const prompt = buildReviewSystemPrompt({ reviewInstructions: "profile" });
+
+    expect(prompt).toContain("Do not build, compile, run tests, or run linters or formatters");
+    expect(prompt).toContain("their absence is never a finding");
+    expect(prompt).toContain("The runtime task's tool list is exhaustive");
+    expect(prompt).toContain("do not probe for executables through the shell");
+  });
+
   it("uses a custom profile verbatim instead of adding the bundled profile", () => {
     const customProfile = "# Release profile\nReport only authorization regressions.";
     const prompt = buildReviewSystemPrompt({ reviewInstructions: customProfile });

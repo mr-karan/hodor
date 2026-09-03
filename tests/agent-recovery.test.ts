@@ -40,6 +40,7 @@ const INVALID_REVIEW_TEXT = JSON.stringify({
 vi.mock("../src/utils/exec.js", () => ({
   exec: mocks.exec,
   execJson: vi.fn(async () => ({})),
+  commandOnPath: vi.fn(() => true),
 }));
 
 vi.mock("@earendil-works/pi-coding-agent", () => {

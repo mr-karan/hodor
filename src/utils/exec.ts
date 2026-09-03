@@ -1,4 +1,6 @@
 import { execFile, spawn } from "node:child_process";
+import { accessSync, constants } from "node:fs";
+import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -79,4 +81,25 @@ export async function execJson<T = Record<string, unknown>>(
 ): Promise<T> {
   const { stdout } = await exec(cmd, args, opts);
   return JSON.parse(stdout.trim()) as T;
+}
+
+/**
+ * Check whether a command resolves to an executable on PATH.
+ *
+ * Used to avoid advertising agent tools whose backing binary is missing: pi's
+ * `find` tool shells out to `fd`, and an exposed-but-broken tool costs a turn
+ * and tokens on every call the model makes.
+ */
+export function commandOnPath(cmd: string): boolean {
+  return (process.env.PATH ?? "")
+    .split(delimiter)
+    .filter((dir) => dir !== "")
+    .some((dir) => {
+      try {
+        accessSync(join(dir, cmd), constants.X_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    });
 }

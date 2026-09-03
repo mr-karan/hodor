@@ -35,6 +35,7 @@ describe("GitLab review publication", () => {
     mocks.execJson.mockReset();
     mocks.exec.mockResolvedValue({ stdout: "", stderr: "" });
     mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.includes("user")) return { username: "hodor-bot" };
       if (args.some((arg) => arg.includes("merge_requests/42")) && !args.includes("--method")) {
         return {
           diff_refs: {
@@ -84,10 +85,13 @@ describe("GitLab review publication", () => {
       headSha: "d".repeat(40),
       cacheMarker,
     });
-    const summaryCall = mocks.exec.mock.calls.find((call) =>
-      (call[1] as string[]).some((arg) => arg.includes("/notes")),
+    const summaryCall = mocks.exec.mock.calls.find((call) => {
+      const args = call[1] as string[];
+      return args.some((arg) => arg.endsWith("/notes")) && args.includes("POST");
+    });
+    expect(summaryCall?.[2]).toEqual(
+      expect.objectContaining({ input: expect.stringContaining(cacheMarker) }),
     );
-    expect(String((summaryCall?.[2] as { input?: string })?.input)).toContain(cacheMarker);
 
     mocks.exec.mockClear();
     const result = await postReviewStructured({
@@ -103,6 +107,82 @@ describe("GitLab review publication", () => {
       const args = call[1] as string[];
       return args.some((arg) => arg.endsWith("/notes")) && args.includes("--method");
     })).toBe(false);
+  });
+
+  it("keeps successful inline findings out of the compact rolling summary", async () => {
+    const { postReviewStructured } = await import("../src/publisher.js");
+    await postReviewStructured({
+      prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42",
+      review: review([finding]),
+      reviewStyle: "hybrid",
+      workspacePath: "/workspace",
+      model: "openai/gpt-5",
+      metricsFooter: "**Review Metrics** · 3 turns\n- Cost: `$0.1000`",
+    });
+
+    const summaryCall = mocks.exec.mock.calls.find((call) => {
+      const args = call[1] as string[];
+      return args.some((arg) => arg.endsWith("/notes")) && args.includes("POST");
+    });
+    expect(summaryCall?.[2]).toEqual(
+      expect.objectContaining({
+        input: expect.stringMatching(/<details>[\s\S]*Review Metrics[\s\S]*<\/details>/),
+      }),
+    );
+    const summaryInput = summaryCall?.[2];
+    if (!summaryInput || typeof summaryInput !== "object" || !("input" in summaryInput)) {
+      throw new Error("summary input was not captured");
+    }
+    expect(summaryInput.input).not.toContain(finding.title);
+  });
+
+  it("fails the commit status while an earlier blocking discussion remains open", async () => {
+    const { postReviewStructured } = await import("../src/publisher.js");
+    const { getFindingFingerprint } = await import("../src/review-state.js");
+    const fingerprint = getFindingFingerprint(finding, "/workspace");
+    mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.some((arg) => arg.includes("/discussions?"))) {
+        return {
+          stdout: JSON.stringify([
+            {
+              id: "blocking-discussion",
+              notes: [
+                {
+                  id: 11,
+                  body: `<!-- hodor-review -->\n<!-- hodor:finding:${fingerprint} -->\n**${finding.title}**\n\n${finding.body}`,
+                  resolvable: true,
+                  resolved: false,
+                  position: { new_path: "src/app.ts", new_line: 12 },
+                },
+              ],
+            },
+          ]),
+          stderr: "",
+        };
+      }
+      return { stdout: "", stderr: "" };
+    });
+
+    const result = await postReviewStructured({
+      prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42",
+      review: review([]),
+      reviewStyle: "hybrid",
+      workspacePath: "/workspace",
+      commitStatus: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.reviewFindings).toHaveLength(1);
+    const statusCall = mocks.exec.mock.calls.find((call) =>
+      (call[1] as string[]).some((arg) => arg.includes("/statuses/")),
+    );
+    expect(statusCall?.[2]).toEqual(
+      expect.objectContaining({
+        input: expect.stringContaining(
+          '"state":"failed","name":"hodor","description":"1 blocking issue(s) found"',
+        ),
+      }),
+    );
   });
 
   it("reconciles stale fingerprinted discussions only after posting a full review", async () => {
@@ -149,7 +229,8 @@ describe("GitLab review publication", () => {
   });
 
   it("keeps a matching open finding and does not publish a duplicate thread", async () => {
-    const { getFindingFingerprint, postReviewStructured } = await import("../src/publisher.js");
+    const { postReviewStructured } = await import("../src/publisher.js");
+    const { getFindingFingerprint } = await import("../src/review-state.js");
     const fingerprint = getFindingFingerprint(finding, "/workspace");
     mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
       if (args.some((arg) => arg.includes("/discussions?"))) {
@@ -191,8 +272,47 @@ describe("GitLab review publication", () => {
     ).toBe(false);
   });
 
+  it("falls back to the rolling summary when an inline note cannot be created", async () => {
+    mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.includes("user")) return { username: "hodor-bot" };
+      if (args.some((arg) => arg.includes("merge_requests/42")) && !args.includes("--method")) {
+        return {
+          diff_refs: {
+            base_sha: "a".repeat(40),
+            head_sha: "b".repeat(40),
+            start_sha: "c".repeat(40),
+          },
+        };
+      }
+      if (args.some((arg) => arg.endsWith("/draft_notes"))) {
+        throw new Error("position is not on the current diff");
+      }
+      return {};
+    });
+    const { postReviewStructured } = await import("../src/publisher.js");
+
+    const result = await postReviewStructured({
+      prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42",
+      review: review([finding]),
+      reviewStyle: "hybrid",
+      workspacePath: "/workspace",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.inlineFailed).toBe(1);
+    expect(result.summaryPosted).toBe(true);
+    const summaryCall = mocks.exec.mock.calls.find((call) => {
+      const args = call[1] as string[];
+      return args.some((arg) => arg.endsWith("/notes")) && args.includes("POST");
+    });
+    expect(summaryCall?.[2]).toEqual(
+      expect.objectContaining({ input: expect.stringContaining(finding.title) }),
+    );
+  });
+
   it("publishes drafts individually when GitLab bulk publishing fails", async () => {
     mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.includes("user")) return { username: "hodor-bot" };
       if (args.some((arg) => arg.includes("merge_requests/42")) && !args.includes("--method")) {
         return {
           diff_refs: {

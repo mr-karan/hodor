@@ -39,6 +39,37 @@ describe("review cache", () => {
     expect(cached?.overall_correctness).toBe("patch is incorrect");
   });
 
+  it("prefers the most recently updated rolling-summary cache", () => {
+    const key = getReviewCacheKey({
+      headSha: "a".repeat(40),
+      model: "anthropic/claude-opus-4-7",
+      reviewInstructions: "default review profile",
+    });
+    const legacyReview = {
+      ...review,
+      overall_explanation: "Legacy cache.",
+    };
+    const rollingReview = {
+      ...review,
+      overall_explanation: "Updated rolling cache.",
+    };
+
+    const cached = findCachedReview([
+      {
+        body: buildReviewCacheMarker(key, legacyReview),
+        created_at: "2026-07-16T00:00:00Z",
+        updated_at: "2026-07-16T00:00:00Z",
+      },
+      {
+        body: buildReviewCacheMarker(key, rollingReview),
+        created_at: "2026-07-15T00:00:00Z",
+        updated_at: "2026-07-17T00:00:00Z",
+      },
+    ], key);
+
+    expect(cached?.overall_explanation).toBe("Updated rolling cache.");
+  });
+
   it("does not reuse a result with a different review identity", () => {
     const oldKey = getReviewCacheKey({
       headSha: "a".repeat(40),

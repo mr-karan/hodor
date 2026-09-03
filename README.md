@@ -128,9 +128,9 @@ Local mode:
 | `--local` | Off | Review local git changes (no PR URL required) |
 | `--diff-against` | `origin/main` | Git ref to diff against in `--local` mode |
 | `--post` | Off | Post review as a comment on the PR/MR |
-| `--review-style` | `hybrid` | GitLab posting style: `summary`, `inline`, or `hybrid` |
-| `--code-quality` | None | Write a CodeClimate JSON artifact for GitLab code quality reports |
-| `--commit-status` | Off | Post a pass/fail commit status to the GitLab MR head SHA |
+| `--review-style` | `hybrid` | GitLab posting style: rolling `summary`, `inline`, or both with `hybrid` |
+| `--code-quality` | None | Write a Code Quality report containing current and unresolved Hodor findings |
+| `--commit-status` | Off | Post a pass/fail status based on all unresolved Hodor findings |
 | `--require-delivery` | Off | Exit non-zero if requested comments, statuses, or artifacts are not delivered |
 | `--fail-on-priority` | None | Exit non-zero for findings at or above `P0`, `P1`, `P2`, or `P3` |
 | `--review-instructions` | None | Read a custom review profile from a file. It replaces the bundled default profile for this run. |
@@ -235,6 +235,9 @@ hodor-review:
       if [ -n "${METRICS_PUSH_URL:-}" ]; then EXTRA_ARGS="--prometheus-push $METRICS_PUSH_URL"; fi
       bun run /app/dist/cli.js "$MR_URL" --model "$HODOR_MODEL" --post --code-quality gl-code-quality-report.json --commit-status $EXTRA_ARGS
   artifacts:
+    expose_as: "Hodor findings"
+    paths:
+      - gl-code-quality-report.json
     reports:
       codequality: gl-code-quality-report.json
     when: always
@@ -242,7 +245,7 @@ hodor-review:
   timeout: 15m
 ```
 
-This posts inline comments on the diff, a summary note, a pass/fail commit status, and a code quality report visible in the MR widget.
+This posts actionable findings inline, updates one rolling summary note with collapsed run metrics, sets a commit status from all unresolved Hodor findings, and exposes the cumulative Code Quality report from the MR.
 
 See [AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md) for advanced workflows.
 

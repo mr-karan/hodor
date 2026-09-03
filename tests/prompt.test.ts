@@ -134,6 +134,35 @@ describe("buildPrReviewPrompt", () => {
     expect(prompt).not.toContain("It is the only tool available");
   });
 
+  it("lists `find` only when fd backs it", () => {
+    const base = {
+      prUrl: "https://github.com/acme/hodor/pull/42",
+      platform: "github" as const,
+      targetBranch: "main",
+      embeddedDiff: "diff --git a/src/a.ts b/src/a.ts\n+const ok = true;",
+      changedFiles: ["src/a.ts"],
+    };
+
+    expect(buildPrReviewPrompt({ ...base, findToolAvailable: true }))
+      .toContain("`find` locates files by glob");
+    expect(buildPrReviewPrompt({ ...base, findToolAvailable: false }))
+      .not.toContain("`find` locates files by glob");
+    // Default is conservative: never advertise find unless the caller probed fd.
+    expect(buildPrReviewPrompt(base)).not.toContain("`find` locates files by glob");
+  });
+
+  it("tells the reviewer the tool list is exhaustive", () => {
+    const prompt = buildPrReviewPrompt({
+      prUrl: "https://github.com/acme/hodor/pull/42",
+      platform: "github",
+      targetBranch: "main",
+      embeddedDiff: "diff --git a/src/a.ts b/src/a.ts\n+const ok = true;",
+      changedFiles: ["src/a.ts"],
+    });
+
+    expect(prompt).toContain("This list is exhaustive. No other tool is available.");
+  });
+
   it("withholds inspection tools on the single-turn fast path", () => {
     const prompt = buildPrReviewPrompt({
       prUrl: "https://github.com/acme/hodor/pull/42",

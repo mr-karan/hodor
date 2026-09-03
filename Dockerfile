@@ -47,6 +47,13 @@ RUN curl -fsSL "https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/r
     dpkg -i /tmp/ripgrep.deb && \
     rm /tmp/ripgrep.deb
 
+# Install fd. The agent's `find` tool shells out to fd, so without it every
+# find call fails and pi tries to download the binary from GitHub mid-review.
+RUN curl -fsSL "https://github.com/sharkdp/fd/releases/download/v10.5.0/fd_10.5.0_amd64.deb" -o /tmp/fd.deb && \
+    echo "1fca9f8fb221f26fe37b425db4935dc8180099bdecfd8e031538bfc9396e95f8  /tmp/fd.deb" | sha256sum -c - && \
+    dpkg -i /tmp/fd.deb && \
+    rm /tmp/fd.deb
+
 # Install GitHub CLI (gh)
 RUN curl -fsSL "https://github.com/cli/cli/releases/download/v2.83.0/gh_2.83.0_linux_amd64.tar.gz" -o /tmp/gh.tar.gz && \
     echo "a5cf6cdb40fc67751adf561126b3314044779cea81ba4f254fbe8e9a69f1676f  /tmp/gh.tar.gz" | sha256sum -c - && \
@@ -72,6 +79,11 @@ COPY --chown=bun:bun --from=build /build/package.json ./
 # Set wider terminal dimensions
 ENV COLUMNS=200
 ENV LINES=50
+
+# fd and ripgrep are baked in above. Keep pi from fetching either from GitHub
+# during a review if a lookup ever misses: a review job should never depend on
+# egress to github.com, and the fallback download costs a turn either way.
+ENV PI_OFFLINE=1
 
 # Workspace for cloned repos
 RUN install -d -o bun -g bun /workspace /tmp/hodor

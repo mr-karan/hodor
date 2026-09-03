@@ -22,6 +22,7 @@ export type {
   ReviewOutput,
   ReviewFinding,
   ReviewPriority,
+  ReviewStateFinding,
   ReviewCorrectness,
   PostCommentResult,
   MrMetadata,

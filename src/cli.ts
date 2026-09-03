@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 
+import { writeFileSync } from "node:fs";
 import { Command } from "commander";
 import chalk from "chalk";
 import "dotenv/config";
 
-import { detectPlatform, parsePrUrl, postGitlabReviewCommitStatus, postReviewComment, postReviewStructured, reviewPr } from "./agent.js";
+import { detectPlatform, parsePrUrl, postReviewComment, postReviewStructured, reviewPr } from "./agent.js";
 import type { AgentProgressEvent } from "./agent.js";
-import type { PostCommentResult } from "./types.js";
+import { formatCodeQualityReport } from "./codequality.js";
+import { listHodorDiscussions } from "./gitlab.js";
+import { mergeReviewStateFindings } from "./review-state.js";
+import type { PostCommentResult, ReviewStateFinding } from "./types.js";
 import { renderMarkdown } from "./render.js";
 import { pushMetrics } from "./metrics.js";
 import {
@@ -58,16 +62,16 @@ program
   )
   .option(
     "--review-style <style>",
-    "How to post reviews on GitLab: summary (single comment), inline (diff comments), hybrid (both). Default: hybrid.",
+    "How to post reviews on GitLab: rolling summary, inline diff comments, or hybrid (both). Default: hybrid.",
     "hybrid",
   )
   .option(
     "--code-quality <path>",
-    "Write a gl-code-quality-report.json CodeClimate artifact to this path",
+    "Write a cumulative GitLab Code Quality report to this path",
   )
   .option(
     "--commit-status",
-    "Post a pass/fail commit status to the MR head SHA",
+    "Post a pass/fail status from all unresolved Hodor findings",
     false,
   )
   .option(
@@ -359,30 +363,20 @@ program
         log(chalk.dim("Reused the existing review for this HEAD; no LLM request was made."));
       }
 
+      let reviewFindings: ReviewStateFinding[] = mergeReviewStateFindings(
+        review.findings,
+        [],
+        process.env.CI_PROJECT_DIR ?? workspacePath,
+        { includeExisting: false },
+      );
+      let gitlabReviewStateLoaded = false;
       let codeQualityWritten = false;
-      if (codeQuality) {
-        try {
-          const { formatCodeQualityReport } = await import("./codequality.js");
-          const { writeFileSync } = await import("node:fs");
-          writeFileSync(
-            codeQuality,
-            formatCodeQualityReport(review, process.env.CI_PROJECT_DIR ?? workspacePath),
-            "utf-8",
-          );
-          codeQualityWritten = true;
-          log(chalk.dim(`Wrote code quality report to ${codeQuality}`));
-        } catch (err) {
-          log(chalk.yellow(`Failed to write code quality report: ${err}`));
-          metricsOutcome = "delivery_failed";
-          if (requireDelivery) requestedExitCode = 1;
-        }
-      }
 
       if (post && prUrl) {
         log(chalk.cyan("\nPosting review to PR/MR..."));
 
         const platform = detectPlatform(prUrl);
-        const useStructured = platform === "gitlab" && reviewStyle !== "summary";
+        const useStructured = platform === "gitlab";
 
         let result: PostCommentResult;
         if (useStructured) {
@@ -398,6 +392,8 @@ program
             reconcileDiscussions: full,
             cacheMarker,
             skipSummary: reusedReview,
+            skipInline: reusedReview,
+            reviewMode: metrics.reviewMode,
           });
         } else if (reusedReview) {
           result = {
@@ -416,26 +412,11 @@ program
           });
         }
 
-        if (!useStructured && platform === "gitlab" && commitStatus) {
-          try {
-            const { getGitlabMrDiffRefs } = await import("./gitlab.js");
-            const parsed = parsePrUrl(prUrl);
-            const diffRefs = await getGitlabMrDiffRefs(
-              parsed.owner,
-              parsed.repo,
-              parsed.prNumber,
-              parsed.host,
-            );
-            await postGitlabReviewCommitStatus(parsed, review, diffRefs);
-          } catch (err) {
-            result = {
-              success: false,
-              platform: "gitlab",
-              mrNumber: parsePrUrl(prUrl).prNumber,
-              error: `Failed to post commit status: ${err instanceof Error ? err.message : err}`,
-            };
-          }
+        if (result.reviewFindings) {
+          reviewFindings = result.reviewFindings;
+          gitlabReviewStateLoaded = result.reviewStateComplete === true;
         }
+
 
         if (result.success) {
           log(chalk.bold.green("Review posted successfully!"));
@@ -452,6 +433,37 @@ program
         console.log(reviewText);
         if (!localMode) {
           log(chalk.dim("\nTip: Use --post to automatically post this review to the PR/MR"));
+        }
+      }
+
+      if (codeQuality) {
+        try {
+          if (platform === "gitlab" && prUrl && !gitlabReviewStateLoaded) {
+            const parsed = parsePrUrl(prUrl);
+            const discussions = await listHodorDiscussions(
+              parsed.owner,
+              parsed.repo,
+              parsed.prNumber,
+              parsed.host,
+            );
+            reviewFindings = mergeReviewStateFindings(
+              review.findings,
+              discussions,
+              process.env.CI_PROJECT_DIR ?? workspacePath,
+              {
+                includeExisting: !full,
+                suppressResolvedCurrent: reusedReview,
+              },
+            );
+          }
+
+          writeFileSync(codeQuality, formatCodeQualityReport(reviewFindings), "utf-8");
+          codeQualityWritten = true;
+          log(chalk.dim(`Wrote code quality report to ${codeQuality}`));
+        } catch (err) {
+          log(chalk.yellow(`Failed to write code quality report: ${err}`));
+          metricsOutcome = "delivery_failed";
+          if (requireDelivery) requestedExitCode = 1;
         }
       }
 

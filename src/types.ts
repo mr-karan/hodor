@@ -34,6 +34,7 @@ export interface NoteEntry {
     name?: string;
   };
   created_at?: string;
+  updated_at?: string;
   system?: boolean;
 }
 
@@ -75,6 +76,18 @@ export interface ReviewFinding {
   suggestion?: string;
 }
 
+export interface ReviewStateFinding {
+  fingerprint: string;
+  title: string;
+  body: string;
+  priority: ReviewPriority;
+  filePath?: string;
+  lineRange?: {
+    start: number;
+    end: number;
+  };
+}
+
 export interface ReviewOutput {
   findings: ReviewFinding[];
   overall_correctness: ReviewCorrectness;
@@ -94,4 +107,6 @@ export interface PostCommentResult {
   draftsPublished?: boolean;
   commitStatusPosted?: boolean;
   reconciledDiscussions?: number;
+  reviewFindings?: ReviewStateFinding[];
+  reviewStateComplete?: boolean;
 }

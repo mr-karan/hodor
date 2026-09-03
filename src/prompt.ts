@@ -19,6 +19,7 @@ export function buildPrReviewPrompt(opts: {
   changedFiles?: string[];
   localMode?: boolean;
   singleTurn?: boolean;
+  findToolAvailable?: boolean;
 }): string {
   const {
     prUrl,
@@ -32,6 +33,7 @@ export function buildPrReviewPrompt(opts: {
     changedFiles = [],
     localMode = false,
     singleTurn = false,
+    findToolAvailable = false,
   } = opts;
   const rebasedGitlabReview = platform === "gitlab" && reviewDiffMode === "snapshot";
   const hasPreviousReviewDelta = Boolean(previousReviewSha && !rebasedGitlabReview);
@@ -210,15 +212,22 @@ export function buildPrReviewPrompt(opts: {
   }
 
   // The fast path leaves submit_review as the only tool, so advertising the
-  // inspection tools would invite calls that cannot succeed.
+  // inspection tools would invite calls that cannot succeed. For the same
+  // reason `find` is listed only when its backing fd binary exists.
   runtimeToolsSection = oneTurn
     ? "## Runtime Tools\n\n" +
       "- `submit_review` submits the completed review. It is the only tool available for this review.\n"
     : "## Runtime Tools\n\n" +
+      "This list is exhaustive. No other tool is available.\n\n" +
       `- \`${prDiffCmd}\` lists the changed files when a diff is not embedded.\n` +
       `- \`${gitDiffCmd} -- path/to/file\` shows the delta for one changed file.\n` +
       "- `read` provides bounded surrounding context.\n" +
       "- `grep` searches for directly relevant code and contracts.\n" +
+      (findToolAvailable
+        ? "- `find` locates files by glob when the path is unknown.\n"
+        : "") +
+      "- `ls` lists the entries of one directory.\n" +
+      "- `bash` runs the git diff commands above and other read-only shell inspection.\n" +
       "- `submit_review` submits the completed review.\n";
 
   return templateText

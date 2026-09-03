@@ -94,6 +94,9 @@ hodor-review:
     - MR_URL="${CI_PROJECT_URL}/-/merge_requests/${CI_MERGE_REQUEST_IID}"
     - bun run /app/dist/cli.js "$MR_URL" --model "$HODOR_MODEL" --post --commit-status --code-quality gl-code-quality-report.json
   artifacts:
+    expose_as: "Hodor findings"
+    paths:
+      - gl-code-quality-report.json
     reports:
       codequality: gl-code-quality-report.json
     when: always
@@ -114,15 +117,25 @@ GitLab supports three review styles:
 
 | Style | Summary note | Inline comments | Use when |
 | --- | --- | --- | --- |
-| `hybrid` | Yes | Yes | Default. Good for most MRs. |
-| `inline` | No | Yes | You only want diff comments. |
-| `summary` | Yes | No | Inline comments are not wanted or not supported. |
+| `hybrid` | One rolling note | Yes | Default. Inline findings plus compact cumulative status. |
+| `inline` | Only for clean reviews | Yes | Diff comments without a persistent status note when findings exist. |
+| `summary` | One rolling note | No | Inline comments are not wanted or not supported. |
 
 Example:
 
 ```bash
 hodor "$MR_URL" --post --review-style inline
 ```
+
+Hodor updates its summary note in place on later pushes. The note shows cumulative
+open-finding counts, the latest review explanation, any finding that GitLab could
+not anchor inline, and collapsed model and run metrics. Successful inline findings
+are not repeated in the summary.
+
+On incremental reviews, the Code Quality report and commit status combine new
+findings with unresolved Hodor discussions from earlier pushes. Resolving a Hodor
+thread removes it from those cumulative outputs. A full review replaces that state
+and may reconcile old discussions.
 
 GitHub posting currently uses a summary PR comment.
 

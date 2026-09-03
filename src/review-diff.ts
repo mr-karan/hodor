@@ -60,24 +60,24 @@ export function getHodorReviewShaCandidates(
 ): string[] {
   if (!notes || notes.length === 0) return [];
 
-  const candidates: Array<{ sha: string; createdAtMs: number | null; index: number }> = [];
+  const candidates: Array<{ sha: string; reviewedAtMs: number | null; index: number }> = [];
   for (const [index, note] of notes.entries()) {
     const match = note.body?.match(HODOR_REVIEW_SHA_RE);
     if (!match) continue;
-    const createdAtMs = Date.parse(note.created_at ?? "");
+    const reviewedAtMs = Date.parse(note.updated_at ?? note.created_at ?? "");
     candidates.push({
       sha: match[1],
-      createdAtMs: Number.isFinite(createdAtMs) ? createdAtMs : null,
+      reviewedAtMs: Number.isFinite(reviewedAtMs) ? reviewedAtMs : null,
       index,
     });
   }
 
   candidates.sort((a, b) => {
-    if (a.createdAtMs != null && b.createdAtMs != null && a.createdAtMs !== b.createdAtMs) {
-      return b.createdAtMs - a.createdAtMs;
+    if (a.reviewedAtMs != null && b.reviewedAtMs != null && a.reviewedAtMs !== b.reviewedAtMs) {
+      return b.reviewedAtMs - a.reviewedAtMs;
     }
-    if (a.createdAtMs != null && b.createdAtMs == null) return -1;
-    if (a.createdAtMs == null && b.createdAtMs != null) return 1;
+    if (a.reviewedAtMs != null && b.reviewedAtMs == null) return -1;
+    if (a.reviewedAtMs == null && b.reviewedAtMs != null) return 1;
     return a.index - b.index;
   });
 

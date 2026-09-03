@@ -25,6 +25,7 @@ import {
 } from "./gitea.js";
 import { setupWorkspace, cleanupWorkspace } from "./workspace.js";
 import { buildPrReviewPrompt } from "./prompt.js";
+import { commandOnPath } from "./utils/exec.js";
 import {
   addOpenAiBedrockReasoning,
   buildBedrockArnModel,
@@ -495,6 +496,14 @@ export async function reviewPr(opts: {
     }
 
     // Build the dynamic review task sent as the first user message.
+    // pi's `find` tool shells out to fd (see core/tools/find.js). If fd is
+    // missing every call fails, so drop the tool instead of offering a broken
+    // one and paying for the failed turns.
+    const findToolAvailable = commandOnPath("fd") || commandOnPath("fdfind");
+    if (!findToolAvailable) {
+      logger.warn("fd not found on PATH; disabling the agent's `find` tool");
+    }
+
     const prompt = buildPrReviewPrompt({
       prUrl: prUrl ?? `local diff (against ${targetBranch})`,
       platform,
@@ -507,6 +516,7 @@ export async function reviewPr(opts: {
       changedFiles,
       localMode,
       singleTurn,
+      findToolAvailable,
     });
 
     const startTime = Date.now();
@@ -592,7 +602,14 @@ export async function reviewPr(opts: {
       // or the LLM never sees it and the agent loop exits without calling it.
       tools: singleTurn
         ? ["submit_review"]
-        : ["read", "bash", "grep", "find", "ls", "submit_review"],
+        : [
+          "read",
+          "bash",
+          "grep",
+          ...(findToolAvailable ? ["find"] : []),
+          "ls",
+          "submit_review",
+        ],
       customTools: [submitReviewTool],
       modelRuntime,
       sessionManager: SessionManager.inMemory(),

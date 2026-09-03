@@ -1,14 +1,23 @@
 import { exec, execJson } from "./utils/exec.js";
 import { logger } from "./utils/logger.js";
 import type { MrMetadata, NoteEntry } from "./types.js";
-import { HODOR_REVIEW_MARKER } from "./render.js";
+import { HODOR_REVIEW_MARKER, HODOR_SUMMARY_MARKER } from "./render.js";
 
-export { HODOR_REVIEW_MARKER };
+export { HODOR_REVIEW_MARKER, HODOR_SUMMARY_MARKER };
 
 export interface DiffRefs {
   base_sha: string;
   head_sha: string;
   start_sha: string;
+}
+
+export interface HodorDiscussion {
+  discussionId: string;
+  noteId: number;
+  body: string;
+  resolved: boolean;
+  filePath?: string;
+  line?: number;
 }
 
 const DEFAULT_GITLAB_HOST = "gitlab.com";
@@ -21,6 +30,7 @@ const DEFAULT_GITLAB_HOST = "gitlab.com";
  */
 const HODOR_NOTE_PREFIX_RE = /^\s*<!--\s*hodor[-:]/;
 const HODOR_CACHE_MARKER_RE = /<!--\s*hodor:cache:v1:[A-Za-z0-9_-]+\s*-->\s*/g;
+const HODOR_SHA_PREFIX_RE = /^\s*<!--\s*hodor:sha:[a-f0-9]{40}\s*-->/i;
 
 function isHodorNote(body: unknown, marker = HODOR_REVIEW_MARKER): boolean {
   if (typeof body !== "string") return false;
@@ -185,6 +195,7 @@ export async function fetchGitlabMrInfo(
         body: (n.body as string) ?? "",
         author: n.author as { username?: string; name?: string } | undefined,
         created_at: n.created_at as string | undefined,
+        updated_at: n.updated_at as string | undefined,
         system: n.system as boolean | undefined,
       }));
     } catch (err) {
@@ -226,6 +237,89 @@ export async function postGitlabMrComment(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new GitLabAPIError(`Failed to post comment to MR !${mrNumber}: ${msg}`);
+  }
+}
+
+export async function upsertGitlabMrSummary(
+  owner: string,
+  repo: string,
+  mrNumber: number | string,
+  body: string,
+  host?: string | null,
+): Promise<"created" | "updated"> {
+  const encoded = encodedProjectPath(owner, repo);
+  const env = glabEnv(host);
+
+  try {
+    const [currentUser, notesResult] = await Promise.all([
+      execJson<Record<string, unknown>>("glab", ["api", "user"], { env }),
+      exec(
+        "glab",
+        [
+          "api",
+          `projects/${encoded}/merge_requests/${mrNumber}/notes?per_page=100`,
+          "--paginate",
+        ],
+        { env },
+      ),
+    ]);
+    const username = currentUser.username;
+    if (typeof username !== "string" || !username) {
+      throw new Error("authenticated GitLab user has no username");
+    }
+
+    const candidates = parseGlabPaginatedJson(notesResult.stdout)
+      .filter((note) => {
+        const noteBody = note.body;
+        const author = note.author;
+        const authorUsername =
+          author && typeof author === "object"
+            ? (author as Record<string, unknown>).username
+            : undefined;
+        if (
+          typeof noteBody !== "string" ||
+          authorUsername !== username ||
+          note.system === true ||
+          note.type != null ||
+          note.position != null
+        ) {
+          return false;
+        }
+        return (
+          noteBody.includes(HODOR_SUMMARY_MARKER) ||
+          (HODOR_SHA_PREFIX_RE.test(noteBody) && noteBody.includes(HODOR_REVIEW_MARKER))
+        );
+      })
+      .sort((a, b) => {
+        const aTime = Date.parse(String(a.updated_at ?? a.created_at ?? ""));
+        const bTime = Date.parse(String(b.updated_at ?? b.created_at ?? ""));
+        return (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0);
+      });
+
+    const noteId = candidates[0]?.id;
+    if (typeof noteId !== "number" && typeof noteId !== "string") {
+      await postGitlabMrComment(owner, repo, mrNumber, body, host);
+      return "created";
+    }
+
+    await exec(
+      "glab",
+      [
+        "api",
+        `projects/${encoded}/merge_requests/${mrNumber}/notes/${noteId}`,
+        "--method",
+        "PUT",
+        "-H",
+        "Content-Type: application/json",
+        "--input",
+        "-",
+      ],
+      { env, input: JSON.stringify({ body }) },
+    );
+    return "updated";
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new GitLabAPIError(`Failed to upsert summary for MR !${mrNumber}: ${msg}`);
   }
 }
 
@@ -515,16 +609,7 @@ export async function listHodorDiscussions(
   mrNumber: number | string,
   host?: string | null,
   marker = HODOR_REVIEW_MARKER,
-): Promise<
-  Array<{
-    discussionId: string;
-    noteId: number;
-    body: string;
-    resolved: boolean;
-    filePath?: string;
-    line?: number;
-  }>
-> {
+): Promise<HodorDiscussion[]> {
   const encoded = encodedProjectPath(owner, repo);
   const env = glabEnv(host);
 
@@ -545,14 +630,7 @@ export async function listHodorDiscussions(
     throw new GitLabAPIError(`Failed to list discussions for MR !${mrNumber}: ${msg}`);
   }
 
-  const results: Array<{
-    discussionId: string;
-    noteId: number;
-    body: string;
-    resolved: boolean;
-    filePath?: string;
-    line?: number;
-  }> = [];
+  const results: HodorDiscussion[] = [];
 
   for (const discussion of discussions) {
     const discussionId = discussion.id;
@@ -581,8 +659,18 @@ export async function listHodorDiscussions(
           ? (noteObj.position as Record<string, unknown>)
           : undefined;
 
-      const filePath = typeof position?.new_path === "string" ? position.new_path : undefined;
-      const line = typeof position?.new_line === "number" ? position.new_line : undefined;
+      const filePath =
+        typeof position?.new_path === "string"
+          ? position.new_path
+          : typeof position?.old_path === "string"
+            ? position.old_path
+            : undefined;
+      const line =
+        typeof position?.new_line === "number"
+          ? position.new_line
+          : typeof position?.old_line === "number"
+            ? position.old_line
+            : undefined;
 
       // Skip non-resolvable threads. GitLab wraps the summary-comment note in a
       // discussion envelope with `resolvable: false`; PUT resolved=true on those

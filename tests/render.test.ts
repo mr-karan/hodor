@@ -85,7 +85,7 @@ describe("renderMarkdown", () => {
 });
 
 describe("renderSummaryMarkdown", () => {
-  it("includes hodor-review marker", () => {
+  it("includes dedicated review and rolling-summary markers", () => {
     const review: ReviewOutput = {
       findings: [],
       overall_correctness: "patch is correct",
@@ -93,35 +93,56 @@ describe("renderSummaryMarkdown", () => {
     };
     const result = renderSummaryMarkdown(review);
     expect(result).toContain("<!-- hodor-review -->");
+    expect(result).toContain("<!-- hodor:summary:v1 -->");
   });
 
-  it("shows correct counts by priority", () => {
+  it("shows cumulative open counts without duplicating inline findings", () => {
     const review: ReviewOutput = {
-      findings: [
-        makeFinding("P0 bug", 0),
-        makeFinding("P1 bug", 1),
-        makeFinding("P2 issue", 2),
-        makeFinding("P3 nit", 3),
-      ],
+      findings: [makeFinding("[P1] Current bug", 1)],
       overall_correctness: "patch is incorrect",
-      overall_explanation: "Has blocking issues.",
+      overall_explanation: "A blocking issue remains.",
     };
-    const result = renderSummaryMarkdown(review);
-    expect(result).toContain("| Critical (P0/P1) | 2 |");
-    expect(result).toContain("| Important (P2) | 1 |");
-    expect(result).toContain("| Minor (P3) | 1 |");
-    expect(result).toContain("Patch has blocking issues");
+    const result = renderSummaryMarkdown(review, {
+      openFindings: [
+        {
+          fingerprint: "a".repeat(64),
+          title: "[P1] Current bug",
+          body: "Current body",
+          priority: 1,
+        },
+        {
+          fingerprint: "b".repeat(64),
+          title: "[P2] Prior issue",
+          body: "Prior body",
+          priority: 2,
+        },
+      ],
+      fallbackFindings: [],
+      inlineCreated: 1,
+      inlineDeduplicated: 0,
+      reviewMode: "incremental",
+    });
+
+    expect(result).toContain("**Open findings:** 1 blocking · 1 important · 0 minor");
+    expect(result).toContain("**Inline delivery:** 1 new · 0 already open");
+    expect(result).toContain("**incremental review:** A blocking issue remains.");
+    expect(result).not.toContain("[P1] Current bug");
   });
 
-  it("includes findings table with locations", () => {
+  it("includes full details for findings that failed inline delivery", () => {
+    const failedFinding = makeFinding("[P1] Null check missing", 1);
     const review: ReviewOutput = {
-      findings: [makeFinding("[P1] Null check missing", 1)],
+      findings: [failedFinding],
       overall_correctness: "patch is incorrect",
       overall_explanation: "Bug found.",
     };
-    const result = renderSummaryMarkdown(review);
-    expect(result).toContain("| Finding | Location | Priority |");
+    const result = renderSummaryMarkdown(review, {
+      fallbackFindings: [failedFinding],
+      fallbackHeading: "Findings not posted inline",
+    });
+
+    expect(result).toContain("### Findings not posted inline");
     expect(result).toContain("[P1] Null check missing");
-    expect(result).toContain("P1");
+    expect(result).toContain("src/foo.ts:10-15");
   });
 });

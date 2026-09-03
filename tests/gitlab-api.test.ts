@@ -97,6 +97,96 @@ describe("GitLab paginated API helpers", () => {
   });
 });
 
+describe("upsertGitlabMrSummary", () => {
+  beforeEach(() => {
+    execMock.mockReset();
+    execJsonMock.mockReset();
+    execJsonMock.mockResolvedValue({ username: "hodor-bot" });
+  });
+
+  it("creates the rolling summary when Hodor has no summary note", async () => {
+    execMock.mockImplementation(async (_command: string, args: string[]) => {
+      if (args.some((arg) => arg.includes("/notes?"))) {
+        return { stdout: "[]", stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+
+    const { upsertGitlabMrSummary } = await import("../src/gitlab.js");
+    const action = await upsertGitlabMrSummary(
+      "acme",
+      "app",
+      42,
+      "<!-- hodor:summary:v1 -->\nbody",
+      "gitlab.example.com",
+    );
+
+    expect(action).toBe("created");
+    expect(
+      execMock.mock.calls.some((call) => {
+        const args = call[1] as string[];
+        return args.some((arg) => arg.endsWith("/notes")) && args.includes("POST");
+      }),
+    ).toBe(true);
+  });
+
+  it("updates Hodor's latest rolling summary without touching other notes", async () => {
+    execMock.mockImplementation(async (_command: string, args: string[]) => {
+      if (args.some((arg) => arg.includes("/notes?"))) {
+        return {
+          stdout: JSON.stringify([
+            {
+              id: 10,
+              type: null,
+              body: "<!-- hodor:summary:v1 -->\nhuman note",
+              author: { username: "alice" },
+              updated_at: "2026-09-02T10:00:00Z",
+            },
+            {
+              id: 11,
+              type: null,
+              body: `<!-- hodor:sha:${"a".repeat(40)} -->\n<!-- hodor-review -->\nlegacy`,
+              author: { username: "hodor-bot" },
+              updated_at: "2026-09-02T11:00:00Z",
+            },
+            {
+              id: 12,
+              type: null,
+              body: "<!-- hodor:summary:v1 -->\ncurrent",
+              author: { username: "hodor-bot" },
+              updated_at: "2026-09-02T12:00:00Z",
+            },
+          ]),
+          stderr: "",
+        };
+      }
+      return { stdout: "", stderr: "" };
+    });
+
+    const { upsertGitlabMrSummary } = await import("../src/gitlab.js");
+    const action = await upsertGitlabMrSummary(
+      "acme",
+      "app",
+      42,
+      "<!-- hodor:summary:v1 -->\nupdated",
+      "gitlab.example.com",
+    );
+
+    expect(action).toBe("updated");
+    const updateCall = execMock.mock.calls.find((call) => {
+      const args = call[1] as string[];
+      return args.some((arg) => arg.endsWith("/notes/12"));
+    });
+    expect(updateCall?.[1]).toContain("PUT");
+    const updateOptions = updateCall?.[2];
+    const input =
+      updateOptions && typeof updateOptions === "object" && "input" in updateOptions
+        ? updateOptions.input
+        : undefined;
+    expect(input).toContain("updated");
+  });
+});
+
 describe("parseGlabPaginatedJson", () => {
   it("returns empty array for empty input", async () => {
     const { parseGlabPaginatedJson } = await import("../src/gitlab.js");

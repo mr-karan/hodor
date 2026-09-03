@@ -1,6 +1,4 @@
-import { createHash } from "node:crypto";
-import type { ReviewOutput, ReviewFinding, ReviewPriority } from "./types.js";
-import { relativizeWorkspacePath } from "./utils/path.js";
+import type { ReviewStateFinding, ReviewPriority } from "./types.js";
 
 const PRIORITY_TO_SEVERITY: Record<ReviewPriority, string> = {
   0: "critical",
@@ -9,17 +7,12 @@ const PRIORITY_TO_SEVERITY: Record<ReviewPriority, string> = {
   3: "info",
 };
 
-function fingerprint(finding: ReviewFinding, relativePath: string): string {
-  const input = `${finding.title}:${relativePath}:${finding.code_location.line_range.start}`;
-  return createHash("md5").update(input).digest("hex");
-}
+export function formatCodeQualityReport(findings: ReviewStateFinding[]): string {
+  const issues = findings.map((finding) => {
+    if (!finding.filePath || !finding.lineRange) {
+      throw new Error(`Cannot report finding without a GitLab location: ${finding.title}`);
+    }
 
-export function formatCodeQualityReport(
-  review: ReviewOutput,
-  workspacePrefix?: string,
-): string {
-  const issues = review.findings.map((finding) => {
-    const relPath = relativizeWorkspacePath(finding.code_location.absolute_file_path, workspacePrefix);
     return {
       type: "issue",
       check_name: `hodor/P${finding.priority}`,
@@ -28,15 +21,14 @@ export function formatCodeQualityReport(
       categories: ["Bug Risk"],
       severity: PRIORITY_TO_SEVERITY[finding.priority] ?? "info",
       location: {
-        path: relPath,
+        path: finding.filePath,
         lines: {
-          begin: finding.code_location.line_range.start,
-          end: finding.code_location.line_range.end,
+          begin: finding.lineRange.start,
+          end: finding.lineRange.end,
         },
       },
-      fingerprint: fingerprint(finding, relPath),
+      fingerprint: finding.fingerprint,
     };
   });
-
   return JSON.stringify(issues, null, 2);
 }
