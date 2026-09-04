@@ -100,27 +100,59 @@ export function renderSummaryMarkdown(
     else counts.minor++;
   }
 
-  lines.push("");
+  const totalOpen = counts.blocking + counts.important + counts.minor;
   lines.push(
-    `**Open findings:** ${counts.blocking} blocking · ${counts.important} important · ${counts.minor} minor`,
+    "",
+    "| Open findings | Count |",
+    "| --- | ---: |",
+    `| Critical (P0/P1) | ${counts.blocking} |`,
+    `| Important (P2) | ${counts.important} |`,
+    `| Minor (P3) | ${counts.minor} |`,
+    "",
   );
 
-  if (options.inlineCreated != null || options.inlineDeduplicated != null) {
+  const verdict =
+    totalOpen === 0
+      ? "No open findings"
+      : counts.blocking > 0
+        ? "Blocking findings remain"
+        : "Non-blocking findings remain";
+  lines.push(`**Overall verdict:** ${verdict}`);
+
+  const scope = options.reviewMode
+    ? `${options.reviewMode[0].toUpperCase()}${options.reviewMode.slice(1)} review`
+    : "Latest review";
+  if (review.overall_explanation) {
     lines.push("");
-    lines.push(
-      `**Inline delivery:** ${options.inlineCreated ?? 0} new · ${options.inlineDeduplicated ?? 0} already open`,
-    );
+    lines.push(`**${scope}:** ${review.overall_explanation}`);
   }
 
-  const scope = options.reviewMode ? `${options.reviewMode} review` : "Latest review";
-  lines.push("");
-  lines.push(`**${scope}:** ${review.overall_explanation}`);
+  const inlineCreated = options.inlineCreated ?? 0;
+  const inlineDeduplicated = options.inlineDeduplicated ?? 0;
+  if (inlineCreated > 0 || inlineDeduplicated > 0) {
+    const delivery = [
+      inlineCreated > 0 ? `${inlineCreated} new` : null,
+      inlineDeduplicated > 0 ? `${inlineDeduplicated} already open` : null,
+    ].filter((item): item is string => item !== null);
+    lines.push("");
+    lines.push(`**Inline comments:** ${delivery.join(" · ")}`);
+  }
 
   if (fallbackFindings.length > 0) {
-    lines.push("");
-    lines.push(`### ${options.fallbackHeading ?? "Findings"}`);
+    lines.push(
+      "",
+      `### ${options.fallbackHeading ?? "Findings"}`,
+      "",
+      "| Finding | Location | Priority |",
+      "| --- | --- | ---: |",
+    );
     for (const finding of fallbackFindings) {
-      lines.push(formatFinding(finding));
+      const title = escapeTableCell(finding.title);
+      const body = escapeTableCell(finding.body);
+      const location = escapeTableCell(formatLocation(finding.code_location));
+      lines.push(
+        `| **${title}**<br>${body} | \`${location}\` | P${finding.priority} |`,
+      );
     }
   }
 
@@ -132,6 +164,10 @@ function formatFinding(f: ReviewFinding): string {
   const title = `- **${f.title}**${loc}`;
   const body = `  - ${f.body}`;
   return `${title}\n${body}`;
+}
+
+function escapeTableCell(value: string): string {
+  return value.replace(/\r?\n/g, " ").replace(/\|/g, "\\|");
 }
 
 function formatLocation(loc: {

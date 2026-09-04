@@ -68,13 +68,20 @@ function appendReviewDetails(
   if (!model && !metricsFooter) return body;
 
   const details = ["<details>", "<summary>Review details</summary>", ""];
-  if (model) details.push(`- Model: \`${model}\``);
+  if (model) details.push(`- Model: \`${displayModel(model)}\``);
   if (metricsFooter) {
     if (model) details.push("");
     details.push(metricsFooter);
   }
   details.push("", "</details>");
   return `${body.trimEnd()}\n\n${details.join("\n")}\n`;
+}
+
+function displayModel(model: string): string {
+  const baseModel = model.slice(model.lastIndexOf("@") + 1);
+  return baseModel.startsWith("arn:")
+    ? baseModel.slice(baseModel.lastIndexOf("/") + 1)
+    : baseModel;
 }
 
 export async function postReviewComment(opts: {
@@ -364,12 +371,12 @@ export async function postReviewStructured(opts: {
       failedFindings.length > 0
     )
   ) {
-    const fallbackFindings = reviewStyle === "summary" ? review.findings : failedFindings;
+    const summaryFindings = review.findings;
     let summaryBody = renderSummaryMarkdown(review, {
       openFindings: reviewFindings,
-      fallbackFindings,
+      fallbackFindings: summaryFindings,
       fallbackHeading:
-        reviewStyle === "summary" ? "Findings" : "Findings not posted inline",
+        reviewMode === "incremental" ? "Findings from this review" : "Findings",
       inlineCreated: reviewStyle === "summary" ? undefined : inlineCreated,
       inlineDeduplicated:
         reviewStyle === "summary" ? undefined : inlineDeduplicated,

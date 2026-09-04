@@ -125,15 +125,13 @@ describe("formatMetricsMarkdown", () => {
 
     const markdown = formatMetricsMarkdown(metrics);
 
-    expect(markdown).toContain("**Review Metrics**");
-    expect(markdown).toContain("3 turns");
-    expect(markdown).toContain("8 tool calls");
-    expect(markdown).toContain("2m 5s");
-    expect(markdown).toContain("in `1.9K`"); // totalInput = inputTokens (1000) + cacheReadTokens (900)
-    expect(markdown).toContain("cache read `900`");
-    expect(markdown).toContain("cache write `125`");
-    expect(markdown).toContain("out `80`");
-    expect(markdown).toContain("Cost: `$1.2345`");
+    expect(markdown).toContain("**Review metrics:**");
+    expect(markdown).toContain("3 turns · 8 tool calls · 2m 5s");
+    expect(markdown).toContain("`1.9K` input");
+    expect(markdown).toContain("`900` cached (47%)");
+    expect(markdown).toContain("`125` cache write");
+    expect(markdown).toContain("`80` output");
+    expect(markdown).toContain("`$1.2345`");
   });
 
   it("omits cache when zero", () => {

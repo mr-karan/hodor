@@ -109,14 +109,15 @@ describe("GitLab review publication", () => {
     })).toBe(false);
   });
 
-  it("keeps successful inline findings out of the compact rolling summary", async () => {
+  it("includes successful inline findings in the rolling summary table", async () => {
     const { postReviewStructured } = await import("../src/publisher.js");
     await postReviewStructured({
       prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42",
       review: review([finding]),
       reviewStyle: "hybrid",
       workspacePath: "/workspace",
-      model: "openai/gpt-5",
+      model:
+        "bedrock/converse/arn:aws:bedrock:ap-south-1:123456789012:application-inference-profile/example@openai.gpt-5.6-sol",
       metricsFooter: "**Review Metrics** · 3 turns\n- Cost: `$0.1000`",
     });
 
@@ -133,7 +134,10 @@ describe("GitLab review publication", () => {
     if (!summaryInput || typeof summaryInput !== "object" || !("input" in summaryInput)) {
       throw new Error("summary input was not captured");
     }
-    expect(summaryInput.input).not.toContain(finding.title);
+    expect(summaryInput.input).toContain("- Model: `openai.gpt-5.6-sol`");
+    expect(summaryInput.input).not.toContain("application-inference-profile");
+    expect(summaryInput.input).toContain("| Finding | Location | Priority |");
+    expect(summaryInput.input).toContain(finding.title);
   });
 
   it("fails the commit status while an earlier blocking discussion remains open", async () => {

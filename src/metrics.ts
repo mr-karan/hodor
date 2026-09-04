@@ -21,23 +21,19 @@ function formatDuration(seconds: number): string {
 
 export function formatMetricsMarkdown(metrics: ReviewMetrics): string {
   const totalInput = metrics.inputTokens + metrics.cacheReadTokens;
-  const parts = [`in \`${tok(totalInput)}\``, `fresh \`${tok(metrics.inputTokens)}\``];
+  const work = `${metrics.turns} turns · ${metrics.toolCalls} tool calls · ${formatDuration(metrics.durationSeconds)}`;
+  const cost = metrics.cost > 0 ? ` · \`$${metrics.cost.toFixed(4)}\`` : "";
+  const tokens = [`\`${tok(totalInput)}\` input`];
   if (metrics.cacheReadTokens > 0) {
-    parts.push(`cache read \`${tok(metrics.cacheReadTokens)}\``);
+    const hitPct = ((metrics.cacheReadTokens / totalInput) * 100).toFixed(0);
+    tokens.push(`\`${tok(metrics.cacheReadTokens)}\` cached (${hitPct}%)`);
   }
+  tokens.push(`\`${tok(metrics.outputTokens)}\` output`);
   if (metrics.cacheWriteTokens > 0) {
-    parts.push(`cache write \`${tok(metrics.cacheWriteTokens)}\``);
+    tokens.push(`\`${tok(metrics.cacheWriteTokens)}\` cache write`);
   }
-  parts.push(`out \`${tok(metrics.outputTokens)}\``);
 
-  const lines = [
-    `**Review Metrics** — ${metrics.turns} turns, ${metrics.toolCalls} tool calls, ${formatDuration(metrics.durationSeconds)}`,
-    `- Tokens: ${parts.join(" | ")} (total \`${tok(metrics.totalTokens)}\`)`,
-  ];
-  if (metrics.cost > 0) {
-    lines.push(`- Cost: \`$${metrics.cost.toFixed(4)}\``);
-  }
-  return lines.join("\n");
+  return `**Review metrics:** ${work}${cost}\n- Tokens: ${tokens.join(" · ")}`;
 }
 
 export function printMetrics(metrics: ReviewMetrics, stream: NodeJS.WritableStream = process.stderr): void {

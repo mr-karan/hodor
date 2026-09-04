@@ -123,10 +123,34 @@ describe("renderSummaryMarkdown", () => {
       reviewMode: "incremental",
     });
 
-    expect(result).toContain("**Open findings:** 1 blocking · 1 important · 0 minor");
-    expect(result).toContain("**Inline delivery:** 1 new · 0 already open");
-    expect(result).toContain("**incremental review:** A blocking issue remains.");
+    expect(result).toContain("| Critical (P0/P1) | 1 |");
+    expect(result).toContain("| Important (P2) | 1 |");
+    expect(result).toContain("| Minor (P3) | 0 |");
+    expect(result).toContain("**Overall verdict:** Blocking findings remain");
+    expect(result).toContain("**Inline comments:** 1 new");
+    expect(result).toContain("**Incremental review:** A blocking issue remains.");
     expect(result).not.toContain("[P1] Current bug");
+  });
+
+  it("keeps clean reviews concise", () => {
+    const review: ReviewOutput = {
+      findings: [],
+      overall_correctness: "patch is correct",
+      overall_explanation: "The patch is clean.",
+    };
+    const result = renderSummaryMarkdown(review, {
+      openFindings: [],
+      inlineCreated: 0,
+      inlineDeduplicated: 0,
+      reviewMode: "full",
+    });
+
+    expect(result).toContain("| Critical (P0/P1) | 0 |");
+    expect(result).toContain("| Important (P2) | 0 |");
+    expect(result).toContain("| Minor (P3) | 0 |");
+    expect(result).toContain("**Overall verdict:** No open findings");
+    expect(result).toContain("**Full review:** The patch is clean.");
+    expect(result).not.toContain("Inline");
   });
 
   it("includes full details for findings that failed inline delivery", () => {
@@ -144,5 +168,9 @@ describe("renderSummaryMarkdown", () => {
     expect(result).toContain("### Findings not posted inline");
     expect(result).toContain("[P1] Null check missing");
     expect(result).toContain("src/foo.ts:10-15");
+    expect(result).toContain("| Finding | Location | Priority |");
+    expect(result).toContain(
+      "| **[P1] Null check missing**<br>Test body | `src/foo.ts:10-15` | P1 |",
+    );
   });
 });
