@@ -71,6 +71,13 @@ export function parseModelString(model: string): ParsedModel {
       return { provider, modelId: parts.slice(1).join("/") };
     }
 
+    // With a user-supplied models file (HODOR_MODELS_JSON), any provider
+    // prefix may name a custom provider defined there. Bad names surface as
+    // resolution errors from ModelRuntime.getModel with the effective list.
+    if (process.env.HODOR_MODELS_JSON) {
+      return { provider, modelId: parts.slice(1).join("/") };
+    }
+
     throw new Error(
       `Unsupported provider "${first}". Use a pi-ai provider prefix such as anthropic/, openai/, openrouter/, google/, mistral/, xai/, or bedrock/.`,
     );

@@ -173,7 +173,11 @@ export async function reviewPr(opts: {
 
   const modelRuntime = await ModelRuntime.create({
     credentials: new InMemoryCredentialStore(),
-    modelsPath: null,
+    // HODOR_MODELS_JSON optionally points at a pi-format models.json defining
+    // custom (e.g. self-hosted OpenAI-compatible) providers and models,
+    // including their context windows, limits, and compat quirks. Unset keeps
+    // the stock behavior: no user state is read.
+    modelsPath: process.env.HODOR_MODELS_JSON ?? null,
   });
   if (process.env.LLM_API_KEY) {
     await modelRuntime.setRuntimeApiKey(parsed.provider, process.env.LLM_API_KEY);

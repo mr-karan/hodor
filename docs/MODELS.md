@@ -50,3 +50,49 @@ Most providers are resolved through the installed `pi-ai` registry. If a model i
 OpenRouter is the exception: Hodor can create a conservative OpenAI-compatible model definition for unknown `openrouter/...` slugs because OpenRouter model names change frequently.
 
 Upstream provider list: <https://github.com/badlogic/pi-mono/tree/main/packages/ai#supported-providers>
+
+## Custom endpoints (self-hosted, OpenAI-compatible)
+
+Registry providers have hardcoded base URLs. To review with a model served
+by a custom OpenAI-compatible endpoint (LiteLLM, vLLM, an internal gateway,
+...), define it in a pi-format models file and point Hodor at it:
+
+```bash
+export HODOR_MODELS_JSON=/path/to/models.json
+hodor <PR_URL> --model mycorp/my-model
+```
+
+```json
+{
+  "providers": {
+    "mycorp": {
+      "baseUrl": "https://llm.example.com/v1",
+      "api": "openai-completions",
+      "models": [
+        {
+          "id": "my-model",
+          "reasoning": true,
+          "contextWindow": 1048570,
+          "maxTokens": 131072,
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+          "compat": { "supportsStore": false, "supportsDeveloperRole": false },
+          "thinkingLevelMap": { "medium": "high", "high": "high" }
+        }
+      ]
+    }
+  }
+}
+```
+
+The API key comes from `LLM_API_KEY` as usual, so nothing secret lives in
+the file. The file carries the endpoint's behavior instead: `compat` and
+`thinkingLevelMap` describe wire-level quirks (e.g. unsupported `store`, or
+a chat template that rejects pi's default `medium` reasoning effort) without
+patching Hodor. Any `--model` prefix that names a provider in the file is
+accepted; unknown models surface a resolution error listing the effective
+providers. When `HODOR_MODELS_JSON` is unset, no user state is read
+(behavior unchanged).
+
+The schema is pi-coding-agent's `models.json`
+(`ModelDefinition`: `id`, `name`, `api`, `baseUrl`, `reasoning`, `input`,
+`contextWindow`, `maxTokens`, `cost`, `headers`, `compat`, `thinkingLevelMap`).
