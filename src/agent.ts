@@ -163,7 +163,7 @@ export async function reviewPr(opts: {
 }> {
   const {
     prUrl,
-    model = "anthropic/claude-sonnet-4-5-20250929",
+    model = "anthropic/claude-opus-5-5",
     reasoningEffort,
     reviewInstructions,
     additionalInstructions,

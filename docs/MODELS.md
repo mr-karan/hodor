@@ -15,7 +15,7 @@ hodor <PR_URL> --model bedrock/converse/global.anthropic.claude-opus-5-5
 
 - The provider is the first path segment. The rest is the model ID, so OpenRouter IDs can contain slashes.
 - `bedrock/` is an alias for Pi's `amazon-bedrock` provider. The `converse/` segment is optional.
-- The default is `anthropic/claude-sonnet-4-5-20250929`.
+- The default is `anthropic/claude-opus-5-5`. Its adaptive reasoning default is `xhigh` (see [Reasoning effort](#reasoning-effort)). Pass `--reasoning-effort high` or pick `anthropic/claude-sonnet-5` for cheaper reviews.
 - A bare name such as `claude-opus-5-5` or `gpt-6-sol` is mapped to Anthropic or OpenAI.
 
 ## API keys
