@@ -10,7 +10,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { AgentSession, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
 import { logger } from "./utils/logger.js";
 import { exec } from "./utils/exec.js";
 import {
@@ -91,6 +91,41 @@ export interface AgentProgressEvent {
   result?: string;
 }
 
+
+type StreamFunction = AgentSession["agent"]["streamFunction"];
+
+/**
+ * Wrap a Pi stream function to add Hodor-specific Bedrock request fields:
+ * cost allocation tags and OpenAI-on-Bedrock reasoning effort.
+ */
+export function wrapBedrockStream(
+  streamFunction: StreamFunction,
+  opts: {
+    bedrockTags?: Record<string, string> | null;
+    openAiReasoning?: ThinkingLevel;
+  },
+): StreamFunction {
+  const { bedrockTags, openAiReasoning } = opts;
+  return (model, context, options) => {
+    const originalOnPayload = options?.onPayload;
+    const onPayload = openAiReasoning
+      ? async (payload: unknown, payloadModel: Model<Api>) => {
+          const transformed = originalOnPayload
+            ? await originalOnPayload(payload, payloadModel)
+            : undefined;
+          return addOpenAiBedrockReasoning(
+            transformed === undefined ? payload : transformed,
+            openAiReasoning,
+          );
+        }
+      : originalOnPayload;
+    return streamFunction(model, context, {
+      ...options,
+      ...(bedrockTags ? { requestMetadata: bedrockTags } : {}),
+      ...(onPayload ? { onPayload } : {}),
+    });
+  };
+}
 
 export async function reviewPr(opts: {
   prUrl?: string;
@@ -626,31 +661,10 @@ export async function reviewPr(opts: {
       ? thinkingLevel
       : undefined;
     if (parsed.provider === "amazon-bedrock" && (bedrockTags || openAiReasoning)) {
-      type PayloadHook = (payload: unknown, model: unknown) => unknown | Promise<unknown>;
-      type BedrockStreamOptions = Record<string, unknown> & { onPayload?: PayloadHook };
-      type AgentWithStream = { agent: { streamFn: (...args: unknown[]) => unknown } };
-      const agent = (session as unknown as AgentWithStream).agent;
-      const originalStreamFn = agent.streamFn;
-      agent.streamFn = (...args: unknown[]) => {
-        const options = (args[2] ?? {}) as BedrockStreamOptions;
-        const originalOnPayload = options.onPayload;
-        const onPayload: PayloadHook | undefined = openAiReasoning
-          ? async (payload, model) => {
-              const transformed = originalOnPayload
-                ? await originalOnPayload(payload, model)
-                : undefined;
-              return addOpenAiBedrockReasoning(
-                transformed === undefined ? payload : transformed,
-                openAiReasoning,
-              );
-            }
-          : originalOnPayload;
-        return originalStreamFn(args[0], args[1], {
-          ...options,
-          ...(bedrockTags ? { requestMetadata: bedrockTags } : {}),
-          ...(onPayload ? { onPayload } : {}),
-        });
-      };
+      session.agent.streamFunction = wrapBedrockStream(session.agent.streamFunction, {
+        bedrockTags,
+        openAiReasoning,
+      });
       if (bedrockTags) {
         logger.info(`Bedrock cost allocation tags: ${JSON.stringify(bedrockTags)}`);
       }
