@@ -9,7 +9,7 @@ The full module table is in `README.md` under Architecture. The paths you touch 
 - `src/agent.ts`: review orchestration. Preflight, workspace, Pi session, the `submit_review` tool, recovery, metrics.
 - `src/model.ts`, `src/models-json.ts`: model strings, Bedrock ARN models, adaptive reasoning, `HODOR_MODELS_JSON`.
 - `src/review-diff.ts`: full, incremental, and snapshot diff bases.
-- `src/publisher.ts`, `src/gitlab.ts`: GitLab inline notes, rolling summary, discussion reconciliation.
+- `src/publisher.ts`, `src/gitlab.ts`: GitLab inline notes, a new summary note per review (older summaries collapsed to a link), discussion reconciliation.
 - `src/resolve-location.ts`: snippet-based line resolution.
 - `templates/`: default review profile and review task prompt.
 - `tests/`: vitest, `*.test.ts`.

@@ -2,7 +2,11 @@ import { exec, execJson } from "./utils/exec.js";
 import { logger } from "./utils/logger.js";
 import { isRecord, parsePaginatedJsonArrays } from "./utils/json.js";
 import type { GitlabPublisherIdentity, MrMetadata, NoteAuthor, NoteEntry } from "./types.js";
-import { HODOR_REVIEW_MARKER, HODOR_SUMMARY_MARKER } from "./render.js";
+import {
+  HODOR_REVIEW_MARKER,
+  HODOR_SUMMARY_MARKER,
+  renderSupersededSummary,
+} from "./render.js";
 
 export { HODOR_REVIEW_MARKER, HODOR_SUMMARY_MARKER };
 
@@ -32,6 +36,7 @@ const DEFAULT_GITLAB_HOST = "gitlab.com";
 const HODOR_NOTE_PREFIX_RE = /^\s*<!--\s*hodor[-:]/;
 const HODOR_CACHE_MARKER_RE = /<!--\s*hodor:cache:v1:[A-Za-z0-9_-]+\s*-->\s*/g;
 const HODOR_SHA_PREFIX_RE = /^\s*<!--\s*hodor:sha:[a-f0-9]{40}\s*-->/i;
+const HODOR_SUPERSEDED_PREFIX_RE = /^\s*<!--\s*hodor-review\s*-->\s*<!--\s*hodor:superseded\s*-->/;
 
 export function isHodorGeneratedNote(body: unknown): boolean {
   if (typeof body !== "string") return false;
@@ -80,11 +85,14 @@ function normalizeBaseUrl(host?: string | null): string {
   return `https://${trimmed}`.replace(/\/+$/, "");
 }
 
-function encodedProjectPath(owner: string, repo: string): string {
-  const projectPath = [owner.replace(/^\/+|\/+$/g, ""), repo.replace(/^\/+|\/+$/g, "")]
+function projectPath(owner: string, repo: string): string {
+  return [owner.replace(/^\/+|\/+$/g, ""), repo.replace(/^\/+|\/+$/g, "")]
     .filter(Boolean)
     .join("/");
-  return encodeURIComponent(projectPath);
+}
+
+function encodedProjectPath(owner: string, repo: string): string {
+  return encodeURIComponent(projectPath(owner, repo));
 }
 
 function glabEnv(host?: string | null): NodeJS.ProcessEnv {
@@ -160,40 +168,6 @@ export async function fetchGitlabMrInfo(
 }
 
 /**
- * Post a comment on a GitLab merge request using glab api.
- */
-export async function postGitlabMrComment(
-  owner: string,
-  repo: string,
-  mrNumber: number | string,
-  body: string,
-  host?: string | null,
-): Promise<void> {
-  const encoded = encodedProjectPath(owner, repo);
-  const env = glabEnv(host);
-
-  try {
-    await exec(
-      "glab",
-      [
-        "api",
-        `projects/${encoded}/merge_requests/${mrNumber}/notes`,
-        "--method",
-        "POST",
-        "-H",
-        "Content-Type: application/json",
-        "--input",
-        "-",
-      ],
-      { env, input: JSON.stringify({ body }) },
-    );
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new GitLabAPIError(`Failed to post comment to MR !${mrNumber}: ${msg}`);
-  }
-}
-
-/**
  * Resolve the numeric id of the account glab authenticates as on this host.
  * Hodor trusts only notes written by this id.
  */
@@ -214,75 +188,115 @@ export async function fetchGitlabPublisherIdentity(
   return { platform: "gitlab", userId };
 }
 
-export async function upsertGitlabMrSummary(
+export interface PublishedSummary {
+  /** Id of the new summary note, or null when GitLab's response had none. */
+  noteId: number | null;
+  /** Older Hodor summaries collapsed to a pointer at the new one. */
+  collapsed: number;
+}
+
+/**
+ * Post a new summary note, so it lands at the bottom of the MR and notifies
+ * participants, then collapse Hodor's older summaries into a link to it.
+ * Only a failed POST throws. Collapse failures are logged as warnings.
+ */
+export async function publishGitlabMrSummary(
   owner: string,
   repo: string,
   mrNumber: number | string,
   body: string,
   host: string | null | undefined,
   identity: GitlabPublisherIdentity,
-): Promise<"created" | "updated"> {
+): Promise<PublishedSummary> {
   const encoded = encodedProjectPath(owner, repo);
   const env = glabEnv(host);
+  const notesEndpoint = `projects/${encoded}/merge_requests/${mrNumber}/notes`;
 
+  let postStdout: string;
   try {
-    const notesResult = await exec(
+    ({ stdout: postStdout } = await exec(
       "glab",
-      [
-        "api",
-        `projects/${encoded}/merge_requests/${mrNumber}/notes?per_page=100`,
-        "--paginate",
-      ],
-      { env },
-    );
-
-    const candidates = parsePaginatedJsonArrays(notesResult.stdout)
-      .filter((note) => {
-        const noteBody = note.body;
-        if (
-          typeof noteBody !== "string" ||
-          !isPublisherNote(note, identity) ||
-          note.type != null ||
-          note.position != null
-        ) {
-          return false;
-        }
-        return (
-          noteBody.includes(HODOR_SUMMARY_MARKER) ||
-          (HODOR_SHA_PREFIX_RE.test(noteBody) && noteBody.includes(HODOR_REVIEW_MARKER))
-        );
-      })
-      .sort((a, b) => {
-        const aTime = Date.parse(String(a.updated_at ?? a.created_at ?? ""));
-        const bTime = Date.parse(String(b.updated_at ?? b.created_at ?? ""));
-        return (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0);
-      });
-
-    const noteId = candidates[0]?.id;
-    if (typeof noteId !== "number" && typeof noteId !== "string") {
-      await postGitlabMrComment(owner, repo, mrNumber, body, host);
-      return "created";
-    }
-
-    await exec(
-      "glab",
-      [
-        "api",
-        `projects/${encoded}/merge_requests/${mrNumber}/notes/${noteId}`,
-        "--method",
-        "PUT",
-        "-H",
-        "Content-Type: application/json",
-        "--input",
-        "-",
-      ],
+      ["api", notesEndpoint, "--method", "POST", "-H", "Content-Type: application/json", "--input", "-"],
       { env, input: JSON.stringify({ body }) },
-    );
-    return "updated";
+    ));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    throw new GitLabAPIError(`Failed to upsert summary for MR !${mrNumber}: ${msg}`);
+    throw new GitLabAPIError(`Failed to post summary to MR !${mrNumber}: ${msg}`);
   }
+
+  const noteId = parseCreatedNoteId(postStdout);
+  if (noteId === null) {
+    logger.warn(`GitLab returned no note id for the new summary on MR !${mrNumber}; older summaries stay as they are`);
+    return { noteId, collapsed: 0 };
+  }
+
+  let priorSummaryIds: number[];
+  try {
+    const { stdout } = await exec("glab", ["api", `${notesEndpoint}?per_page=100`, "--paginate"], { env });
+    priorSummaryIds = parsePaginatedJsonArrays(stdout)
+      .filter((note) => isActiveSummaryNote(note, identity))
+      .map((note) => note.id)
+      // Note ids increase monotonically. Collapse only older summaries, so two
+      // overlapping runs cannot collapse each other's newer note.
+      .filter((id): id is number => typeof id === "number" && id < noteId);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn(`Failed to list notes to collapse older summaries on MR !${mrNumber}: ${msg}`);
+    return { noteId, collapsed: 0 };
+  }
+
+  const collapsedBody = renderSupersededSummary(
+    `${normalizeBaseUrl(host)}/${projectPath(owner, repo)}/-/merge_requests/${mrNumber}#note_${noteId}`,
+  );
+  let collapsed = 0;
+  for (const priorId of priorSummaryIds) {
+    try {
+      await exec(
+        "glab",
+        ["api", `${notesEndpoint}/${priorId}`, "--method", "PUT", "-H", "Content-Type: application/json", "--input", "-"],
+        { env, input: JSON.stringify({ body: collapsedBody }) },
+      );
+      collapsed += 1;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(`Failed to collapse older summary note ${priorId} on MR !${mrNumber}: ${msg}`);
+    }
+  }
+  return { noteId, collapsed };
+}
+
+function parseCreatedNoteId(stdout: string): number | null {
+  let note: unknown;
+  try {
+    note = JSON.parse(stdout.trim());
+  } catch {
+    return null;
+  }
+  const id = isRecord(note) ? note.id : undefined;
+  return typeof id === "number" && Number.isSafeInteger(id) ? id : null;
+}
+
+/** A summary note by the publisher that still carries machine state. */
+function isActiveSummaryNote(note: Record<string, unknown>, identity: GitlabPublisherIdentity): boolean {
+  const body = note.body;
+  if (
+    typeof body !== "string" ||
+    !isPublisherNote(note, identity) ||
+    note.type != null ||
+    note.position != null ||
+    isSupersededSummary(body)
+  ) {
+    return false;
+  }
+  return (
+    body.includes(HODOR_SUMMARY_MARKER) ||
+    (HODOR_SHA_PREFIX_RE.test(body) && body.includes(HODOR_REVIEW_MARKER))
+  );
+}
+
+/** True for an older summary that was collapsed to a link to a newer one. */
+function isSupersededSummary(body: string): boolean {
+  return HODOR_SUPERSEDED_PREFIX_RE.test(body);
 }
 
 /**
@@ -301,7 +315,11 @@ export function summarizeHodorNotes(
   notes: readonly NoteEntry[] | undefined | null,
   maxEntries = 5,
 ): string {
-  return summarizeNotes(notes, maxEntries, (note) => note.provenance === "hodor");
+  return summarizeNotes(
+    notes,
+    maxEntries,
+    (note) => note.provenance === "hodor" && !isSupersededSummary(note.body ?? ""),
+  );
 }
 
 function summarizeNotes(

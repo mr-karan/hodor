@@ -6,6 +6,7 @@ import type { ReviewFinding, ReviewOutput, ReviewStateFinding } from "./types.js
 
 export const HODOR_REVIEW_MARKER = "<!-- hodor-review -->";
 export const HODOR_SUMMARY_MARKER = "<!-- hodor:summary:v1 -->";
+export const HODOR_SUPERSEDED_MARKER = "<!-- hodor:superseded -->";
 
 /**
  * Render a ReviewOutput into clean markdown for posting as a PR/MR comment.
@@ -164,13 +165,12 @@ export function renderSummaryMarkdown(
 }
 
 /**
- * Render the short note posted when a re-review edits the summary in place
- * without adding inline comments.
+ * Render the body an older summary is collapsed to after a newer summary is
+ * posted. It carries no sha, cache, or summary marker, so only the newest
+ * summary holds machine state.
  */
-export function renderReReviewNote(headSha: string | null | undefined, openFindings: number): string {
-  const commit = headSha ? ` \`${headSha.slice(0, 8)}\`` : "";
-  const open = openFindings > 0 ? ` ${openFindings} finding(s) still open.` : "";
-  return `${HODOR_REVIEW_MARKER}\nRe-reviewed${commit}: no new findings.${open} See the Hodor review summary.\n`;
+export function renderSupersededSummary(latestReviewUrl: string): string {
+  return `${HODOR_REVIEW_MARKER}\n${HODOR_SUPERSEDED_MARKER}\n_This Hodor review was superseded by a newer one: [latest review](${latestReviewUrl})._\n`;
 }
 
 function formatFinding(f: ReviewFinding): string {

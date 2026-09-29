@@ -63,7 +63,7 @@ program
   )
   .option(
     "--review-style <style>",
-    "How to post reviews on GitLab: rolling summary, inline diff comments, or hybrid (both). Default: hybrid.",
+    "How to post reviews on GitLab: summary (each review posts a new summary note and collapses older ones), inline diff comments, or hybrid (both). Default: hybrid.",
     "hybrid",
   )
   .option(

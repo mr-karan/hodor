@@ -17,6 +17,9 @@ vi.mock("../src/utils/exec.js", () => ({
   exec: vi.fn(async (_cmd: string, args: string[]) => {
     capturedArgs = args;
     capturedExecCalls.push(args);
+    if (args.includes("POST") && args.some((arg) => arg.endsWith("/notes"))) {
+      return { stdout: JSON.stringify({ id: 500 }), stderr: "" };
+    }
     return { stdout: "", stderr: "" };
   }),
   execJson: vi.fn(async (_cmd: string, args: string[]) => {

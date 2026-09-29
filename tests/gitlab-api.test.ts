@@ -164,101 +164,150 @@ describe("fetchGitlabPublisherIdentity", () => {
   });
 });
 
-describe("upsertGitlabMrSummary", () => {
+describe("publishGitlabMrSummary", () => {
+  const NEW_NOTE_ID = 500;
+  const COLLAPSED_BODY =
+    "<!-- hodor-review -->\n<!-- hodor:superseded -->\n" +
+    `_This Hodor review was superseded by a newer one: [latest review](https://gitlab.example.com/acme/app/-/merge_requests/42#note_${NEW_NOTE_ID})._\n`;
+  const SUPERSEDED_BODY =
+    "<!-- hodor-review -->\n<!-- hodor:superseded -->\n_This Hodor review was superseded by a newer one: [latest review](https://gitlab.example.com/acme/app/-/merge_requests/42#note_400)._\n";
+
+  const existingNotes = [
+    { id: 10, type: null, body: "<!-- hodor:summary:v1 -->\nhuman note", author: { id: 8, username: "alice" } },
+    {
+      id: 11,
+      type: null,
+      body: `<!-- hodor:sha:${"a".repeat(40)} -->\n<!-- hodor-review -->\nlegacy`,
+      author: BOT_AUTHOR,
+    },
+    { id: 12, type: null, body: "<!-- hodor-review -->\n<!-- hodor:summary:v1 -->\nprevious", author: BOT_AUTHOR },
+    {
+      id: 13,
+      type: null,
+      body: "<!-- hodor-review -->\n<!-- hodor:summary:v1 -->\nsame username, different account",
+      author: { id: 99, username: "hodor-bot", name: "Hodor" },
+    },
+    { id: 14, type: null, body: SUPERSEDED_BODY, author: BOT_AUTHOR },
+    {
+      id: 15,
+      type: "DiffNote",
+      body: "<!-- hodor-review -->\n<!-- hodor:summary:v1 -->\ninline",
+      author: BOT_AUTHOR,
+      position: { new_path: "src/app.ts", new_line: 3 },
+    },
+    { id: 16, type: null, system: true, body: "<!-- hodor:summary:v1 -->\nsystem", author: BOT_AUTHOR },
+    { id: 17, type: null, body: "Plain bot comment", author: BOT_AUTHOR },
+    { id: NEW_NOTE_ID, type: null, body: "<!-- hodor-review -->\n<!-- hodor:summary:v1 -->\nnew", author: BOT_AUTHOR },
+  ];
+
+  function mockGitlab(opts: { failPutFor?: number; failList?: boolean; failPost?: boolean } = {}): void {
+    execMock.mockImplementation(async (_command: string, args: string[]) => {
+      const endpoint = args[1] ?? "";
+      if (args.includes("POST")) {
+        if (opts.failPost) throw new Error("403 Forbidden");
+        return { stdout: JSON.stringify({ id: NEW_NOTE_ID, body: "new" }), stderr: "" };
+      }
+      if (endpoint.includes("/notes?")) {
+        if (opts.failList) throw new Error("502 Bad Gateway");
+        return { stdout: JSON.stringify(existingNotes), stderr: "" };
+      }
+      if (args.includes("PUT") && opts.failPutFor != null && endpoint.endsWith(`/notes/${opts.failPutFor}`)) {
+        throw new Error("500 Internal Server Error");
+      }
+      return { stdout: "{}", stderr: "" };
+    });
+  }
+
+  function editedNoteIds(): string[] {
+    return execMock.mock.calls
+      .map((call) => call[1] as string[])
+      .filter((args) => args.includes("PUT"))
+      .map((args) => (args[1] ?? "").replace(/^.*\/notes\//, ""));
+  }
+
+  function inputOf(call: unknown[]): string {
+    const options = call[2];
+    return options && typeof options === "object" && "input" in options && typeof options.input === "string"
+      ? options.input
+      : "";
+  }
+
   beforeEach(() => {
     execMock.mockReset();
     execJsonMock.mockReset();
   });
 
-  it("creates the rolling summary when Hodor has no summary note", async () => {
-    execMock.mockImplementation(async (_command: string, args: string[]) => {
-      if (args.some((arg) => arg.includes("/notes?"))) {
-        return { stdout: "[]", stderr: "" };
-      }
-      return { stdout: "", stderr: "" };
-    });
-
-    const { upsertGitlabMrSummary } = await import("../src/gitlab.js");
-    const action = await upsertGitlabMrSummary(
+  async function publish(): Promise<{ noteId: number | null; collapsed: number }> {
+    const { publishGitlabMrSummary } = await import("../src/gitlab.js");
+    return publishGitlabMrSummary(
       "acme",
       "app",
       42,
-      "<!-- hodor:summary:v1 -->\nbody",
+      "<!-- hodor-review -->\n<!-- hodor:summary:v1 -->\nnew",
       "gitlab.example.com",
       BOT,
     );
+  }
 
-    expect(action).toBe("created");
-    expect(
-      execMock.mock.calls.some((call) => {
-        const args = call[1] as string[];
-        return args.some((arg) => arg.endsWith("/notes")) && args.includes("POST");
-      }),
-    ).toBe(true);
+  it("never collapses a newer summary posted by an overlapping run", async () => {
+    existingNotes.push({
+      id: NEW_NOTE_ID + 1,
+      type: null,
+      body: "<!-- hodor-review -->\n<!-- hodor:summary:v1 -->\nnewer run",
+      author: BOT_AUTHOR,
+    });
+    try {
+      mockGitlab();
+      await publish();
+      expect(editedNoteIds()).not.toContain(String(NEW_NOTE_ID + 1));
+      expect(editedNoteIds()).toEqual(["11", "12"]);
+    } finally {
+      existingNotes.pop();
+    }
   });
 
-  it("updates Hodor's latest rolling summary without touching other notes", async () => {
-    execMock.mockImplementation(async (_command: string, args: string[]) => {
-      if (args.some((arg) => arg.includes("/notes?"))) {
-        return {
-          stdout: JSON.stringify([
-            {
-              id: 10,
-              type: null,
-              body: "<!-- hodor:summary:v1 -->\nhuman note",
-              author: { id: 8, username: "alice" },
-              updated_at: "2026-09-02T10:00:00Z",
-            },
-            {
-              id: 11,
-              type: null,
-              body: `<!-- hodor:sha:${"a".repeat(40)} -->\n<!-- hodor-review -->\nlegacy`,
-              author: BOT_AUTHOR,
-              updated_at: "2026-09-02T11:00:00Z",
-            },
-            {
-              id: 12,
-              type: null,
-              body: "<!-- hodor:summary:v1 -->\ncurrent",
-              author: BOT_AUTHOR,
-              updated_at: "2026-09-02T12:00:00Z",
-            },
-            {
-              id: 13,
-              type: null,
-              body: "<!-- hodor:summary:v1 -->\nsame username, different account",
-              author: { id: 99, username: "hodor-bot", name: "Hodor" },
-              updated_at: "2026-09-02T13:00:00Z",
-            },
-          ]),
-          stderr: "",
-        };
-      }
-      return { stdout: "", stderr: "" };
-    });
+  it("posts a new summary, then collapses only the publisher's older summaries", async () => {
+    mockGitlab();
 
-    const { upsertGitlabMrSummary } = await import("../src/gitlab.js");
-    const action = await upsertGitlabMrSummary(
-      "acme",
-      "app",
-      42,
-      "<!-- hodor:summary:v1 -->\nupdated",
-      "gitlab.example.com",
-      BOT,
-    );
+    const result = await publish();
 
-    expect(action).toBe("updated");
-    const updateCall = execMock.mock.calls.find((call) => {
-      const args = call[1] as string[];
-      return args.some((arg) => arg.endsWith("/notes/12"));
-    });
-    expect(updateCall?.[1]).toContain("PUT");
-    const updateOptions = updateCall?.[2];
-    const input =
-      updateOptions && typeof updateOptions === "object" && "input" in updateOptions
-        ? updateOptions.input
-        : undefined;
-    expect(input).toContain("updated");
+    expect(result).toEqual({ noteId: NEW_NOTE_ID, collapsed: 2 });
+    const calls = execMock.mock.calls;
+    expect(calls[0][1]).toContain("POST");
+    expect(inputOf(calls[0])).toBe(JSON.stringify({ body: "<!-- hodor-review -->\n<!-- hodor:summary:v1 -->\nnew" }));
+    expect(editedNoteIds()).toEqual(["11", "12"]);
+    const puts = calls.filter((call) => (call[1] as string[]).includes("PUT"));
+    for (const put of puts) {
+      expect(inputOf(put)).toBe(JSON.stringify({ body: COLLAPSED_BODY }));
+    }
+  });
+
+  it("keeps the new summary as posted when collapsing a note fails", async () => {
+    mockGitlab({ failPutFor: 11 });
+
+    await expect(publish()).resolves.toEqual({ noteId: NEW_NOTE_ID, collapsed: 1 });
+    expect(editedNoteIds()).toEqual(["11", "12"]);
+  });
+
+  it("keeps the new summary as posted when notes cannot be listed", async () => {
+    mockGitlab({ failList: true });
+
+    await expect(publish()).resolves.toEqual({ noteId: NEW_NOTE_ID, collapsed: 0 });
+    expect(editedNoteIds()).toEqual([]);
+  });
+
+  it("edits nothing when GitLab returns no id for the new note", async () => {
+    execMock.mockResolvedValue({ stdout: "", stderr: "" });
+
+    await expect(publish()).resolves.toEqual({ noteId: null, collapsed: 0 });
+    expect(execMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws and edits nothing when the new summary cannot be posted", async () => {
+    mockGitlab({ failPost: true });
+
+    await expect(publish()).rejects.toThrow(/Failed to post summary to MR !42/);
+    expect(editedNoteIds()).toEqual([]);
   });
 });
 
