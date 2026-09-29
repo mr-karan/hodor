@@ -4,7 +4,7 @@
 
 > Agentic code reviewer for GitHub PRs, GitLab MRs, Gitea/Forgejo PRs, and local diffs.
 
-Hodor checks out the change, gives an LLM agent confined inspection tools (`git_diff`, `read`, `grep`, `find`, `ls`) over the tracked repository, and asks it for structured findings. It posts them as inline comments and a rolling summary, or prints them locally.
+Hodor checks out the change, gives an LLM agent confined inspection tools (`git_diff`, `read`, `grep`, `find`, `ls`) over the tracked repository, and asks it for structured findings. It posts them as inline comments and a summary note, or prints them locally.
 
 ## Install
 
@@ -129,7 +129,7 @@ Local mode:
 | `--local` | Off | Review local git changes (no PR URL required) |
 | `--diff-against` | `origin/main` | Git ref to diff against in `--local` mode |
 | `--post` | Off | Post review as a comment on the PR/MR |
-| `--review-style` | `hybrid` | GitLab posting style: rolling `summary`, `inline`, or both with `hybrid` |
+| `--review-style` | `hybrid` | GitLab posting style: `summary` note, `inline`, or both with `hybrid` |
 | `--code-quality` | None | Write a Code Quality report containing current and unresolved Hodor findings |
 | `--commit-status` | Off | Post a pass/fail status based on all unresolved Hodor findings |
 | `--require-delivery` | Off | Exit non-zero if requested comments, statuses, or artifacts are not delivered |
@@ -249,7 +249,7 @@ hodor-review:
   timeout: 15m
 ```
 
-This posts actionable findings inline, updates one rolling summary note with collapsed run metrics, sets a commit status from all unresolved Hodor findings, and exposes the cumulative Code Quality report from the MR.
+This posts actionable findings inline, posts a new summary note with collapsed run metrics (older Hodor summaries collapse to a link to it), sets a commit status from all unresolved Hodor findings, and exposes the cumulative Code Quality report from the MR.
 
 See [AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md) for advanced workflows.
 
@@ -350,7 +350,7 @@ flowchart LR
 | `src/review-cache.ts` | Identical-HEAD review reuse |
 | `src/provenance.ts` | Publishing identity and trusted Hodor note partitioning |
 | `src/review-policy.ts` | `--fail-on-priority` evaluation |
-| `src/publisher.ts` | Inline notes, rolling summary, commit status, discussion reconciliation |
+| `src/publisher.ts` | Inline notes, per-review summary note (older ones collapsed), commit status, discussion reconciliation |
 | `src/gitlab.ts`, `src/github.ts`, `src/gitea.ts` | Platform APIs via `glab`, `gh`, and the Gitea REST API |
 | `src/render.ts`, `src/codequality.ts` | Markdown rendering and GitLab Code Quality reports |
 | `src/metrics.ts` | Token, cost, and duration metrics; Prometheus push |

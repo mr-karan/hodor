@@ -1,5 +1,5 @@
 import { describe, test, expect, it } from "vitest";
-import { renderMarkdown, renderReReviewNote, renderSummaryMarkdown } from "../src/render.js";
+import { renderMarkdown, renderSummaryMarkdown, renderSupersededSummary } from "../src/render.js";
 import type { ReviewOutput, ReviewFinding } from "../src/types.js";
 
 function makeFinding(title: string, priority: 0 | 1 | 2 | 3): ReviewFinding {
@@ -185,10 +185,13 @@ describe("renderSummaryMarkdown", () => {
   });
 });
 
-describe("renderReReviewNote", () => {
-  it("names the commit and still-open findings", () => {
-    const note = renderReReviewNote("6394179b86c8e2274fb6fd36569ee585cfece21c", 2);
-    expect(note.startsWith("<!-- hodor-review -->\n")).toBe(true);
-    expect(note).toContain("Re-reviewed `6394179b`: no new findings. 2 finding(s) still open.");
+describe("renderSupersededSummary", () => {
+  it("links to the latest review and carries no machine state", () => {
+    const note = renderSupersededSummary("https://gitlab.example.com/acme/app/-/merge_requests/42#note_500");
+    expect(note).toBe(
+      "<!-- hodor-review -->\n<!-- hodor:superseded -->\n" +
+        "_This Hodor review was superseded by a newer one: [latest review](https://gitlab.example.com/acme/app/-/merge_requests/42#note_500)._\n",
+    );
+    expect(note).not.toMatch(/hodor:(sha|cache|summary)/);
   });
 });

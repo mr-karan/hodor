@@ -185,4 +185,14 @@ describe("summarizeGitlabNotes", () => {
     expect(summary).not.toContain("hodor:cache");
     expect(summary).not.toContain("A".repeat(100));
   });
+
+  it("leaves superseded summaries out of prior-review context", () => {
+    const summary = summarizeHodorNotes([{
+      body: "<!-- hodor-review -->\n<!-- hodor:superseded -->\n_This Hodor review was superseded by a newer one: [latest review](https://gitlab.example.com/acme/app/-/merge_requests/42#note_500)._",
+      author: { username: "hodor" },
+      provenance: "hodor",
+    }]);
+
+    expect(summary).toBe("");
+  });
 });

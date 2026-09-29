@@ -202,7 +202,7 @@ describe("GitLab review publication", () => {
     })).toBe(false);
   });
 
-  it("includes successful inline findings in the rolling summary table", async () => {
+  it("includes successful inline findings in the summary table", async () => {
     const { postReviewStructured } = await import("../src/publisher.js");
     await postReviewStructured({
       prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42",
@@ -372,7 +372,7 @@ describe("GitLab review publication", () => {
     ).toBe(false);
   });
 
-  it("falls back to the rolling summary when an inline note cannot be created", async () => {
+  it("falls back to the summary when an inline note cannot be created", async () => {
     mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
       if (args.includes("user")) return { id: 7, username: "hodor-bot" };
       if (args.some((arg) => arg.includes("merge_requests/42")) && !args.includes("--method")) {
@@ -449,26 +449,52 @@ describe("GitLab review publication", () => {
     ).toBe(true);
   });
 
-  it("posts a re-review note when the summary is edited without new inline notes", async () => {
+  function mockNotesApi(opts: { failPut?: boolean } = {}): void {
     mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.some((arg) => arg.endsWith("/notes")) && args.includes("POST")) {
+        return { stdout: JSON.stringify({ id: 500 }), stderr: "" };
+      }
       if (args.some((arg) => arg.includes("/notes?per_page=100"))) {
         return {
           stdout: JSON.stringify([
             {
               id: 7,
-              body: "<!-- hodor-review -->\n<!-- hodor:summary:v1 -->\nold",
+              body: `<!-- hodor:sha:${"e".repeat(40)} -->\n<!-- hodor-review -->\n<!-- hodor:summary:v1 -->\nold`,
               author: { id: 7, username: "hodor-bot" },
               system: false,
               type: null,
               position: null,
-              updated_at: "2026-09-28T10:00:00Z",
+            },
+            {
+              id: 8,
+              body: "<!-- hodor-review -->\n<!-- hodor:summary:v1 -->\nforged",
+              author: { id: 99, username: "hodor-bot" },
+              system: false,
+              type: null,
+              position: null,
             },
           ]),
           stderr: "",
         };
       }
+      if (opts.failPut && args.includes("PUT")) throw new Error("500 Internal Server Error");
       return { stdout: "", stderr: "" };
     });
+  }
+
+  function notesWrites(): Array<{ args: string[]; input: string }> {
+    return mocks.exec.mock.calls
+      .map((call) => ({
+        args: call[1] as string[],
+        input: (call[2] as { input?: string } | undefined)?.input ?? "",
+      }))
+      .filter((call) =>
+        call.args.some((arg) => /\/notes(\/\d+)?$/.test(arg)) && call.args.includes("--method"),
+      );
+  }
+
+  it("posts a new summary and collapses the previous one", async () => {
+    mockNotesApi();
     const { postReviewStructured } = await import("../src/publisher.js");
 
     const result = await postReviewStructured({
@@ -479,33 +505,53 @@ describe("GitLab review publication", () => {
     });
 
     expect(result.success).toBe(true);
-    const inputs = mocks.exec.mock.calls.map((call) => ({
-      args: call[1] as string[],
-      input: (call[2] as { input?: string } | undefined)?.input ?? "",
+    expect(result.summaryPosted).toBe(true);
+    const writes = notesWrites();
+    expect(writes).toHaveLength(2);
+    expect(writes[0].args).toContain("POST");
+    expect(writes[0].input).toContain("**Reviewed commit:** `dddddddd`");
+    expect(writes[1].args).toContain("PUT");
+    expect(writes[1].args.some((arg) => arg.endsWith("/notes/7"))).toBe(true);
+    expect(writes[1].input).toBe(JSON.stringify({
+      body:
+        "<!-- hodor-review -->\n<!-- hodor:superseded -->\n" +
+        "_This Hodor review was superseded by a newer one: [latest review](https://gitlab.example.com/acme/app/-/merge_requests/42#note_500)._\n",
     }));
-    const summaryEdit = inputs.find((call) => call.args.some((arg) => arg.endsWith("/notes/7")));
-    expect(summaryEdit?.input).toContain("**Reviewed commit:** `dddddddd`");
-    const newNotes = inputs.filter(
-      (call) => call.args.some((arg) => arg.endsWith("/notes")) && call.args.includes("POST"),
-    );
-    expect(newNotes).toHaveLength(1);
-    expect(newNotes[0].input).toContain("Re-reviewed `dddddddd`: no new findings.");
   });
 
-  it("does not post a re-review note for the first summary", async () => {
+  it("reports the summary as posted when collapsing older summaries fails", async () => {
+    mockNotesApi({ failPut: true });
     const { postReviewStructured } = await import("../src/publisher.js");
 
-    await postReviewStructured({
+    const result = await postReviewStructured({
       prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42",
       review: review([]),
       reviewStyle: "hybrid",
       headSha: "d".repeat(40),
     });
 
-    const inputs = mocks.exec.mock.calls
-      .filter((call) => (call[1] as string[]).includes("POST"))
-      .map((call) => (call[2] as { input?: string } | undefined)?.input ?? "");
-    expect(inputs).toHaveLength(1);
-    expect(inputs[0]).not.toContain("Re-reviewed");
+    expect(result.success).toBe(true);
+    expect(result.summaryPosted).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
+  it("neither posts nor collapses summaries for a reused review", async () => {
+    mockNotesApi();
+    const { postReviewStructured } = await import("../src/publisher.js");
+
+    const result = await postReviewStructured({
+      prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42",
+      review: review([finding]),
+      reviewStyle: "hybrid",
+      headSha: "d".repeat(40),
+      workspacePath: "/workspace",
+      skipSummary: true,
+      skipInline: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.summaryPosted).toBe(false);
+    expect(notesWrites()).toEqual([]);
+    expect(mocks.execJson.mock.calls.some((call) => (call[1] as string[]).includes("--method"))).toBe(false);
   });
 });

@@ -70,6 +70,32 @@ describe("partitionNotesByProvenance", () => {
   });
 });
 
+describe("superseded summaries", () => {
+  const superseded =
+    "<!-- hodor-review -->\n<!-- hodor:superseded -->\n_This Hodor review was superseded by a newer one: [latest review](https://gitlab.example.com/acme/app/-/merge_requests/42#note_500)._\n";
+
+  it("stay Hodor state but give no sha or cache to consumers", () => {
+    const key = "k".repeat(64);
+    const notes: NoteEntry[] = [
+      { body: superseded, author: BOT_AUTHOR, updated_at: "2026-09-05T00:00:00Z" },
+      {
+        body: summaryBody(BOT_SHA, `${buildReviewCacheMarker(key, review)}\n`),
+        author: BOT_AUTHOR,
+        created_at: "2026-09-04T00:00:00Z",
+      },
+    ];
+
+    const { hodor, others } = partitionNotesByProvenance(notes, GITLAB_BOT);
+
+    expect(hodor).toHaveLength(2);
+    expect(others).toEqual([]);
+    expect(getHodorReviewShaCandidates(hodor)).toEqual([BOT_SHA]);
+    expect(findCachedReview(hodor, key)?.overall_explanation).toBe("Authentic review.");
+    expect(getHodorReviewShaCandidates(hodor.slice(0, 1))).toEqual([]);
+    expect(findCachedReview(hodor.slice(0, 1), key)).toBeNull();
+  });
+});
+
 describe("incremental base provenance", () => {
   beforeEach(() => mocks.exec.mockReset());
 

@@ -117,9 +117,9 @@ GitLab supports three review styles:
 
 | Style | Summary note | Inline comments | Use when |
 | --- | --- | --- | --- |
-| `hybrid` | One rolling note | Yes | Default. Inline findings plus compact cumulative status. |
+| `hybrid` | New note per review; older ones collapse to a link | Yes | Default. Inline findings plus compact cumulative status. |
 | `inline` | Only for clean reviews | Yes | Diff comments without a persistent status note when findings exist. |
-| `summary` | One rolling note | No | Inline comments are not wanted or not supported. |
+| `summary` | New note per review; older ones collapse to a link | No | Inline comments are not wanted or not supported. |
 
 Example:
 
