@@ -597,6 +597,7 @@ export async function reviewPr(opts: {
       description: "Submit the final structured review after the analysis is complete.",
       promptSnippet: "Submit the final structured review (call exactly once when done)",
       parameters: SUBMIT_REVIEW_SCHEMA,
+      constrainedSampling: { type: "json_schema", strict: "prefer" },
       execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
         submitReviewCalls++;
         if (submittedReview) {

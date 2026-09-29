@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { Value } from "@sinclair/typebox/value";
+import { Value } from "typebox/value";
 import { validateReviewOutput, SUBMIT_REVIEW_SCHEMA } from "../src/review.js";
 import type { ReviewOutput } from "../src/types.js";
 

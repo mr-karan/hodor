@@ -1,5 +1,5 @@
 import { isAbsolute } from "node:path";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import type { ReviewOutput, ReviewPriority } from "./types.js";
 
 const REVIEW_PRIORITY_TAGS = new Map<string, ReviewPriority>([
@@ -46,6 +46,30 @@ export const SUBMIT_REVIEW_SCHEMA = Type.Object(
   },
   { additionalProperties: false },
 );
+
+const NULLABLE_FINDING_FIELDS = ["existing_code", "suggestion"];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Models often send `null` for optional finding fields. The schema rejects null. Pi's
+ * validateToolArguments drops such fields on the tool path; Pi does not export that helper,
+ * so the text-fallback path applies the same normalization here.
+ */
+export function dropNullOptionalFields(value: unknown): unknown {
+  if (!isRecord(value) || !Array.isArray(value.findings)) return value;
+  const findings: unknown[] = value.findings.map((finding: unknown) => {
+    if (!isRecord(finding)) return finding;
+    return Object.fromEntries(
+      Object.entries(finding).filter(
+        ([key, fieldValue]) => !(NULLABLE_FINDING_FIELDS.includes(key) && fieldValue === null),
+      ),
+    );
+  });
+  return { ...value, findings };
+}
 
 export function validateReviewOutput(review: ReviewOutput): ReviewOutput {
   if (review.overall_explanation.trim().length === 0) {
