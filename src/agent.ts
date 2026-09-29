@@ -520,8 +520,11 @@ export async function reviewPr(opts: {
     });
 
     const startTime = Date.now();
+    // Pi defaults cacheWarming to "streaming", which can send extra paid
+    // requests. A one-shot CI review has no later turn to warm for.
     const settingsManager = SettingsManager.inMemory({
       compaction: { enabled: true },
+      cacheWarming: "off",
     });
     const skillPaths = [join(workspacePath, ".agents", "skills")]
       .filter((p) => existsSync(p));

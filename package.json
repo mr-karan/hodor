@@ -46,8 +46,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.95.2",
-    "@earendil-works/pi-ai": "^0.82.1",
-    "@earendil-works/pi-coding-agent": "^0.82.1",
+    "@earendil-works/pi-ai": "0.87.1",
+    "@earendil-works/pi-coding-agent": "0.87.1",
     "@sinclair/typebox": "^0.34.49",
     "chalk": "^5.6.2",
     "commander": "^14.0.3",
