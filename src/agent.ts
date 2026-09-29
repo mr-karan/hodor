@@ -82,13 +82,19 @@ import type {
 } from "./types.js";
 
 export interface AgentProgressEvent {
-  type: "tool_start" | "tool_end" | "thinking" | "turn_start" | "turn_end" | "agent_start" | "agent_end" | "text_delta" | "thinking_delta" | "tool_result";
+  type: "tool_start" | "tool_end" | "thinking" | "turn_start" | "turn_end" | "agent_start" | "agent_end" | "text_delta" | "thinking_delta" | "tool_result" | "retry" | "compaction";
   toolName?: string;
   toolArgs?: string;
   isError?: boolean;
   turnIndex?: number;
   delta?: string;
   result?: string;
+  phase?: "start" | "end";
+  attempt?: number;
+  maxAttempts?: number;
+  delayMs?: number;
+  reason?: string;
+  success?: boolean;
 }
 
 
@@ -560,6 +566,8 @@ export async function reviewPr(opts: {
     const settingsManager = SettingsManager.inMemory({
       compaction: { enabled: true },
       cacheWarming: "off",
+      // Bound SDK retry waits so a throttled provider cannot stall a CI job.
+      retry: { maxRetries: 3, maxAgentDelayMs: 30_000 },
     });
     const skillPaths = [join(workspacePath, ".agents", "skills")]
       .filter((p) => existsSync(p));
@@ -741,6 +749,48 @@ export async function reviewPr(opts: {
             toolName: event.toolName,
             isError: event.isError,
             result: formatToolResult(event.result),
+          });
+          break;
+        case "auto_retry_start":
+          logger.info(
+            `Retrying LLM request (attempt ${event.attempt}/${event.maxAttempts}) in ${event.delayMs}ms: ${event.errorMessage}`,
+          );
+          onEvent?.({
+            type: "retry",
+            phase: "start",
+            attempt: event.attempt,
+            maxAttempts: event.maxAttempts,
+            delayMs: event.delayMs,
+            reason: event.errorMessage,
+          });
+          break;
+        case "auto_retry_end":
+          logger.info(
+            event.success
+              ? `LLM retry succeeded on attempt ${event.attempt}`
+              : `LLM retries exhausted after ${event.attempt} attempt(s): ${event.finalError ?? "unknown error"}`,
+          );
+          onEvent?.({
+            type: "retry",
+            phase: "end",
+            attempt: event.attempt,
+            success: event.success,
+            reason: event.finalError,
+          });
+          break;
+        case "compaction_start":
+          logger.info(`Compacting context (reason: ${event.reason})`);
+          onEvent?.({ type: "compaction", phase: "start", reason: event.reason });
+          break;
+        case "compaction_end":
+          logger.info(
+            `Compaction finished (reason: ${event.reason}, aborted: ${event.aborted}, will retry: ${event.willRetry})`,
+          );
+          onEvent?.({
+            type: "compaction",
+            phase: "end",
+            reason: event.reason,
+            success: !event.aborted && event.errorMessage === undefined,
           });
           break;
         case "message_start":

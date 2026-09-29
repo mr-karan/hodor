@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { reviewPr } from "../src/agent.js";
+import { reviewPr, type AgentProgressEvent } from "../src/agent.js";
+import { logger } from "../src/utils/logger.js";
 
 const mocks = vi.hoisted(() => ({
   createAgentSession: vi.fn(),
   exec: vi.fn(),
   prompts: [] as string[],
   hiddenUsage: 0,
+  settingsOptions: [] as unknown[],
+  extraEvents: [] as Array<Record<string, unknown>>,
   resourceLoaderOptions: [] as Array<{
     systemPromptOverride?: () => string;
     appendSystemPromptOverride?: () => string[];
@@ -84,7 +87,10 @@ vi.mock("@earendil-works/pi-coding-agent", () => {
       inMemory: () => ({}),
     },
     SettingsManager: {
-      inMemory: () => ({}),
+      inMemory: (options: unknown) => {
+        mocks.settingsOptions.push(options);
+        return {};
+      },
     },
   };
 });
@@ -93,6 +99,8 @@ describe("reviewPr submit_review recovery", () => {
   beforeEach(() => {
     mocks.prompts.length = 0;
     mocks.hiddenUsage = 0;
+    mocks.settingsOptions.length = 0;
+    mocks.extraEvents.length = 0;
     mocks.resourceLoaderOptions.length = 0;
     mocks.promptResponses = [
       { kind: "text", text: "I found no issues." },
@@ -189,6 +197,7 @@ describe("reviewPr submit_review recovery", () => {
             mocks.prompts.push(prompt);
             emit({ type: "agent_start" });
             emit({ type: "turn_start" });
+            for (const extra of mocks.extraEvents) emit(extra);
 
             const response = mocks.promptResponses[mocks.prompts.length - 1] ?? {
               kind: "text",
@@ -369,5 +378,51 @@ describe("reviewPr submit_review recovery", () => {
       totalTokens: 104,
       cost: 1,
     });
+  });
+
+  it("bounds SDK retry waits in the session settings", async () => {
+    await reviewPr({
+      localMode: true,
+      workspaceDir: "/tmp/hodor-recovery",
+      cleanup: false,
+      model: "anthropic/test-model",
+    });
+
+    expect(mocks.settingsOptions[0]).toMatchObject({
+      compaction: { enabled: true },
+      cacheWarming: "off",
+      retry: { maxRetries: 3, maxAgentDelayMs: 30_000 },
+    });
+  });
+
+  it("reports SDK retry and compaction events as progress events and log lines", async () => {
+    mocks.promptResponses = [{ kind: "tool" }];
+    mocks.extraEvents = [
+      { type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: "429 overloaded" },
+      { type: "auto_retry_end", success: true, attempt: 1 },
+      { type: "compaction_start", reason: "threshold" },
+      { type: "compaction_end", reason: "threshold", result: undefined, aborted: false, willRetry: false },
+    ];
+    const infoSpy = vi.spyOn(logger, "info");
+    const events: AgentProgressEvent[] = [];
+
+    await reviewPr({
+      localMode: true,
+      workspaceDir: "/tmp/hodor-recovery",
+      cleanup: false,
+      model: "anthropic/test-model",
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(events.filter((e) => e.type === "retry" || e.type === "compaction")).toEqual([
+      { type: "retry", phase: "start", attempt: 1, maxAttempts: 3, delayMs: 2000, reason: "429 overloaded" },
+      { type: "retry", phase: "end", attempt: 1, success: true, reason: undefined },
+      { type: "compaction", phase: "start", reason: "threshold" },
+      { type: "compaction", phase: "end", reason: "threshold", success: true },
+    ]);
+    const lines = infoSpy.mock.calls.map(([msg]) => msg);
+    expect(lines).toContain("Retrying LLM request (attempt 1/3) in 2000ms: 429 overloaded");
+    expect(lines).toContain("Compacting context (reason: threshold)");
+    infoSpy.mockRestore();
   });
 });

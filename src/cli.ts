@@ -269,6 +269,16 @@ program
             streamWrite(chalk.dim(event.delta));
           }
           break;
+        case "retry":
+          if (event.phase === "start") {
+            streamLog(chalk.yellow(`  ↻ Retry ${event.attempt}/${event.maxAttempts} in ${event.delayMs}ms: ${event.reason}`));
+          } else {
+            streamLog(chalk.dim(`  ↻ Retry ${event.success ? "succeeded" : "failed"} (attempt ${event.attempt})`));
+          }
+          break;
+        case "compaction":
+          streamLog(chalk.dim(`  ⧉ Compaction ${event.phase === "start" ? "started" : "finished"} (${event.reason})`));
+          break;
         case "agent_end":
           streamLog(chalk.dim("\n▶ Extracting review..."));
           break;
