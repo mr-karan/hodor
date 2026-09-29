@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { resolve } from "node:path";
 import { logger } from "./utils/logger.js";
+import type { TrackedTree } from "./review-tools.js";
 import type { ReviewOutput } from "./types.js";
 
 /**
@@ -70,12 +71,6 @@ function indexFile(content: string): IndexedLine[] {
     }
   }
   return result;
-}
-
-/** True when `filePath` resolves to a location inside `root` (blocks path traversal). */
-function isWithinWorkspace(root: string, filePath: string): boolean {
-  const target = resolve(filePath);
-  return target === root || target.startsWith(root + sep);
 }
 
 /** All [start,end] ranges (1-indexed, inclusive) where `target` matches a consecutive run. */
@@ -211,29 +206,36 @@ export function parseChangedLines(diffText: string): Map<string, Set<number>> {
  * Resolve line ranges for every finding in a review against the checked-out
  * workspace. Returns a new review with corrected ranges plus resolution stats.
  * Findings are never dropped — on any miss or read error the model's range is kept.
+ *
+ * The model supplies absolute_file_path, so a malformed or injected payload
+ * must not read arbitrary files: only tracked regular files inside the
+ * repository (after symlink resolution) are read.
  */
 export function resolveReviewLocations(
   review: ReviewOutput,
-  opts: { workspacePath?: string | null; diffText?: string | null },
+  opts: { trackedTree: TrackedTree; diffText?: string | null },
 ): { review: ReviewOutput; stats: ResolveStats } {
   const stats: ResolveStats = { total: 0, noSnippet: 0, confirmed: 0, corrected: 0, unmatched: 0 };
   if (review.findings.length === 0) return { review, stats };
 
+  const { trackedTree } = opts;
   const changedByFile = opts.diffText ? parseChangedLines(opts.diffText) : new Map<string, Set<number>>();
-  const fileCache = new Map<string, string | null>();
-  const workspaceRoot = opts.workspacePath ? resolve(opts.workspacePath) : null;
+  const fileCache = new Map<string, { content: string } | { content: null; reason: string }>();
 
-  const readFile = (path: string): string | null => {
-    if (fileCache.has(path)) return fileCache.get(path) ?? null;
-    let content: string | null = null;
+  const readTrackedFile = (path: string): { content: string } | { content: null; reason: string } => {
+    const cached = fileCache.get(path);
+    if (cached) return cached;
+    let result: { content: string } | { content: null; reason: string };
     try {
-      const buf = readFileSync(path);
-      if (buf.byteLength <= MAX_RESOLVE_BYTES) content = buf.toString("utf-8");
-    } catch {
-      content = null;
+      const entry = trackedTree.resolve(path, "file");
+      result = entry.size <= MAX_RESOLVE_BYTES
+        ? { content: readFileSync(entry.absolutePath, "utf-8") }
+        : { content: null, reason: `file is larger than ${MAX_RESOLVE_BYTES} bytes` };
+    } catch (err) {
+      result = { content: null, reason: err instanceof Error ? err.message : String(err) };
     }
-    fileCache.set(path, content);
-    return content;
+    fileCache.set(path, result);
+    return result;
   };
 
   const findings = review.findings.map((finding) => {
@@ -244,33 +246,19 @@ export function resolveReviewLocations(
       return finding;
     }
 
-    // Only resolve against files inside the review workspace. The model supplies
-    // absolute_file_path, so a malformed or injected payload must not be able to
-    // read arbitrary files on disk.
-    if (workspaceRoot && !isWithinWorkspace(workspaceRoot, loc.absolute_file_path)) {
+    const file = readTrackedFile(loc.absolute_file_path);
+    if (file.content === null) {
       stats.unmatched++;
       logger.warn(
-        `Location resolution: ${loc.absolute_file_path} is outside the workspace for "${finding.title}"; keeping model range`,
+        `Location resolution: cannot use ${loc.absolute_file_path} for "${finding.title}" (${file.reason}); keeping model range`,
       );
       return finding;
     }
+    const fileContent = file.content;
 
-    const fileContent = readFile(loc.absolute_file_path);
-    if (fileContent === null) {
-      stats.unmatched++;
-      logger.warn(`Location resolution: could not read ${loc.absolute_file_path} for "${finding.title}"`);
-      return finding;
-    }
-
-    // Match the diff's repo-relative path against the file's tail (paths in the
-    // diff are repo-relative; absolute_file_path is workspace-absolute).
-    let changedLines: Set<number> | undefined;
-    for (const [relPath, lines] of changedByFile) {
-      if (loc.absolute_file_path.endsWith(`/${relPath}`) || loc.absolute_file_path === relPath) {
-        changedLines = lines;
-        break;
-      }
-    }
+    // Diff paths are repository-relative; absolute_file_path is workspace-absolute.
+    const relPath = trackedTree.toRelative(resolve(trackedTree.root, loc.absolute_file_path));
+    const changedLines = relPath === null ? undefined : changedByFile.get(relPath);
 
     const result = resolveLineRange({
       existingCode,

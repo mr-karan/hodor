@@ -20,7 +20,6 @@ import {
 } from "./gitea.js";
 import { setupWorkspace, cleanupWorkspace } from "./workspace.js";
 import { buildPrReviewPrompt } from "./prompt.js";
-import { commandOnPath } from "./utils/exec.js";
 import {
   addOpenAiBedrockReasoning,
   buildBedrockArnModel,
@@ -40,6 +39,7 @@ import {
 import { formatMetricsMarkdown, printMetrics } from "./metrics.js";
 import { SUBMIT_REVIEW_SCHEMA, validateReviewOutput } from "./review.js";
 import { resolveReviewLocations } from "./resolve-location.js";
+import { createReviewToolset, REVIEW_TOOL_NAMES, type ReviewToolset } from "./review-tools.js";
 import { buildReviewSystemPrompt } from "./system-prompt.js";
 import {
   loadDefaultReviewInstructions,
@@ -132,6 +132,29 @@ export function wrapBedrockStream(
       ...(bedrockTags ? { requestMetadata: bedrockTags } : {}),
       ...(onPayload ? { onPayload } : {}),
     });
+  };
+}
+
+/**
+ * Tool names and definitions for the review session.
+ *
+ * Pi filters customTools through the same `tools` allowlist as its built-ins
+ * (_refreshToolRegistry in agent-session.js), and a custom definition replaces
+ * a built-in of the same name. So every tool, including submit_review, is
+ * named here, and read/grep/find/ls resolve to Hodor's confined versions.
+ * The model gets no shell.
+ */
+export function getReviewSessionTools(opts: {
+  singleTurn: boolean;
+  reviewTools: ToolDefinition[];
+  submitReviewTool: ToolDefinition;
+}): { tools: string[]; customTools: ToolDefinition[] } {
+  if (opts.singleTurn) {
+    return { tools: ["submit_review"], customTools: [opts.submitReviewTool] };
+  }
+  return {
+    tools: [...REVIEW_TOOL_NAMES, "submit_review"],
+    customTools: [...opts.reviewTools, opts.submitReviewTool],
   };
 }
 
@@ -371,6 +394,7 @@ export async function reviewPr(opts: {
   }
 
   let activeSession: AgentSession | undefined;
+  let reviewToolset: ReviewToolset | undefined;
 
   try {
     let mrMetadata: MrMetadata | null = null;
@@ -502,6 +526,7 @@ export async function reviewPr(opts: {
     // Pre-fetch diff for embedding in prompt (avoids per-file tool calls)
     const MAX_EMBED_BYTES = 200 * 1024; // 200KB
     let embeddedDiff: string | null = null;
+    let rawReviewDiff: string;
     let reviewDiff: string | null = null;
     let diffStats: DiffStats | null = null;
     let changedFiles: string[] = [];
@@ -515,6 +540,7 @@ export async function reviewPr(opts: {
         localMode,
       });
       const { stdout: rawDiff } = await exec("git", diffArgs, { cwd: workspacePath });
+      rawReviewDiff = rawDiff;
       const { filtered: filteredDiff, skippedFiles } = filterEmbeddedDiff(rawDiff);
       if (skippedFiles.length > 0) {
         logger.info(`Filtered ${skippedFiles.length} file(s) from embedded diff: ${skippedFiles.join(", ")}`);
@@ -526,10 +552,12 @@ export async function reviewPr(opts: {
         embeddedDiff = filteredDiff;
         logger.info(`Embedding diff in prompt (${Buffer.byteLength(filteredDiff, "utf-8")} bytes, raw: ${Buffer.byteLength(rawDiff, "utf-8")} bytes)`);
       } else {
-        logger.info(`Diff too large to embed (${Buffer.byteLength(filteredDiff, "utf-8")} bytes filtered, ${Buffer.byteLength(rawDiff, "utf-8")} bytes raw), using command mode`);
+        logger.info(`Diff too large to embed (${Buffer.byteLength(filteredDiff, "utf-8")} bytes filtered, ${Buffer.byteLength(rawDiff, "utf-8")} bytes raw), serving it through git_diff`);
       }
     } catch (err) {
-      logger.warn(`Failed to pre-fetch diff, falling back to command mode: ${err}`);
+      // The agent has no shell, so git_diff is its only view of the change.
+      // Without this diff there is nothing to review.
+      throw new Error(`Failed to compute the review diff: ${err instanceof Error ? err.message : err}`);
     }
 
     const thinkingLevel = selectReasoningEffort({
@@ -556,15 +584,12 @@ export async function reviewPr(opts: {
       );
     }
 
-    // Build the dynamic review task sent as the first user message.
-    // pi's `find` tool shells out to fd (see core/tools/find.js). If fd is
-    // missing every call fails, so drop the tool instead of offering a broken
-    // one and paying for the failed turns.
-    const findToolAvailable = commandOnPath("fd") || commandOnPath("fdfind");
-    if (!findToolAvailable) {
-      logger.warn("fd not found on PATH; disabling the agent's `find` tool");
-    }
+    // The review tools confine the model to the tracked tree. Location
+    // resolution uses the same manifest, so build it on the fast path too.
+    reviewToolset = await createReviewToolset({ workspacePath, reviewDiff: rawReviewDiff });
+    logger.info(`Review tools confined to ${reviewToolset.tree.files.length} tracked file(s)`);
 
+    // Build the dynamic review task sent as the first user message.
     const prompt = buildPrReviewPrompt({
       prUrl: prUrl ?? `local diff (against ${targetBranch})`,
       platform,
@@ -577,7 +602,6 @@ export async function reviewPr(opts: {
       changedFiles,
       localMode,
       singleTurn,
-      findToolAvailable,
     });
 
     const startTime = Date.now();
@@ -663,21 +687,11 @@ export async function reviewPr(opts: {
       cwd: workspacePath,
       model: piModel,
       thinkingLevel,
-      // pi v0.74 filters customTools through the same allowlist as built-ins
-      // (see _refreshToolRegistry in @earendil-works/pi-coding-agent's
-      // agent-session.ts). The submit_review custom tool must be named here
-      // or the LLM never sees it and the agent loop exits without calling it.
-      tools: singleTurn
-        ? ["submit_review"]
-        : [
-          "read",
-          "bash",
-          "grep",
-          ...(findToolAvailable ? ["find"] : []),
-          "ls",
-          "submit_review",
-        ],
-      customTools: [submitReviewTool],
+      ...getReviewSessionTools({
+        singleTurn,
+        reviewTools: reviewToolset.definitions,
+        submitReviewTool,
+      }),
       modelRuntime,
       sessionManager: SessionManager.inMemory(),
       settingsManager,
@@ -707,13 +721,7 @@ export async function reviewPr(opts: {
     function formatToolArgs(_toolName: string, args: unknown): string {
       if (typeof args === "string") return args.slice(0, 200);
       const obj = args as Record<string, unknown> | undefined;
-      if (!obj) return "";
-      // bash tool: show the command, strip workspace prefix
-      if (obj.command) {
-        return String(obj.command)
-          .replace(new RegExp(`cd ${workspacePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} && `), "")
-          .slice(0, 200);
-      }
+      if (!obj || Object.keys(obj).length === 0) return "";
       // grep/find: show pattern + path
       if (obj.pattern) {
         const path = obj.path ? ` in ${obj.path}` : "";
@@ -895,7 +903,7 @@ export async function reviewPr(opts: {
     // Resolve each finding's line_range from its quoted snippet against the
     // checked-out file, correcting model line-number errors before posting.
     const { review, stats: locationStats } = resolveReviewLocations(rawReview, {
-      workspacePath,
+      trackedTree: reviewToolset.tree,
       diffText: embeddedDiff,
     });
     if (locationStats.corrected > 0 || locationStats.unmatched > 0) {
@@ -980,6 +988,7 @@ export async function reviewPr(opts: {
     };
   } finally {
     activeSession?.dispose();
+    reviewToolset?.dispose();
 
     // Restore mutated env vars
     for (const [key, val] of Object.entries(envSnapshot)) {

@@ -19,7 +19,6 @@ export function buildPrReviewPrompt(opts: {
   changedFiles?: string[];
   localMode?: boolean;
   singleTurn?: boolean;
-  findToolAvailable?: boolean;
 }): string {
   const {
     prUrl,
@@ -33,7 +32,6 @@ export function buildPrReviewPrompt(opts: {
     changedFiles = [],
     localMode = false,
     singleTurn = false,
-    findToolAvailable = false,
   } = opts;
   const rebasedGitlabReview = platform === "gitlab" && reviewDiffMode === "snapshot";
   const hasPreviousReviewDelta = Boolean(previousReviewSha && !rebasedGitlabReview);
@@ -46,8 +44,8 @@ export function buildPrReviewPrompt(opts: {
     throw new Error(`Failed to load the review task template: ${error}`);
   }
 
-  // Validate ref inputs to prevent shell injection via branch/SHA names.
-  // Block shell metacharacters while allowing valid git ref chars (@, +, ~, ^, etc.)
+  // Validate ref inputs before they appear in the prompt. Block shell
+  // metacharacters while allowing valid git ref chars (@, +, ~, ^, etc.)
   const dangerousChars = /[;\|`$&<>(){}\n\r\0\\!]/;
   if (dangerousChars.test(targetBranch)) {
     throw new Error(`Invalid target branch name: ${targetBranch}`);
@@ -67,8 +65,8 @@ export function buildPrReviewPrompt(opts: {
     reviewDiffMode,
     localMode,
   });
-  const gitDiffCmd = `git ${diffArgs.join(" ")}`;
-  const prDiffCmd = `${gitDiffCmd} --name-only`;
+  // The range git_diff serves, for the model's orientation only.
+  const diffRange = diffArgs.filter((arg) => arg !== "--no-pager" && arg !== "diff").join(" ");
   if (hasPreviousReviewDelta) {
     logger.info(`${reviewDiffMode === "snapshot" ? "Snapshot" : "Incremental"} review: diffing from ${previousReviewSha?.slice(0, 8)} to HEAD`);
   } else if (rebasedGitlabReview) {
@@ -134,10 +132,11 @@ export function buildPrReviewPrompt(opts: {
     embeddedDiffSection =
       "## Full Diff (Pre-fetched)\n\n" +
       "The complete diff for this PR is provided below. Analyze it directly. " +
-      "Do not run another command to list changed files. " +
+      "Do not call `git_diff` to list the changed files again. " +
       (oneTurn
         ? "This diff is small and self-contained; it is the complete basis for your review.\n"
-        : "Use `read` or `grep` only if you need additional file context beyond what the diff shows.\n") +
+        : "Use `read` or `grep` only if you need additional file context beyond what the diff shows; " +
+          "they cover every tracked file in the repository.\n") +
       changedFileManifest + "\n" +
       "````diff\n" + embeddedDiff + "\n````\n";
 
@@ -179,61 +178,57 @@ export function buildPrReviewPrompt(opts: {
 
     diffFetchInstructions =
       "## Step 1: List Changed Files (MANDATORY FIRST STEP)\n\n" +
-      "**Run this command FIRST to get the list of changed files:**\n" +
-      "```bash\n" + prDiffCmd + "\n```\n\n" +
-      "This lists ONLY the filenames changed in this PR. **Do NOT dump the entire diff here** - " +
-      "you'll inspect each file individually in Step 2. Only review files that appear in this output.\n\n" +
+      "**Call `git_diff` with no arguments FIRST to get the list of changed files.**\n\n" +
+      "This lists ONLY the files changed in this PR, with added and removed line counts. " +
+      "**Do NOT try to load the entire diff at once** - you'll inspect each file individually in Step 2. " +
+      "Only review files that appear in this list.\n\n" +
       "## Step 2: Review Changed Files Only\n\n" +
       "### Critical Rules\n" +
-      "- ONLY review files that appear in the diff from Step 1\n" +
+      "- ONLY review files that appear in the list from Step 1\n" +
       "- ONLY analyze actual code changes (+ and - lines in the diff)\n" +
-      "- Use the most reliable diff command: `" + gitDiffCmd + "`\n" +
+      "- Call `git_diff` with `path` set to one changed file to see its changes\n" +
       "- NEVER review files not in the diff\n" +
       "- NEVER flag \"files will be deleted when merging\" (outdated branch)\n" +
       "- NEVER flag \"dependency version downgrade\" (branch not rebased)\n" +
       `- NEVER compare entire codebase to ${targetBranch} - DIFF ONLY\n\n` +
-      "### Git Diff Command\n\n" +
-      "**Most reliable command to see changes:**\n" +
-      "```bash\n" + gitDiffCmd + "\n```\n\n" +
+      "### Diff Range\n\n" +
+      `\`git_diff\` serves \`git diff ${diffRange}\`. You cannot change the range.\n\n` +
       diffExplanation;
 
     reviewProcessSection =
       "## Review Process\n\n" +
       "**Efficient Sequential Workflow:**\n\n" +
-      `1. **List files first**: Run \`${prDiffCmd}\` to get the list of changed files (NOT full diff)\n` +
-      `2. **Per-file analysis**: For each file, run \`${gitDiffCmd} -- path/to/file\` to see its specific changes\n` +
-      "3. **Batch pattern search**: Use `grep` across multiple files to find common bug patterns (null, undefined, TODO, FIXME, etc.)\n" +
+      "1. **List files first**: Call `git_diff` with no arguments to get the list of changed files (NOT the full diff)\n" +
+      "2. **Per-file analysis**: For each file, call `git_diff` with `path` set to that file to see its specific changes\n" +
+      "3. **Batch pattern search**: Use `grep` across the repository to find common bug patterns (null, undefined, TODO, FIXME, etc.)\n" +
       "4. **Selective deep dive**: Only use `read` to read full file context when the diff alone is insufficient\n" +
       "5. **Group related files**: Analyze related files together (e.g., implementation + tests, interfaces + implementations)\n" +
       "6. **Avoid redundancy**: Don't re-read files unnecessarily; make decisions based on diff context\n";
 
     startInstruction =
-      `Start by running \`${prDiffCmd}\` to list the changed files, then analyze each file individually using \`${gitDiffCmd} -- path/to/file\`.`;
+      "Start by calling `git_diff` with no arguments to list the changed files, then call `git_diff` with `path` for each file.";
   }
 
   // The fast path leaves submit_review as the only tool, so advertising the
-  // inspection tools would invite calls that cannot succeed. For the same
-  // reason `find` is listed only when its backing fd binary exists.
+  // inspection tools would invite calls that cannot succeed.
   runtimeToolsSection = oneTurn
     ? "## Runtime Tools\n\n" +
       "- `submit_review` submits the completed review. It is the only tool available for this review.\n"
     : "## Runtime Tools\n\n" +
-      "This list is exhaustive. No other tool is available.\n\n" +
-      `- \`${prDiffCmd}\` lists the changed files when a diff is not embedded.\n` +
-      `- \`${gitDiffCmd} -- path/to/file\` shows the delta for one changed file.\n` +
-      "- `read` provides bounded surrounding context.\n" +
-      "- `grep` searches for directly relevant code and contracts.\n" +
-      (findToolAvailable
-        ? "- `find` locates files by glob when the path is unknown.\n"
-        : "") +
-      "- `ls` lists the entries of one directory.\n" +
-      "- `bash` runs the git diff commands above and other read-only shell inspection.\n" +
-      "- `submit_review` submits the completed review.\n";
+      "This list is exhaustive. No other tool is available, and there is no shell.\n\n" +
+      "- `git_diff` lists the changed files (no arguments) or shows one changed file's diff (`path`), including deleted files.\n" +
+      "- `read` provides bounded surrounding context from any tracked file.\n" +
+      "- `grep` searches for directly relevant code and contracts across all tracked files.\n" +
+      "- `find` locates tracked files by glob when the path is unknown.\n" +
+      "- `ls` lists the tracked entries of one directory.\n" +
+      "- `submit_review` submits the completed review.\n\n" +
+      "`read`, `grep`, `find`, and `ls` work anywhere in the tracked repository, not only on changed files: " +
+      "use them for callers, definitions, tests, and configuration. They cannot see untracked or gitignored files " +
+      "(such as installed dependencies or build output), `.git`, or paths outside the repository. " +
+      "When a tool rejects a path, its error says why; do not retry the same path.\n";
 
   return templateText
     .replace(/\{pr_url\}/g, prUrl)
-    .replace(/\{pr_diff_cmd\}/g, prDiffCmd)
-    .replace(/\{git_diff_cmd\}/g, gitDiffCmd)
     .replace(/\{mr_context_section\}/g, contextSection)
     .replace(/\{mr_notes_section\}/g, notesSection)
     .replace(/\{mr_reminder_section\}/g, reminderSection)
