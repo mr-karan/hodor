@@ -1,4 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { reviewPr, type AgentProgressEvent } from "../src/agent.js";
 import { logger } from "../src/utils/logger.js";
 
@@ -41,13 +45,15 @@ const INVALID_REVIEW_TEXT = JSON.stringify({
   overall_explanation: "The change introduces a crash on a valid error path.",
 });
 
-vi.mock("../src/utils/exec.js", () => ({
+vi.mock("../src/utils/exec.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/utils/exec.js")>()),
   exec: mocks.exec,
   execJson: vi.fn(async () => ({})),
-  commandOnPath: vi.fn(() => true),
 }));
 
-vi.mock("@earendil-works/pi-coding-agent", () => {
+// The confined review tools are built from Pi's real tool factories; only the
+// session, runtime, and loader are faked.
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
   class MockResourceLoader {
     constructor(opts: {
       systemPromptOverride?: () => string;
@@ -63,6 +69,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => {
   }
 
   return {
+    ...(await importOriginal<typeof import("@earendil-works/pi-coding-agent")>()),
     createAgentSession: mocks.createAgentSession,
     DefaultResourceLoader: MockResourceLoader,
     getAgentDir: () => "/tmp/pi-agent",
@@ -95,6 +102,22 @@ vi.mock("@earendil-works/pi-coding-agent", () => {
   };
 });
 
+// The review tools list tracked files with real git, so the workspace is a
+// real repository.
+let workspaceDir = "";
+
+beforeAll(() => {
+  workspaceDir = mkdtempSync(join(tmpdir(), "hodor-recovery-"));
+  mkdirSync(join(workspaceDir, "src"));
+  writeFileSync(join(workspaceDir, "src", "example.ts"), "const value = 2;\n");
+  execFileSync("git", ["init", "-q"], { cwd: workspaceDir });
+  execFileSync("git", ["add", "."], { cwd: workspaceDir });
+});
+
+afterAll(() => {
+  rmSync(workspaceDir, { recursive: true, force: true });
+});
+
 describe("reviewPr submit_review recovery", () => {
   beforeEach(() => {
     mocks.prompts.length = 0;
@@ -111,7 +134,7 @@ describe("reviewPr submit_review recovery", () => {
 
     mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
       if (args.includes("--show-toplevel")) {
-        return { stdout: "/tmp/hodor-recovery\n", stderr: "" };
+        return { stdout: `${workspaceDir}\n`, stderr: "" };
       }
       if (args.includes("diff")) {
         return {
@@ -264,7 +287,7 @@ describe("reviewPr submit_review recovery", () => {
 
     await reviewPr({
       localMode: true,
-      workspaceDir: "/tmp/hodor-recovery",
+      workspaceDir,
       cleanup: false,
       model: "anthropic/test-model",
       reviewInstructions: customProfile,
@@ -288,7 +311,7 @@ describe("reviewPr submit_review recovery", () => {
   it("asks the same session to recover when the first run ends without submit_review", async () => {
     const result = await reviewPr({
       localMode: true,
-      workspaceDir: "/tmp/hodor-recovery",
+      workspaceDir,
       cleanup: false,
       model: "anthropic/test-model",
     });
@@ -309,7 +332,7 @@ describe("reviewPr submit_review recovery", () => {
 
     const result = await reviewPr({
       localMode: true,
-      workspaceDir: "/tmp/hodor-recovery",
+      workspaceDir,
       cleanup: false,
       model: "anthropic/test-model",
     });
@@ -330,7 +353,7 @@ describe("reviewPr submit_review recovery", () => {
 
     const result = await reviewPr({
       localMode: true,
-      workspaceDir: "/tmp/hodor-recovery",
+      workspaceDir,
       cleanup: false,
       model: "anthropic/test-model",
     });
@@ -349,7 +372,7 @@ describe("reviewPr submit_review recovery", () => {
 
     await expect(reviewPr({
       localMode: true,
-      workspaceDir: "/tmp/hodor-recovery",
+      workspaceDir,
       cleanup: false,
       model: "anthropic/test-model",
     })).rejects.toThrow(
@@ -363,7 +386,7 @@ describe("reviewPr submit_review recovery", () => {
 
     const result = await reviewPr({
       localMode: true,
-      workspaceDir: "/tmp/hodor-recovery",
+      workspaceDir,
       cleanup: false,
       model: "anthropic/test-model",
     });
@@ -383,7 +406,7 @@ describe("reviewPr submit_review recovery", () => {
   it("bounds SDK retry waits in the session settings", async () => {
     await reviewPr({
       localMode: true,
-      workspaceDir: "/tmp/hodor-recovery",
+      workspaceDir,
       cleanup: false,
       model: "anthropic/test-model",
     });
@@ -408,7 +431,7 @@ describe("reviewPr submit_review recovery", () => {
 
     await reviewPr({
       localMode: true,
-      workspaceDir: "/tmp/hodor-recovery",
+      workspaceDir,
       cleanup: false,
       model: "anthropic/test-model",
       onEvent: (event) => events.push(event),

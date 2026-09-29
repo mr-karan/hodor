@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { accessSync, constants } from "node:fs";
+import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 
@@ -84,22 +84,21 @@ export async function execJson<T = Record<string, unknown>>(
 }
 
 /**
- * Check whether a command resolves to an executable on PATH.
+ * Resolve a command to the first executable file on Hodor's own PATH.
  *
- * Used to avoid advertising agent tools whose backing binary is missing: pi's
- * `find` tool shells out to `fd`, and an exposed-but-broken tool costs a turn
- * and tokens on every call the model makes.
+ * The review tools call git by absolute path with a fixed child PATH, so a
+ * repository under review cannot change which binary runs.
  */
-export function commandOnPath(cmd: string): boolean {
-  return (process.env.PATH ?? "")
-    .split(delimiter)
-    .filter((dir) => dir !== "")
-    .some((dir) => {
-      try {
-        accessSync(join(dir, cmd), constants.X_OK);
-        return true;
-      } catch {
-        return false;
-      }
-    });
+export function findExecutable(cmd: string): string | null {
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    if (dir === "") continue;
+    const candidate = join(dir, cmd);
+    try {
+      accessSync(candidate, constants.X_OK);
+      if (statSync(candidate).isFile()) return candidate;
+    } catch {
+      // Not in this PATH entry.
+    }
+  }
+  return null;
 }

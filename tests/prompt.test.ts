@@ -97,11 +97,25 @@ describe("buildPrReviewPrompt", () => {
       changedFiles: ["src/a.ts"],
     });
 
-    expect(prompt).toContain(`git --no-pager diff ${sha} HEAD`);
     expect(prompt).not.toContain(`${sha}...HEAD`);
     expect(prompt).toContain("Snapshot Delta Mode");
     expect(prompt).toContain("Changed files (1)");
-    expect(prompt).toContain("Do not run another command to list changed files");
+    expect(prompt).toContain("Do not call `git_diff` to list the changed files again");
+  });
+
+  it("names the snapshot range git_diff serves when the diff is not embedded", () => {
+    const sha = "1".repeat(40);
+    const prompt = buildPrReviewPrompt({
+      prUrl: "https://github.com/acme/hodor/pull/42",
+      platform: "github",
+      targetBranch: "main",
+      previousReviewSha: sha,
+      reviewDiffMode: "snapshot",
+    });
+
+    expect(prompt).toContain(`\`git_diff\` serves \`git diff ${sha} HEAD\``);
+    expect(prompt).not.toContain(`${sha}...HEAD`);
+    expect(prompt).toContain("Call `git_diff` with no arguments FIRST");
   });
 
   it("uses the current GitLab MR base after a rebased follow-up review", () => {
@@ -116,8 +130,8 @@ describe("buildPrReviewPrompt", () => {
       reviewDiffMode: "snapshot",
     });
 
-    expect(prompt).toContain(`git --no-pager diff ${currentMrBaseSha} HEAD`);
-    expect(prompt).not.toContain(`git --no-pager diff ${previousReviewSha} HEAD`);
+    expect(prompt).toContain(`git diff ${currentMrBaseSha} HEAD`);
+    expect(prompt).not.toContain(`git diff ${previousReviewSha} HEAD`);
   });
 
   it("advertises inspection tools by default", () => {
@@ -134,21 +148,25 @@ describe("buildPrReviewPrompt", () => {
     expect(prompt).not.toContain("It is the only tool available");
   });
 
-  it("lists `find` only when fd backs it", () => {
-    const base = {
-      prUrl: "https://github.com/acme/hodor/pull/42",
-      platform: "github" as const,
-      targetBranch: "main",
-      embeddedDiff: "diff --git a/src/a.ts b/src/a.ts\n+const ok = true;",
-      changedFiles: ["src/a.ts"],
-    };
+  it("offers only the confined tools and no shell", () => {
+    for (const embeddedDiff of ["diff --git a/src/a.ts b/src/a.ts\n+const ok = true;", null]) {
+      const prompt = buildPrReviewPrompt({
+        prUrl: "https://github.com/acme/hodor/pull/42",
+        platform: "github",
+        targetBranch: "main",
+        embeddedDiff,
+        changedFiles: ["src/a.ts"],
+      });
 
-    expect(buildPrReviewPrompt({ ...base, findToolAvailable: true }))
-      .toContain("`find` locates files by glob");
-    expect(buildPrReviewPrompt({ ...base, findToolAvailable: false }))
-      .not.toContain("`find` locates files by glob");
-    // Default is conservative: never advertise find unless the caller probed fd.
-    expect(buildPrReviewPrompt(base)).not.toContain("`find` locates files by glob");
+      for (const tool of ["git_diff", "read", "grep", "find", "ls", "submit_review"]) {
+        expect(prompt).toContain(`- \`${tool}\``);
+      }
+      expect(prompt).toContain("There is no shell.");
+      expect(prompt).toContain("work anywhere in the tracked repository, not only on changed files");
+      expect(prompt).not.toContain("`bash`");
+      expect(prompt).not.toContain("```bash");
+      expect(prompt).not.toContain("git --no-pager");
+    }
   });
 
   it("tells the reviewer the tool list is exhaustive", () => {
@@ -160,7 +178,7 @@ describe("buildPrReviewPrompt", () => {
       changedFiles: ["src/a.ts"],
     });
 
-    expect(prompt).toContain("This list is exhaustive. No other tool is available.");
+    expect(prompt).toContain("This list is exhaustive. No other tool is available, and there is no shell.");
   });
 
   it("withholds inspection tools on the single-turn fast path", () => {

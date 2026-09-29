@@ -204,7 +204,7 @@ program
     const logStream = process.stdout;
 
     const toolIcons: Record<string, string> = {
-      bash: "$",
+      git_diff: "git diff",
       read: "cat",
       grep: "grep",
       find: "find",
