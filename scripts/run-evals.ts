@@ -20,7 +20,7 @@ const modelArg = process.argv.indexOf("--model");
 const model =
   (modelArg >= 0 ? process.argv[modelArg + 1] : undefined) ??
   process.env.HODOR_EVAL_MODEL ??
-  "anthropic/claude-sonnet-4-5-20250929";
+  "anthropic/claude-opus-5-5";
 const evalDir = join(process.cwd(), "evals");
 const caseFiles = (await readdir(evalDir))
   .filter((file) => file.endsWith(".json"))

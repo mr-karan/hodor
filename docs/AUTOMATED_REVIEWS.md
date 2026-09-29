@@ -87,7 +87,7 @@ hodor-review:
     name: ghcr.io/mr-karan/hodor:latest
     entrypoint: [""]
   variables:
-    HODOR_MODEL: anthropic/claude-sonnet-4-5-20250929
+    HODOR_MODEL: anthropic/claude-opus-5-5
   before_script:
     - glab auth login --hostname "$CI_SERVER_HOST" --token "$GITLAB_TOKEN"
   script:

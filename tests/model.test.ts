@@ -41,17 +41,22 @@ describe("parseModelString", () => {
     expect(() => parseModelString("unknown/foo")).toThrow(/Unsupported provider/);
   });
 
-  it("accepts any provider prefix when HODOR_MODELS_JSON points at a models file", () => {
-    const prev = process.env.HODOR_MODELS_JSON;
-    process.env.HODOR_MODELS_JSON = "/tmp/models.json";
-    try {
-      const result = parseModelString("mycorp/Kimi-K3-FLATIRON");
-      expect(result.provider).toBe("mycorp");
-      expect(result.modelId).toBe("Kimi-K3-FLATIRON");
-    } finally {
-      if (prev === undefined) delete process.env.HODOR_MODELS_JSON;
-      else process.env.HODOR_MODELS_JSON = prev;
-    }
+  it("accepts a custom provider from the models file with its exact case", () => {
+    const result = parseModelString("MyCorp/Kimi-K3-FLATIRON", new Set(["MyCorp"]));
+    expect(result).toEqual({ provider: "MyCorp", modelId: "Kimi-K3-FLATIRON" });
+  });
+
+  it("rejects a provider the models file does not define", () => {
+    expect(() => parseModelString("othercorp/model", new Set(["MyCorp"]))).toThrow(
+      /HODOR_MODELS_JSON defines only: MyCorp/,
+    );
+  });
+
+  it("still resolves built-in providers when a models file is loaded", () => {
+    expect(parseModelString("anthropic/claude-opus-5-5", new Set(["MyCorp"]))).toEqual({
+      provider: "anthropic",
+      modelId: "claude-opus-5-5",
+    });
   });
 
   it("leaves baseModelId unset for plain bedrock models", () => {

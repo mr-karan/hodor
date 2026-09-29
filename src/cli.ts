@@ -36,8 +36,8 @@ program
   .argument("[pr-url]", "URL of the GitHub PR, GitLab MR, or Gitea/Forgejo PR to review (optional with --local)")
   .option(
     "--model <model>",
-    "LLM model to use as provider/model-id (e.g., anthropic/claude-sonnet-4-5-20250929, openrouter/moonshotai/kimi-k2.6)",
-    "anthropic/claude-sonnet-4-5-20250929",
+    "LLM model to use as provider/model-id (e.g., anthropic/claude-opus-5-5, openrouter/moonshotai/kimi-k2.6)",
+    "anthropic/claude-opus-5-5",
   )
   .option(
     "--reasoning-effort <level>",
