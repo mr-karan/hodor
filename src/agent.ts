@@ -841,46 +841,16 @@ export async function reviewPr(opts: {
     const durationSeconds = (Date.now() - startTime) / 1000;
     logger.info(`Review complete (${review.findings.length} finding(s))`);
 
-    // Aggregate usage from all assistant messages
-    interface MsgUsage {
-      input: number;
-      output: number;
-      cacheRead: number;
-      cacheWrite: number;
-      totalTokens: number;
-      cost: { total: number };
-    }
-    interface AssistantMsg {
-      role: string;
-      usage?: MsgUsage;
-    }
-
-    const allMessages = session.messages as AssistantMsg[];
-
-    let inputTokens = 0;
-    let outputTokens = 0;
-    let cacheReadTokens = 0;
-    let cacheWriteTokens = 0;
-    let totalTokens = 0;
-    let cost = 0;
-
-    for (const msg of allMessages) {
-      if (msg.role === "assistant" && msg.usage) {
-        inputTokens += msg.usage.input ?? 0;
-        outputTokens += msg.usage.output ?? 0;
-        cacheReadTokens += msg.usage.cacheRead ?? 0;
-        cacheWriteTokens += msg.usage.cacheWrite ?? 0;
-        totalTokens += msg.usage.totalTokens ?? 0;
-        cost += msg.usage.cost?.total ?? 0;
-      }
-    }
+    // session.messages is the projected context and omits compacted or retried
+    // attempts, so read usage from the session stats instead.
+    const { tokens, cost } = session.getSessionStats();
 
     const metrics: ReviewMetrics = {
-      inputTokens,
-      outputTokens,
-      cacheReadTokens,
-      cacheWriteTokens,
-      totalTokens,
+      inputTokens: tokens.input,
+      outputTokens: tokens.output,
+      cacheReadTokens: tokens.cacheRead,
+      cacheWriteTokens: tokens.cacheWrite,
+      totalTokens: tokens.total,
       cost,
       turns: turnCount,
       toolCalls: toolCallCount,

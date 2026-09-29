@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   createAgentSession: vi.fn(),
   exec: vi.fn(),
   prompts: [] as string[],
+  hiddenUsage: 0,
   resourceLoaderOptions: [] as Array<{
     systemPromptOverride?: () => string;
     appendSystemPromptOverride?: () => string[];
@@ -91,6 +92,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => {
 describe("reviewPr submit_review recovery", () => {
   beforeEach(() => {
     mocks.prompts.length = 0;
+    mocks.hiddenUsage = 0;
     mocks.resourceLoaderOptions.length = 0;
     mocks.promptResponses = [
       { kind: "text", text: "I found no issues." },
@@ -128,6 +130,7 @@ describe("reviewPr submit_review recovery", () => {
     }) => {
       const { customTools } = opts;
       const messages: Array<Record<string, unknown>> = [];
+      const hiddenUsage = mocks.hiddenUsage;
       const subscribers: Array<(event: Record<string, unknown>) => void> = [];
 
       const emit = (event: Record<string, unknown>): void => {
@@ -151,6 +154,30 @@ describe("reviewPr submit_review recovery", () => {
       return {
         session: {
           messages,
+          getSessionStats: () => {
+            const totals = { input: hiddenUsage, output: 0, cacheRead: 0, cacheWrite: 0, cost: hiddenUsage * 0.01 };
+            for (const msg of messages) {
+              const usage = msg.usage as
+                | { input: number; output: number; cacheRead: number; cacheWrite: number; cost: { total: number } }
+                | undefined;
+              if (msg.role !== "assistant" || !usage) continue;
+              totals.input += usage.input;
+              totals.output += usage.output;
+              totals.cacheRead += usage.cacheRead;
+              totals.cacheWrite += usage.cacheWrite;
+              totals.cost += usage.cost.total;
+            }
+            return {
+              tokens: {
+                input: totals.input,
+                output: totals.output,
+                cacheRead: totals.cacheRead,
+                cacheWrite: totals.cacheWrite,
+                total: totals.input + totals.output + totals.cacheRead + totals.cacheWrite,
+              },
+              cost: totals.cost,
+            };
+          },
           state: {},
           subscribe: (subscriber: (event: Record<string, unknown>) => void) => {
             subscribers.push(subscriber);
@@ -320,5 +347,27 @@ describe("reviewPr submit_review recovery", () => {
       /Agent did not call submit_review after 2 recovery attempt\(s\): stopReason=stop, content=\[text\], text="Still no tool\."/,
     );
     expect(mocks.prompts).toHaveLength(3);
+  });
+
+  it("reports usage from session stats, including attempts missing from session.messages", async () => {
+    mocks.hiddenUsage = 100;
+
+    const result = await reviewPr({
+      localMode: true,
+      workspaceDir: "/tmp/hodor-recovery",
+      cleanup: false,
+      model: "anthropic/test-model",
+    });
+
+    // Two visible assistant messages contribute 1 input + 1 output each; 100 input tokens
+    // and cost 1.0 come only from usage outside session.messages.
+    expect(result.metrics).toMatchObject({
+      inputTokens: 102,
+      outputTokens: 2,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 104,
+      cost: 1,
+    });
   });
 });
