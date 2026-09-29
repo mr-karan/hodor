@@ -41,6 +41,19 @@ describe("parseModelString", () => {
     expect(() => parseModelString("unknown/foo")).toThrow(/Unsupported provider/);
   });
 
+  it("accepts any provider prefix when HODOR_MODELS_JSON points at a models file", () => {
+    const prev = process.env.HODOR_MODELS_JSON;
+    process.env.HODOR_MODELS_JSON = "/tmp/models.json";
+    try {
+      const result = parseModelString("mycorp/Kimi-K3-FLATIRON");
+      expect(result.provider).toBe("mycorp");
+      expect(result.modelId).toBe("Kimi-K3-FLATIRON");
+    } finally {
+      if (prev === undefined) delete process.env.HODOR_MODELS_JSON;
+      else process.env.HODOR_MODELS_JSON = prev;
+    }
+  });
+
   it("leaves baseModelId unset for plain bedrock models", () => {
     expect(parseModelString("bedrock/converse/global.anthropic.claude-opus-5").baseModelId)
       .toBeUndefined();
