@@ -4,12 +4,10 @@ import {
   createAgentSession,
   DefaultResourceLoader,
   getAgentDir,
-  ModelRuntime,
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import type { AgentSession, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
 import { logger } from "./utils/logger.js";
 import { exec } from "./utils/exec.js";
@@ -37,6 +35,11 @@ import {
   selectReasoningEffort,
   stripBedrockRegionalPrefix,
 } from "./model.js";
+import {
+  assertPublicOpenRouterFallbackAllowed,
+  createModelRuntime,
+  loadModelsJsonConfig,
+} from "./models-json.js";
 import { formatMetricsMarkdown, printMetrics } from "./metrics.js";
 import { SUBMIT_REVIEW_SCHEMA, validateReviewOutput } from "./review.js";
 import { resolveReviewLocations } from "./resolve-location.js";
@@ -204,7 +207,8 @@ export async function reviewPr(opts: {
   }
 
   // --- Preflight: validate model + credentials before any expensive I/O ---
-  const parsed = parseModelString(model);
+  const modelsJson = loadModelsJsonConfig();
+  const parsed = parseModelString(model, modelsJson?.providers);
 
   // Snapshot env vars we may mutate, restore in finally block.
   const envSnapshot: Record<string, string | undefined> = {
@@ -212,14 +216,9 @@ export async function reviewPr(opts: {
     AWS_DEFAULT_REGION: process.env.AWS_DEFAULT_REGION,
   };
 
-  const modelRuntime = await ModelRuntime.create({
-    credentials: new InMemoryCredentialStore(),
-    // HODOR_MODELS_JSON optionally points at a pi-format models.json defining
-    // custom (e.g. self-hosted OpenAI-compatible) providers and models,
-    // including their context windows, limits, and compat quirks. Unset keeps
-    // the stock behavior: no user state is read.
-    modelsPath: process.env.HODOR_MODELS_JSON ?? null,
-  });
+  // HODOR_MODELS_JSON optionally adds or overrides providers (for example a
+  // self-hosted OpenAI-compatible gateway). Unset reads no user state.
+  const modelRuntime = await createModelRuntime(modelsJson);
   if (process.env.LLM_API_KEY) {
     await modelRuntime.setRuntimeApiKey(parsed.provider, process.env.LLM_API_KEY);
   }
@@ -281,6 +280,7 @@ export async function reviewPr(opts: {
         `Regional bedrock model, region: ${region}, capabilities from ${baseModel.id}`,
       );
     } else if (parsed.provider === "openrouter") {
+      assertPublicOpenRouterFallbackAllowed(modelsJson, parsed.modelId);
       piModel = {
         id: parsed.modelId,
         name: parsed.modelId,

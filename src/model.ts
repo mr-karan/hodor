@@ -2,6 +2,7 @@ import { getEnvApiKey } from "@earendil-works/pi-ai/compat";
 import { getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
 import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
 import type { DiffStats, ReviewDiffMode } from "./review-diff.js";
+import { loadModelsJsonConfig, MODELS_JSON_ENV } from "./models-json.js";
 
 export interface ParsedModel {
   provider: string;
@@ -24,7 +25,10 @@ const PROVIDER_ALIASES: Record<string, string> = {
  * Parse a model string like "anthropic/claude-sonnet-4-5" into { provider, modelId }.
  * Handles bare names like "claude-sonnet-4-5" or "gpt-5" via auto-detection.
  */
-export function parseModelString(model: string): ParsedModel {
+export function parseModelString(
+  model: string,
+  customProviders: ReadonlySet<string> | undefined = loadModelsJsonConfig()?.providers,
+): ParsedModel {
   const trimmed = model.trim();
   if (!trimmed) throw new Error("Model name must be provided");
 
@@ -71,11 +75,15 @@ export function parseModelString(model: string): ParsedModel {
       return { provider, modelId: parts.slice(1).join("/") };
     }
 
-    // With a user-supplied models file (HODOR_MODELS_JSON), any provider
-    // prefix may name a custom provider defined there. Bad names surface as
-    // resolution errors from ModelRuntime.getModel with the effective list.
-    if (process.env.HODOR_MODELS_JSON) {
-      return { provider, modelId: parts.slice(1).join("/") };
+    // A custom provider from the models file. Pi keys providers by their exact
+    // name, so keep the original case instead of the lowercased prefix.
+    if (customProviders?.has(parts[0])) {
+      return { provider: parts[0], modelId: parts.slice(1).join("/") };
+    }
+    if (customProviders) {
+      throw new Error(
+        `Unsupported provider "${parts[0]}". It is not a pi-ai provider and ${MODELS_JSON_ENV} defines only: ${[...customProviders].join(", ") || "(none)"}.`,
+      );
     }
 
     throw new Error(
