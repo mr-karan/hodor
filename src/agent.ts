@@ -11,10 +11,7 @@ import type { AgentSession, ToolDefinition } from "@earendil-works/pi-coding-age
 import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
 import { logger } from "./utils/logger.js";
 import { exec } from "./utils/exec.js";
-import {
-  fetchGithubPrInfo,
-  normalizeGithubMetadata,
-} from "./github.js";
+import { fetchGithubPrMetadata } from "./github.js";
 import {
   fetchGitlabMrInfo,
 } from "./gitlab.js";
@@ -23,7 +20,6 @@ import {
 } from "./gitea.js";
 import { setupWorkspace, cleanupWorkspace } from "./workspace.js";
 import { buildPrReviewPrompt } from "./prompt.js";
-import { commandOnPath } from "./utils/exec.js";
 import {
   addOpenAiBedrockReasoning,
   buildBedrockArnModel,
@@ -43,6 +39,7 @@ import {
 import { formatMetricsMarkdown, printMetrics } from "./metrics.js";
 import { SUBMIT_REVIEW_SCHEMA, validateReviewOutput } from "./review.js";
 import { resolveReviewLocations } from "./resolve-location.js";
+import { createReviewToolset, REVIEW_TOOL_NAMES, type ReviewToolset } from "./review-tools.js";
 import { buildReviewSystemPrompt } from "./system-prompt.js";
 import {
   loadDefaultReviewInstructions,
@@ -55,9 +52,11 @@ import {
   getReviewDiffArgs,
   getChangedFiles,
   getDiffStats,
+  resolveReviewBaseSha,
   type DiffStats,
   type ReviewDiffMode,
 } from "./review-diff.js";
+import { partitionNotesByProvenance, resolvePublisherIdentity } from "./provenance.js";
 import {
   buildReviewCacheMarker,
   findCachedReview,
@@ -133,6 +132,29 @@ export function wrapBedrockStream(
       ...(bedrockTags ? { requestMetadata: bedrockTags } : {}),
       ...(onPayload ? { onPayload } : {}),
     });
+  };
+}
+
+/**
+ * Tool names and definitions for the review session.
+ *
+ * Pi filters customTools through the same `tools` allowlist as its built-ins
+ * (_refreshToolRegistry in agent-session.js), and a custom definition replaces
+ * a built-in of the same name. So every tool, including submit_review, is
+ * named here, and read/grep/find/ls resolve to Hodor's confined versions.
+ * The model gets no shell.
+ */
+export function getReviewSessionTools(opts: {
+  singleTurn: boolean;
+  reviewTools: ToolDefinition[];
+  submitReviewTool: ToolDefinition;
+}): { tools: string[]; customTools: ToolDefinition[] } {
+  if (opts.singleTurn) {
+    return { tools: ["submit_review"], customTools: [opts.submitReviewTool] };
+  }
+  return {
+    tools: [...REVIEW_TOOL_NAMES, "submit_review"],
+    customTools: [...opts.reviewTools, opts.submitReviewTool],
   };
 }
 
@@ -372,6 +394,7 @@ export async function reviewPr(opts: {
   }
 
   let activeSession: AgentSession | undefined;
+  let reviewToolset: ReviewToolset | undefined;
 
   try {
     let mrMetadata: MrMetadata | null = null;
@@ -385,8 +408,7 @@ export async function reviewPr(opts: {
       }
     } else if (!localMode && platform === "github") {
       try {
-        const githubRaw = await fetchGithubPrInfo(owner, repo, prNumber);
-        mrMetadata = normalizeGithubMetadata(githubRaw);
+        mrMetadata = await fetchGithubPrMetadata(owner, repo, prNumber, host);
       } catch (err) {
         logger.warn(`Failed to fetch GitHub metadata: ${err}`);
       }
@@ -407,20 +429,38 @@ export async function reviewPr(opts: {
       headSha = headShaRaw.trim();
     }
 
+    // Authenticate note provenance once. Only Hodor-marked notes written by
+    // the publishing identity carry machine state; everything else, including
+    // forged markers, stays untrusted context for the prompt.
+    const publisherIdentity = localMode ? null : await resolvePublisherIdentity(platform, host);
+    const notes = partitionNotesByProvenance(mrMetadata?.Notes, publisherIdentity);
+    if (mrMetadata) mrMetadata.Notes = [...notes.others, ...notes.hodor];
+
     // A successful Hodor summary contains a compressed, validated copy of the
     // structured result. Reuse it for an identical review identity so pipeline
     // retries can regenerate artifacts and retry delivery without another LLM
     // invocation. Explicit --full reviews always bypass this fast path.
     let reviewCacheKey: string | null = null;
-    if (!localMode && !full && headSha) {
+    const reviewBaseSha = !localMode && !full && headSha
+      ? await resolveReviewBaseSha(workspacePath, targetBranch, diffBaseSha)
+      : null;
+    if (headSha && reviewBaseSha) {
       reviewCacheKey = getReviewCacheKey({
+        scope: {
+          platform,
+          host,
+          projectPath: `${owner}/${repo}`,
+          reviewNumber: prNumber,
+          targetBranch,
+          baseSha: reviewBaseSha,
+        },
         headSha,
         model,
         requestedReasoningEffort: reasoningEffort,
         reviewInstructions: effectiveReviewInstructions,
         additionalInstructions: effectiveAdditionalInstructions,
       });
-      const cachedReview = findCachedReview(mrMetadata?.Notes, reviewCacheKey);
+      const cachedReview = findCachedReview(notes.hodor, reviewCacheKey);
       if (cachedReview) {
         logger.info(`Reusing cached Hodor review for HEAD ${headSha.slice(0, 8)}`);
         const metrics: ReviewMetrics = {
@@ -471,7 +511,7 @@ export async function reviewPr(opts: {
     // is an ancestor; after a force-push/rebase, use a direct snapshot delta.
     const previousReviewBase = full || localMode
       ? null
-      : await findLatestReviewBase(mrMetadata?.Notes, workspacePath);
+      : await findLatestReviewBase(notes.hodor, workspacePath);
     const previousReviewSha = previousReviewBase?.sha ?? null;
     let reviewMode: ReviewDiffMode = localMode
       ? "local"
@@ -486,6 +526,7 @@ export async function reviewPr(opts: {
     // Pre-fetch diff for embedding in prompt (avoids per-file tool calls)
     const MAX_EMBED_BYTES = 200 * 1024; // 200KB
     let embeddedDiff: string | null = null;
+    let rawReviewDiff: string;
     let reviewDiff: string | null = null;
     let diffStats: DiffStats | null = null;
     let changedFiles: string[] = [];
@@ -499,6 +540,7 @@ export async function reviewPr(opts: {
         localMode,
       });
       const { stdout: rawDiff } = await exec("git", diffArgs, { cwd: workspacePath });
+      rawReviewDiff = rawDiff;
       const { filtered: filteredDiff, skippedFiles } = filterEmbeddedDiff(rawDiff);
       if (skippedFiles.length > 0) {
         logger.info(`Filtered ${skippedFiles.length} file(s) from embedded diff: ${skippedFiles.join(", ")}`);
@@ -510,10 +552,12 @@ export async function reviewPr(opts: {
         embeddedDiff = filteredDiff;
         logger.info(`Embedding diff in prompt (${Buffer.byteLength(filteredDiff, "utf-8")} bytes, raw: ${Buffer.byteLength(rawDiff, "utf-8")} bytes)`);
       } else {
-        logger.info(`Diff too large to embed (${Buffer.byteLength(filteredDiff, "utf-8")} bytes filtered, ${Buffer.byteLength(rawDiff, "utf-8")} bytes raw), using command mode`);
+        logger.info(`Diff too large to embed (${Buffer.byteLength(filteredDiff, "utf-8")} bytes filtered, ${Buffer.byteLength(rawDiff, "utf-8")} bytes raw), serving it through git_diff`);
       }
     } catch (err) {
-      logger.warn(`Failed to pre-fetch diff, falling back to command mode: ${err}`);
+      // The agent has no shell, so git_diff is its only view of the change.
+      // Without this diff there is nothing to review.
+      throw new Error(`Failed to compute the review diff: ${err instanceof Error ? err.message : err}`);
     }
 
     const thinkingLevel = selectReasoningEffort({
@@ -540,15 +584,12 @@ export async function reviewPr(opts: {
       );
     }
 
-    // Build the dynamic review task sent as the first user message.
-    // pi's `find` tool shells out to fd (see core/tools/find.js). If fd is
-    // missing every call fails, so drop the tool instead of offering a broken
-    // one and paying for the failed turns.
-    const findToolAvailable = commandOnPath("fd") || commandOnPath("fdfind");
-    if (!findToolAvailable) {
-      logger.warn("fd not found on PATH; disabling the agent's `find` tool");
-    }
+    // The review tools confine the model to the tracked tree. Location
+    // resolution uses the same manifest, so build it on the fast path too.
+    reviewToolset = await createReviewToolset({ workspacePath, reviewDiff: rawReviewDiff });
+    logger.info(`Review tools confined to ${reviewToolset.tree.files.length} tracked file(s)`);
 
+    // Build the dynamic review task sent as the first user message.
     const prompt = buildPrReviewPrompt({
       prUrl: prUrl ?? `local diff (against ${targetBranch})`,
       platform,
@@ -561,7 +602,6 @@ export async function reviewPr(opts: {
       changedFiles,
       localMode,
       singleTurn,
-      findToolAvailable,
     });
 
     const startTime = Date.now();
@@ -647,21 +687,11 @@ export async function reviewPr(opts: {
       cwd: workspacePath,
       model: piModel,
       thinkingLevel,
-      // pi v0.74 filters customTools through the same allowlist as built-ins
-      // (see _refreshToolRegistry in @earendil-works/pi-coding-agent's
-      // agent-session.ts). The submit_review custom tool must be named here
-      // or the LLM never sees it and the agent loop exits without calling it.
-      tools: singleTurn
-        ? ["submit_review"]
-        : [
-          "read",
-          "bash",
-          "grep",
-          ...(findToolAvailable ? ["find"] : []),
-          "ls",
-          "submit_review",
-        ],
-      customTools: [submitReviewTool],
+      ...getReviewSessionTools({
+        singleTurn,
+        reviewTools: reviewToolset.definitions,
+        submitReviewTool,
+      }),
       modelRuntime,
       sessionManager: SessionManager.inMemory(),
       settingsManager,
@@ -691,13 +721,7 @@ export async function reviewPr(opts: {
     function formatToolArgs(_toolName: string, args: unknown): string {
       if (typeof args === "string") return args.slice(0, 200);
       const obj = args as Record<string, unknown> | undefined;
-      if (!obj) return "";
-      // bash tool: show the command, strip workspace prefix
-      if (obj.command) {
-        return String(obj.command)
-          .replace(new RegExp(`cd ${workspacePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} && `), "")
-          .slice(0, 200);
-      }
+      if (!obj || Object.keys(obj).length === 0) return "";
       // grep/find: show pattern + path
       if (obj.pattern) {
         const path = obj.path ? ` in ${obj.path}` : "";
@@ -879,7 +903,7 @@ export async function reviewPr(opts: {
     // Resolve each finding's line_range from its quoted snippet against the
     // checked-out file, correcting model line-number errors before posting.
     const { review, stats: locationStats } = resolveReviewLocations(rawReview, {
-      workspacePath,
+      trackedTree: reviewToolset.tree,
       diffText: embeddedDiff,
     });
     if (locationStats.corrected > 0 || locationStats.unmatched > 0) {
@@ -964,6 +988,7 @@ export async function reviewPr(opts: {
     };
   } finally {
     activeSession?.dispose();
+    reviewToolset?.dispose();
 
     // Restore mutated env vars
     for (const [key, val] of Object.entries(envSnapshot)) {

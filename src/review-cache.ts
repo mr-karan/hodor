@@ -2,9 +2,10 @@ import { createHash } from "node:crypto";
 import { gzipSync, gunzipSync } from "node:zlib";
 import { validateReviewOutput } from "./review.js";
 import { relativizeWorkspacePath } from "./utils/path.js";
-import type { NoteEntry, ReviewOutput } from "./types.js";
+import type { Platform, ReviewOutput, TrustedHodorNote } from "./types.js";
 
-export const REVIEW_PROMPT_VERSION = "2026-07-27.1";
+// Bumped when the cache key gained the review scope, so older markers never match.
+export const REVIEW_PROMPT_VERSION = "2026-09-29.1";
 
 const CACHE_MARKER_RE = /<!--\s*hodor:cache:v1:([A-Za-z0-9_-]+)\s*-->/;
 
@@ -13,16 +14,35 @@ interface ReviewCachePayload {
   review: ReviewOutput;
 }
 
+/** The MR/PR a cached review belongs to and the diff range it covered. */
+export interface ReviewCacheScope {
+  platform: Platform;
+  host: string;
+  projectPath: string;
+  reviewNumber: number;
+  targetBranch: string;
+  /** Commit the target side of the review diff is computed against. */
+  baseSha: string;
+}
+
 export function getReviewCacheKey(opts: {
+  scope: ReviewCacheScope;
   headSha: string;
   model: string;
   requestedReasoningEffort?: string;
   reviewInstructions: string;
   additionalInstructions?: string | null;
 }): string {
+  const { scope } = opts;
   return createHash("sha256")
     .update(JSON.stringify({
       version: REVIEW_PROMPT_VERSION,
+      platform: scope.platform,
+      host: scope.host.toLowerCase(),
+      projectPath: scope.projectPath,
+      reviewNumber: scope.reviewNumber,
+      targetBranch: scope.targetBranch,
+      baseSha: scope.baseSha,
       headSha: opts.headSha,
       model: opts.model,
       // "auto" deliberately stays stable when an identical HEAD changes from
@@ -57,12 +77,11 @@ export function buildReviewCacheMarker(
   return `<!-- hodor:cache:v1:${encoded} -->`;
 }
 
+/** Only authenticated notes are decoded. Untrusted markers never reach gunzip. */
 export function findCachedReview(
-  notes: NoteEntry[] | undefined | null,
+  notes: readonly TrustedHodorNote[],
   key: string,
 ): ReviewOutput | null {
-  if (!notes) return null;
-
   const newestFirst = [...notes].sort((a, b) =>
     Date.parse(b.updated_at ?? b.created_at ?? "") -
     Date.parse(a.updated_at ?? a.created_at ?? ""),

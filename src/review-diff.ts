@@ -1,4 +1,4 @@
-import type { MrMetadata, Platform } from "./types.js";
+import type { Platform, TrustedHodorNote } from "./types.js";
 import { exec } from "./utils/exec.js";
 import { logger } from "./utils/logger.js";
 
@@ -55,10 +55,11 @@ export function getReviewDiffArgs(options: ReviewDiffArgsOptions): string[] {
   return ["--no-pager", "diff", `origin/${targetBranch}...HEAD`];
 }
 
+/** Only authenticated notes may move the incremental base. */
 export function getHodorReviewShaCandidates(
-  notes: MrMetadata["Notes"] | undefined | null,
+  notes: readonly TrustedHodorNote[],
 ): string[] {
-  if (!notes || notes.length === 0) return [];
+  if (notes.length === 0) return [];
 
   const candidates: Array<{ sha: string; reviewedAtMs: number | null; index: number }> = [];
   for (const [index, note] of notes.entries()) {
@@ -85,7 +86,7 @@ export function getHodorReviewShaCandidates(
 }
 
 export async function findLatestReviewBase(
-  notes: MrMetadata["Notes"] | undefined | null,
+  notes: readonly TrustedHodorNote[],
   workspacePath: string,
 ): Promise<PreviousReviewBase | null> {
   const candidates = getHodorReviewShaCandidates(notes);
@@ -132,13 +133,25 @@ export async function findLatestReviewBase(
   return null;
 }
 
-/** Backwards-compatible helper for callers that only accept ancestor diffs. */
-export async function findLatestValidReviewSha(
-  notes: MrMetadata["Notes"] | undefined | null,
+/**
+ * The commit the target side of the review diff is computed against: the
+ * known MR diff base, or the merge base with origin/<target>. Returns null
+ * when neither is available.
+ */
+export async function resolveReviewBaseSha(
   workspacePath: string,
+  targetBranch: string,
+  diffBaseSha: string | null,
 ): Promise<string | null> {
-  const base = await findLatestReviewBase(notes, workspacePath);
-  return base?.mode === "incremental" ? base.sha : null;
+  if (diffBaseSha) return diffBaseSha;
+  try {
+    const { stdout } = await exec("git", ["merge-base", "HEAD", `origin/${targetBranch}`], {
+      cwd: workspacePath,
+    });
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
 }
 
 export function getDiffStats(diff: string): DiffStats {

@@ -5,6 +5,7 @@ import { postGiteaPrComment } from "./gitea.js";
 import {
   bulkPublishGitlabDraftNotes,
   createGitlabDraftNote,
+  fetchGitlabPublisherIdentity,
   getGitlabMrDiffRefs,
   HODOR_REVIEW_MARKER,
   listHodorDiscussions,
@@ -29,6 +30,7 @@ import {
   mergeReviewStateFindings,
 } from "./review-state.js";
 import type {
+  GitlabPublisherIdentity,
   ParsedPrUrl,
   PostCommentResult,
   ReviewFinding,
@@ -60,6 +62,24 @@ export async function postGitlabReviewCommitStatus(
     parsed.host,
     { description },
   );
+}
+
+/**
+ * GitLab publication edits Hodor's own notes and resolves Hodor's own
+ * discussions, so it needs the publishing identity. Without one, Hodor posts
+ * nothing: it cannot tell its notes from forged ones.
+ */
+async function resolveGitlabIdentityForPosting(
+  parsed: ParsedPrUrl,
+): Promise<{ identity: GitlabPublisherIdentity } | { error: string }> {
+  try {
+    return { identity: await fetchGitlabPublisherIdentity(parsed.host) };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const text = `Refusing to post to MR !${parsed.prNumber}: cannot resolve the GitLab publishing identity (${message})`;
+    logger.error(text);
+    return { error: text };
+  }
 }
 
 function appendReviewDetails(
@@ -133,12 +153,17 @@ export async function postReviewComment(opts: {
       return { success: true, platform, prNumber: parsed.prNumber };
     }
 
+    const resolved = await resolveGitlabIdentityForPosting(parsed);
+    if ("error" in resolved) {
+      return { success: false, platform, error: resolved.error };
+    }
     await upsertGitlabMrSummary(
       parsed.owner,
       parsed.repo,
       parsed.prNumber,
       body,
       parsed.host,
+      resolved.identity,
     );
     return {
       success: true,
@@ -165,7 +190,6 @@ export async function postReviewStructured(opts: {
   reconcileDiscussions?: boolean;
   cacheMarker?: string | null;
   skipSummary?: boolean;
-  existingDiscussions?: HodorDiscussion[];
   skipInline?: boolean;
   reviewMode?: ReviewMetrics["reviewMode"];
 }): Promise<PostCommentResult> {
@@ -181,7 +205,6 @@ export async function postReviewStructured(opts: {
     reconcileDiscussions = false,
     cacheMarker,
     skipSummary = false,
-    existingDiscussions,
     skipInline = false,
     reviewMode,
   } = opts;
@@ -199,6 +222,17 @@ export async function postReviewStructured(opts: {
   }
 
   const parsed = parsePrUrl(prUrl);
+  const resolved = await resolveGitlabIdentityForPosting(parsed);
+  if ("error" in resolved) {
+    return {
+      success: false,
+      platform: "gitlab",
+      mrNumber: parsed.prNumber,
+      error: resolved.error,
+      errors: [resolved.error],
+    };
+  }
+  const { identity } = resolved;
   const errors: string[] = [];
   let diffRefs: DiffRefs;
   try {
@@ -222,17 +256,16 @@ export async function postReviewStructured(opts: {
   }
 
   const existingByFingerprint = new Map<string, Set<string>>();
-  let discussions = existingDiscussions ?? [];
+  let discussions: HodorDiscussion[] = [];
   let discussionListingFailed = false;
   try {
-    if (!existingDiscussions) {
-      discussions = await listHodorDiscussions(
-        parsed.owner,
-        parsed.repo,
-        parsed.prNumber,
-        parsed.host,
-      );
-    }
+    discussions = await listHodorDiscussions(
+      parsed.owner,
+      parsed.repo,
+      parsed.prNumber,
+      parsed.host,
+      identity,
+    );
     for (const discussion of discussions) {
       if (discussion.resolved) continue;
       const fingerprint = getDiscussionFingerprint(discussion.body);
@@ -396,6 +429,7 @@ export async function postReviewStructured(opts: {
         parsed.prNumber,
         summaryBody,
         parsed.host,
+        identity,
       );
       summaryPosted = true;
     } catch (error) {

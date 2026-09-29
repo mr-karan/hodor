@@ -41,18 +41,6 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Install ripgrep
-RUN curl -fsSL "https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep_15.1.0-1_amd64.deb" -o /tmp/ripgrep.deb && \
-    echo "62ce186675c71edbc7c48a67dc36f986974551354d6ce63726adc2d85aad802c  /tmp/ripgrep.deb" | sha256sum -c - && \
-    dpkg -i /tmp/ripgrep.deb && \
-    rm /tmp/ripgrep.deb
-
-# Install fd. The agent's `find` tool shells out to fd, so without it every
-# find call fails and pi tries to download the binary from GitHub mid-review.
-RUN curl -fsSL "https://github.com/sharkdp/fd/releases/download/v10.5.0/fd_10.5.0_amd64.deb" -o /tmp/fd.deb && \
-    echo "1fca9f8fb221f26fe37b425db4935dc8180099bdecfd8e031538bfc9396e95f8  /tmp/fd.deb" | sha256sum -c - && \
-    dpkg -i /tmp/fd.deb && \
-    rm /tmp/fd.deb
 
 # Install GitHub CLI (gh)
 RUN curl -fsSL "https://github.com/cli/cli/releases/download/v2.83.0/gh_2.83.0_linux_amd64.tar.gz" -o /tmp/gh.tar.gz && \
@@ -80,9 +68,9 @@ COPY --chown=bun:bun --from=build /build/package.json ./
 ENV COLUMNS=200
 ENV LINES=50
 
-# fd and ripgrep are baked in above. Keep pi from fetching either from GitHub
-# during a review if a lookup ever misses: a review job should never depend on
-# egress to github.com, and the fallback download costs a turn either way.
+# Hodor replaces Pi's find and grep with confined tools built on git, so Pi's
+# fd and ripgrep downloads are never needed. Keep Pi offline: a review job
+# should never depend on egress to github.com.
 ENV PI_OFFLINE=1
 
 # Workspace for cloned repos

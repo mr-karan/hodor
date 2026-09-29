@@ -27,15 +27,55 @@ export interface MrMetadata {
   state?: string;
 }
 
-export interface NoteEntry {
+export interface NoteAuthor {
+  /** Numeric account id. Provenance compares only this field. */
+  id?: number;
+  username?: string;
+  name?: string;
+}
+
+interface NoteFields {
   body?: string;
-  author?: {
-    username?: string;
-    name?: string;
-  };
+  author?: NoteAuthor;
   created_at?: string;
   updated_at?: string;
   system?: boolean;
+}
+
+/** A note as returned by the platform. Nobody has checked who wrote it. */
+export interface UntrustedNote extends NoteFields {
+  provenance?: "untrusted";
+}
+
+/**
+ * A Hodor-marked note written by the resolved publishing identity. Only
+ * partitionNotesByProvenance creates these. Machine state (review SHA,
+ * cached review, prior review context) is read only from trusted notes.
+ */
+export interface TrustedHodorNote extends NoteFields {
+  provenance: "hodor";
+}
+
+export type NoteEntry = UntrustedNote | TrustedHodorNote;
+
+/** The account Hodor posts as on the reviewed platform and host. */
+export type PublisherIdentity = GitlabPublisherIdentity | GiteaPublisherIdentity | GithubPublisherIdentity;
+
+export interface GitlabPublisherIdentity {
+  platform: "gitlab";
+  userId: number;
+}
+
+export interface GiteaPublisherIdentity {
+  platform: "gitea";
+  userId: number;
+}
+
+export interface GithubPublisherIdentity {
+  platform: "github";
+  userId: number;
+  /** For logs only. Logins do not distinguish a bot from a same-named user. */
+  login: string;
 }
 
 export interface ReviewMetrics {

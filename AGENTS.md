@@ -16,7 +16,7 @@ The full module table is in `README.md` under Architecture. The paths you touch 
 
 ## Pi SDK integration
 
-- **Session:** `createAgentSession()` with tool names `read`, `bash`, `grep`, `find` (when available), `ls`, and the custom `submit_review` (`terminate: true`). `--tiny-diff-fast-path` exposes only `submit_review`.
+- **Session:** `createAgentSession()` with tools `git_diff`, `read`, `grep`, `find`, `ls`, and `submit_review` (`terminate: true`). All but `submit_review` come from `src/review-tools.ts`: `git_diff` serves the precomputed diff, and the others replace Pi's built-ins with versions confined to `git ls-files`. There is no `bash`. `--tiny-diff-fast-path` exposes only `submit_review`.
 - **Models:** `createModelRuntime()` in `src/models-json.ts` wraps `ModelRuntime.create()`. Registry models come from `modelRuntime.getModel()`. Bedrock application inference profile ARNs are built by `buildBedrockArnModel()` from an `@<base-model-id>` registry entry.
 - **Settings:** `SettingsManager.inMemory()` enables compaction, sets `cacheWarming: "off"` (Pi defaults to streaming warming, which costs money in one-shot CI), and bounds retries (`retry.maxAgentDelayMs`).
 - **Bedrock request fields:** `wrapBedrockStream()` wraps `session.agent.streamFunction` to add `requestMetadata` and OpenAI-on-Bedrock reasoning. The instance property is `streamFunction`; `streamFn` is only the constructor option.
@@ -78,6 +78,6 @@ bun run eval -- --model <provider/model> # paid: runs real model reviews
 ## Security
 
 - Keep API keys and tokens in environment variables. Never commit them. `.env` is gitignored.
-- The agent's `bash` tool inherits Hodor's environment. Treat anything reachable from the process environment as reachable by a prompt-injected diff, and keep CI credentials least-privilege.
+- The agent has no shell, and its file tools only reach tracked files in the checkout (`src/review-tools.ts`). Do not add a tool that runs commands, reads untracked paths, or inherits `process.env`; a prompt-injected diff controls what the model asks for.
 - `HODOR_MODELS_JSON` is trusted configuration: Pi runs `!command` values and interpolates `$ENV` in it. Never load it from the checkout under review.
-- Hodor markers (`hodor:sha`, cache markers, prior-review text) are read from MR/PR notes. Today only the summary upsert checks the note author, so any participant can post a forged marker. New code that relies on a marker must check that the bot account wrote the note.
+- Hodor markers (`hodor:sha`, cache markers, prior-review text, finding discussions) are machine state only when the bot account wrote the note. `partitionNotesByProvenance()` in `src/provenance.ts` is the only place that decides this, by numeric user id. New code that reads a marker must take `TrustedHodorNote` values from it.

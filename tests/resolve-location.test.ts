@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,6 +7,7 @@ import {
   parseChangedLines,
   resolveReviewLocations,
 } from "../src/resolve-location.js";
+import { TrackedTree } from "../src/review-tools.js";
 import type { ReviewOutput } from "../src/types.js";
 
 const FILE = [
@@ -137,17 +138,27 @@ describe("parseChangedLines", () => {
 });
 
 describe("resolveReviewLocations", () => {
+  let base: string;
   let dir: string;
   let filePath: string;
+  let trackedTree: TrackedTree;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "hodor-resolve-test-"));
+    base = mkdtempSync(join(tmpdir(), "hodor-resolve-test-"));
+    dir = join(base, "repo");
+    mkdirSync(dir);
+    mkdirSync(join(base, "outside"));
     filePath = join(dir, "math.ts");
     writeFileSync(filePath, FILE, "utf-8");
+    writeFileSync(join(dir, "untracked.ts"), FILE, "utf-8");
+    writeFileSync(join(base, "outside", "secret.ts"), FILE, "utf-8");
+    symlinkSync(join(base, "outside", "secret.ts"), join(dir, "escape.ts"));
+    writeFileSync(join(dir, "huge.ts"), FILE + "x".repeat(3 * 1024 * 1024), "utf-8");
+    trackedTree = new TrackedTree(dir, ["math.ts", "escape.ts", "huge.ts"]);
   });
 
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(base, { recursive: true, force: true });
   });
 
   const makeReview = (overrides: Partial<ReviewOutput["findings"][number]>): ReviewOutput => ({
@@ -169,14 +180,14 @@ describe("resolveReviewLocations", () => {
       existing_code: "function sub(a, b) {\n  return a - b;",
       code_location: { absolute_file_path: filePath, line_range: { start: 2, end: 2 } },
     });
-    const { review: out, stats } = resolveReviewLocations(review, { workspacePath: dir, diffText: null });
+    const { review: out, stats } = resolveReviewLocations(review, { trackedTree, diffText: null });
     expect(out.findings[0].code_location.line_range).toEqual({ start: 5, end: 6 });
     expect(stats).toMatchObject({ total: 1, corrected: 1, confirmed: 0, unmatched: 0, noSnippet: 0 });
   });
 
   it("leaves findings without a snippet untouched", () => {
     const review = makeReview({ code_location: { absolute_file_path: filePath, line_range: { start: 5, end: 6 } } });
-    const { review: out, stats } = resolveReviewLocations(review, { workspacePath: dir, diffText: null });
+    const { review: out, stats } = resolveReviewLocations(review, { trackedTree, diffText: null });
     expect(out.findings[0].code_location.line_range).toEqual({ start: 5, end: 6 });
     expect(stats.noSnippet).toBe(1);
   });
@@ -186,7 +197,7 @@ describe("resolveReviewLocations", () => {
       existing_code: "whatever",
       code_location: { absolute_file_path: join(dir, "missing.ts"), line_range: { start: 3, end: 4 } },
     });
-    const { review: out, stats } = resolveReviewLocations(review, { workspacePath: dir, diffText: null });
+    const { review: out, stats } = resolveReviewLocations(review, { trackedTree, diffText: null });
     expect(out.findings[0].code_location.line_range).toEqual({ start: 3, end: 4 });
     expect(stats.unmatched).toBe(1);
   });
@@ -196,7 +207,7 @@ describe("resolveReviewLocations", () => {
       existing_code: "root:x:0:0",
       code_location: { absolute_file_path: "/etc/passwd", line_range: { start: 1, end: 1 } },
     });
-    const { review: out, stats } = resolveReviewLocations(review, { workspacePath: dir, diffText: null });
+    const { review: out, stats } = resolveReviewLocations(review, { trackedTree, diffText: null });
     expect(out.findings[0].code_location.line_range).toEqual({ start: 1, end: 1 });
     expect(stats.unmatched).toBe(1);
   });
@@ -209,14 +220,38 @@ describe("resolveReviewLocations", () => {
         line_range: { start: 2, end: 2 },
       },
     });
-    const { review: out, stats } = resolveReviewLocations(review, { workspacePath: dir, diffText: null });
+    const { review: out, stats } = resolveReviewLocations(review, { trackedTree, diffText: null });
     expect(out.findings[0].code_location.line_range).toEqual({ start: 2, end: 2 });
     expect(stats.unmatched).toBe(1);
   });
 
+  it.each([
+    ["an untracked file in the workspace", "untracked.ts"],
+    ["a tracked symlink whose target is outside the workspace", "escape.ts"],
+    ["a tracked file above the size limit", "huge.ts"],
+  ])("refuses %s", (_label, name) => {
+    const review = makeReview({
+      existing_code: "function sub(a, b) {\n  return a - b;",
+      code_location: { absolute_file_path: join(dir, name), line_range: { start: 2, end: 2 } },
+    });
+    const { review: out, stats } = resolveReviewLocations(review, { trackedTree, diffText: null });
+    expect(out.findings[0].code_location.line_range).toEqual({ start: 2, end: 2 });
+    expect(stats.unmatched).toBe(1);
+  });
+
+  it("uses the diff's changed lines for the matching repository path", () => {
+    const review = makeReview({
+      existing_code: "}",
+      code_location: { absolute_file_path: filePath, line_range: { start: 1, end: 1 } },
+    });
+    const diffText = ["diff --git a/math.ts b/math.ts", "--- a/math.ts", "+++ b/math.ts", "@@ -7 +7 @@", "+}"].join("\n");
+    const { review: out } = resolveReviewLocations(review, { trackedTree, diffText });
+    expect(out.findings[0].code_location.line_range).toEqual({ start: 7, end: 7 });
+  });
+
   it("is a no-op for an empty findings list", () => {
     const review: ReviewOutput = { findings: [], overall_correctness: "patch is correct", overall_explanation: "ok" };
-    const { review: out, stats } = resolveReviewLocations(review, { workspacePath: dir });
+    const { review: out, stats } = resolveReviewLocations(review, { trackedTree });
     expect(out).toBe(review);
     expect(stats.total).toBe(0);
   });

@@ -2,6 +2,7 @@ import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { isRecord } from "./utils/json.js";
 
 export const MODELS_JSON_ENV = "HODOR_MODELS_JSON";
 
@@ -10,10 +11,6 @@ export interface ModelsJsonConfig {
   path: string;
   /** Provider keys defined in the file, with their exact case. */
   providers: ReadonlySet<string>;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**

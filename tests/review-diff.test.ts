@@ -4,15 +4,18 @@ import {
   getReviewDiffArgs,
   getChangedFiles,
   getDiffStats,
+  resolveReviewBaseSha,
 } from "../src/review-diff.js";
+import type { TrustedHodorNote } from "../src/types.js";
 import { exec } from "../src/utils/exec.js";
 
 vi.mock("../src/utils/exec.js", () => ({ exec: vi.fn() }));
 
 const sha = "1".repeat(40);
-const notes = [{
+const notes: TrustedHodorNote[] = [{
   body: `<!-- hodor:sha:${sha} -->\n<!-- hodor-review -->`,
   created_at: "2026-07-16T00:00:00Z",
+  provenance: "hodor",
 }];
 
 describe("findLatestReviewBase", () => {
@@ -41,6 +44,29 @@ describe("findLatestReviewBase", () => {
       sha,
       mode: "snapshot",
     });
+  });
+});
+
+describe("resolveReviewBaseSha", () => {
+  beforeEach(() => vi.mocked(exec).mockReset());
+
+  it("prefers the known MR diff base without running git", async () => {
+    await expect(resolveReviewBaseSha("/workspace", "main", "2".repeat(40)))
+      .resolves.toBe("2".repeat(40));
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  it("uses the merge base with the target branch", async () => {
+    vi.mocked(exec).mockResolvedValueOnce({ stdout: `${"3".repeat(40)}\n`, stderr: "" });
+
+    await expect(resolveReviewBaseSha("/workspace", "main", null)).resolves.toBe("3".repeat(40));
+    expect(vi.mocked(exec).mock.calls[0]?.[1]).toEqual(["merge-base", "HEAD", "origin/main"]);
+  });
+
+  it("returns null when no base can be computed", async () => {
+    vi.mocked(exec).mockRejectedValueOnce(new Error("no merge base"));
+
+    await expect(resolveReviewBaseSha("/workspace", "main", null)).resolves.toBeNull();
   });
 });
 
