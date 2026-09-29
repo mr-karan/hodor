@@ -73,7 +73,7 @@ bun run eval -- --model <provider/model> # paid: runs real model reviews
 1. Bump `version` in `package.json` and commit `chore(release): X.Y.Z` on `main`.
 2. Push `main`, then push tag `vX.Y.Z`. The tag runs `docker-release.yml` (`ghcr.io/mr-karan/hodor:X.Y.Z`) and `npm-publish.yml` (`@mrkaran/hodor`).
 3. After both succeed, create the GitHub Release: `gh release create vX.Y.Z --title vX.Y.Z --generate-notes --latest`. No workflow does this.
-4. Bump the pinned image in the shared GitLab template (`commons/gitlab-templates`, `hodor/`) and run its `test-template.mjs`.
+4. Bump the pinned image in any CI template that pins Hodor, and run that template's own checks.
 
 ## Security
 
