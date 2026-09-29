@@ -352,4 +352,64 @@ describe("GitLab review publication", () => {
       ),
     ).toBe(true);
   });
+
+  it("posts a re-review note when the summary is edited without new inline notes", async () => {
+    mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.some((arg) => arg.includes("/notes?per_page=100"))) {
+        return {
+          stdout: JSON.stringify([
+            {
+              id: 7,
+              body: "<!-- hodor-review -->\n<!-- hodor:summary:v1 -->\nold",
+              author: { username: "hodor-bot" },
+              system: false,
+              type: null,
+              position: null,
+              updated_at: "2026-09-28T10:00:00Z",
+            },
+          ]),
+          stderr: "",
+        };
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const { postReviewStructured } = await import("../src/publisher.js");
+
+    const result = await postReviewStructured({
+      prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42",
+      review: review([]),
+      reviewStyle: "hybrid",
+      headSha: "d".repeat(40),
+    });
+
+    expect(result.success).toBe(true);
+    const inputs = mocks.exec.mock.calls.map((call) => ({
+      args: call[1] as string[],
+      input: (call[2] as { input?: string } | undefined)?.input ?? "",
+    }));
+    const summaryEdit = inputs.find((call) => call.args.some((arg) => arg.endsWith("/notes/7")));
+    expect(summaryEdit?.input).toContain("**Reviewed commit:** `dddddddd`");
+    const newNotes = inputs.filter(
+      (call) => call.args.some((arg) => arg.endsWith("/notes")) && call.args.includes("POST"),
+    );
+    expect(newNotes).toHaveLength(1);
+    expect(newNotes[0].input).toContain("Re-reviewed `dddddddd`: no new findings.");
+  });
+
+  it("does not post a re-review note for the first summary", async () => {
+    const { postReviewStructured } = await import("../src/publisher.js");
+
+    await postReviewStructured({
+      prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42",
+      review: review([]),
+      reviewStyle: "hybrid",
+      headSha: "d".repeat(40),
+    });
+
+    const inputs = mocks.exec.mock.calls
+      .filter((call) => (call[1] as string[]).includes("POST"))
+      .map((call) => (call[2] as { input?: string } | undefined)?.input ?? "");
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]).not.toContain("Re-reviewed");
+  });
 });

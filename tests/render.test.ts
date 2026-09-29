@@ -1,5 +1,5 @@
 import { describe, test, expect, it } from "vitest";
-import { renderMarkdown, renderSummaryMarkdown } from "../src/render.js";
+import { renderMarkdown, renderReReviewNote, renderSummaryMarkdown } from "../src/render.js";
 import type { ReviewOutput, ReviewFinding } from "../src/types.js";
 
 function makeFinding(title: string, priority: 0 | 1 | 2 | 3): ReviewFinding {
@@ -172,5 +172,23 @@ describe("renderSummaryMarkdown", () => {
     expect(result).toContain(
       "| **[P1] Null check missing**<br>Test body | `src/foo.ts:10-15` | P1 |",
     );
+  });
+
+  it("shows the reviewed commit", () => {
+    const review: ReviewOutput = {
+      findings: [],
+      overall_correctness: "patch is correct",
+      overall_explanation: "All good.",
+    };
+    const result = renderSummaryMarkdown(review, { reviewedSha: "6394179b86c8e2274fb6fd36569ee585cfece21c" });
+    expect(result).toContain("**Reviewed commit:** `6394179b`");
+  });
+});
+
+describe("renderReReviewNote", () => {
+  it("names the commit and still-open findings", () => {
+    const note = renderReReviewNote("6394179b86c8e2274fb6fd36569ee585cfece21c", 2);
+    expect(note.startsWith("<!-- hodor-review -->\n")).toBe(true);
+    expect(note).toContain("Re-reviewed `6394179b`: no new findings. 2 finding(s) still open.");
   });
 });

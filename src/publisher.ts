@@ -9,6 +9,7 @@ import {
   HODOR_REVIEW_MARKER,
   listHodorDiscussions,
   postGitlabCommitStatus,
+  postGitlabMrComment,
   publishGitlabDraftNote,
   resolveGitlabDiscussions,
   upsertGitlabMrSummary,
@@ -19,6 +20,7 @@ import { detectPlatform, parsePrUrl } from "./platform.js";
 import {
   HODOR_SUMMARY_MARKER,
   renderMarkdown,
+  renderReReviewNote,
   renderSummaryMarkdown,
 } from "./render.js";
 import {
@@ -362,6 +364,7 @@ export async function postReviewStructured(opts: {
   }
 
   let summaryPosted = false;
+  let summaryAction: "created" | "updated" | null = null;
   if (
     !skipSummary &&
     (
@@ -381,12 +384,13 @@ export async function postReviewStructured(opts: {
       inlineDeduplicated:
         reviewStyle === "summary" ? undefined : inlineDeduplicated,
       reviewMode,
+      reviewedSha: headSha,
     });
     if (headSha) summaryBody = `<!-- hodor:sha:${headSha} -->\n${summaryBody}`;
     if (cacheMarker) summaryBody = summaryBody.replace("\n", `\n${cacheMarker}\n`);
     summaryBody = appendReviewDetails(summaryBody, model, metricsFooter);
     try {
-      await upsertGitlabMrSummary(
+      summaryAction = await upsertGitlabMrSummary(
         parsed.owner,
         parsed.repo,
         parsed.prNumber,
@@ -398,6 +402,23 @@ export async function postReviewStructured(opts: {
       const message = error instanceof Error ? error.message : String(error);
       errors.push(`summary comment: ${message}`);
       logger.warn(`Failed to upsert summary comment: ${message}`);
+    }
+  }
+
+  // Editing the summary in place sends no notification. When a re-review adds
+  // no inline notes, post a short note so the MR shows the review happened.
+  if (summaryAction === "updated" && inlineCreated === 0) {
+    try {
+      await postGitlabMrComment(
+        parsed.owner,
+        parsed.repo,
+        parsed.prNumber,
+        renderReReviewNote(headSha, reviewFindings.length),
+        parsed.host,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn(`Failed to post re-review note: ${message}`);
     }
   }
 

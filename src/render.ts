@@ -87,6 +87,7 @@ export function renderSummaryMarkdown(
     inlineCreated?: number;
     inlineDeduplicated?: number;
     reviewMode?: string;
+    reviewedSha?: string | null;
   } = {},
 ): string {
   const lines: string[] = [HODOR_REVIEW_MARKER, HODOR_SUMMARY_MARKER];
@@ -118,6 +119,9 @@ export function renderSummaryMarkdown(
         ? "Blocking findings remain"
         : "Non-blocking findings remain";
   lines.push(`**Overall verdict:** ${verdict}`);
+  if (options.reviewedSha) {
+    lines.push("", `**Reviewed commit:** \`${options.reviewedSha.slice(0, 8)}\``);
+  }
 
   const scope = options.reviewMode
     ? `${options.reviewMode[0].toUpperCase()}${options.reviewMode.slice(1)} review`
@@ -157,6 +161,16 @@ export function renderSummaryMarkdown(
   }
 
   return lines.join("\n").trimEnd() + "\n";
+}
+
+/**
+ * Render the short note posted when a re-review edits the summary in place
+ * without adding inline comments.
+ */
+export function renderReReviewNote(headSha: string | null | undefined, openFindings: number): string {
+  const commit = headSha ? ` \`${headSha.slice(0, 8)}\`` : "";
+  const open = openFindings > 0 ? ` ${openFindings} finding(s) still open.` : "";
+  return `${HODOR_REVIEW_MARKER}\nRe-reviewed${commit}: no new findings.${open} See the Hodor review summary.\n`;
 }
 
 function formatFinding(f: ReviewFinding): string {
