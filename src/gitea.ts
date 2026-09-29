@@ -1,5 +1,6 @@
 import { logger } from "./utils/logger.js";
-import type { MrMetadata, NoteEntry } from "./types.js";
+import { isRecord } from "./utils/json.js";
+import type { GiteaPublisherIdentity, MrMetadata, UntrustedNote } from "./types.js";
 
 export interface GiteaPrCheckoutInfo {
   sourceBranch: string;
@@ -93,6 +94,22 @@ async function giteaFetch<T>(
 }
 
 /**
+ * Resolve the numeric id of the account the configured token belongs to.
+ * Hodor trusts only comments written by this id.
+ */
+export async function fetchGiteaPublisherIdentity(
+  host?: string | null,
+): Promise<GiteaPublisherIdentity> {
+  requireGiteaToken();
+  const user = await giteaFetch<unknown>(host, "user");
+  const userId = isRecord(user) ? user.id : undefined;
+  if (typeof userId !== "number" || !Number.isSafeInteger(userId)) {
+    throw new GiteaAPIError("Authenticated Gitea user has no numeric id");
+  }
+  return { platform: "gitea", userId };
+}
+
+/**
  * Fetch pull request metadata from Gitea/Forgejo.
  */
 export async function fetchGiteaPrInfo(
@@ -182,7 +199,7 @@ export async function fetchGiteaPrComments(
   repo: string,
   prNumber: number | string,
   host?: string | null,
-): Promise<NoteEntry[]> {
+): Promise<UntrustedNote[]> {
   const comments: Array<Record<string, unknown>> = [];
   const pageSize = 100;
 
@@ -196,14 +213,18 @@ export async function fetchGiteaPrComments(
   }
 
   return comments.map((c) => {
-    const user = (c.user as Record<string, string>) ?? {};
+    const user = isRecord(c.user) ? c.user : {};
+    const login = typeof user.login === "string" ? user.login : undefined;
+    const fullName = typeof user.full_name === "string" ? user.full_name : undefined;
     return {
-      body: (c.body as string) ?? "",
+      body: typeof c.body === "string" ? c.body : "",
       author: {
-        username: user.login,
-        name: user.full_name || user.login,
+        id: typeof user.id === "number" && Number.isSafeInteger(user.id) ? user.id : undefined,
+        username: login,
+        name: fullName || login,
       },
-      created_at: c.created_at as string | undefined,
+      created_at: typeof c.created_at === "string" ? c.created_at : undefined,
+      updated_at: typeof c.updated_at === "string" ? c.updated_at : undefined,
       system: false,
     };
   });

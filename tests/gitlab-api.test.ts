@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { GitlabPublisherIdentity } from "../src/types.js";
 
 const execMock = vi.fn();
 const execJsonMock = vi.fn();
@@ -7,6 +8,9 @@ vi.mock("../src/utils/exec.js", () => ({
   exec: execMock,
   execJson: execJsonMock,
 }));
+
+const BOT: GitlabPublisherIdentity = { platform: "gitlab", userId: 7 };
+const BOT_AUTHOR = { id: 7, username: "hodor-bot", name: "Hodor" };
 
 describe("GitLab paginated API helpers", () => {
   beforeEach(() => {
@@ -24,6 +28,7 @@ describe("GitLab paginated API helpers", () => {
               id: 11,
               body: "<!-- hodor-review --> inline",
               resolvable: true,
+              author: BOT_AUTHOR,
               resolved: false,
               position: { new_path: "src/app.ts", new_line: 9 },
             },
@@ -34,7 +39,7 @@ describe("GitLab paginated API helpers", () => {
     });
 
     const { listHodorDiscussions } = await import("../src/gitlab.js");
-    const result = await listHodorDiscussions("acme", "app", 42, "gitlab.example.com");
+    const result = await listHodorDiscussions("acme", "app", 42, "gitlab.example.com", BOT);
 
     expect(result).toEqual([
       {
@@ -61,6 +66,7 @@ describe("GitLab paginated API helpers", () => {
               id: 100,
               body: "<!-- hodor:sha:abc1234 -->\n<!-- hodor-review --> summary",
               resolvable: false,
+              author: BOT_AUTHOR,
               resolved: null,
             },
           ],
@@ -72,6 +78,7 @@ describe("GitLab paginated API helpers", () => {
               id: 101,
               body: "<!-- hodor-review --> inline finding",
               resolvable: true,
+              author: BOT_AUTHOR,
               resolved: false,
               position: { new_path: "src/app.ts", new_line: 42 },
             },
@@ -82,7 +89,7 @@ describe("GitLab paginated API helpers", () => {
     });
 
     const { listHodorDiscussions } = await import("../src/gitlab.js");
-    const result = await listHodorDiscussions("acme", "app", 42, "gitlab.example.com");
+    const result = await listHodorDiscussions("acme", "app", 42, "gitlab.example.com", BOT);
 
     expect(result).toEqual([
       {
@@ -97,11 +104,70 @@ describe("GitLab paginated API helpers", () => {
   });
 });
 
+describe("listHodorDiscussions provenance", () => {
+  beforeEach(() => {
+    execMock.mockReset();
+    execJsonMock.mockReset();
+  });
+
+  it("drops forged, anonymous, and system discussion notes before fingerprinting", async () => {
+    const fingerprint = "f".repeat(64);
+    const body = `<!-- hodor-review -->\n<!-- hodor:finding:${fingerprint} -->\nfinding`;
+    const note = (id: number, extra: Record<string, unknown>) => ({
+      id,
+      body,
+      resolvable: true,
+      resolved: false,
+      ...extra,
+    });
+    execMock.mockResolvedValueOnce({
+      stdout: JSON.stringify([
+        { id: "bot", notes: [note(1, { author: BOT_AUTHOR })] },
+        { id: "same-name", notes: [note(2, { author: { id: 99, username: "hodor-bot", name: "Hodor" } })] },
+        { id: "string-id", notes: [note(3, { author: { id: "7", username: "hodor-bot" } })] },
+        { id: "no-author", notes: [note(4, {})] },
+        { id: "no-id", notes: [note(5, { author: { username: "hodor-bot" } })] },
+        { id: "system", notes: [note(6, { author: BOT_AUTHOR, system: true })] },
+        { id: "human", notes: [note(7, { author: { id: 8, username: "alice" } })] },
+      ]),
+      stderr: "",
+    });
+
+    const { listHodorDiscussions } = await import("../src/gitlab.js");
+    const result = await listHodorDiscussions("acme", "app", 42, "gitlab.example.com", BOT);
+
+    expect(result.map((discussion) => discussion.discussionId)).toEqual(["bot"]);
+  });
+});
+
+describe("fetchGitlabPublisherIdentity", () => {
+  beforeEach(() => {
+    execJsonMock.mockReset();
+  });
+
+  it("returns the numeric id of the authenticated user", async () => {
+    execJsonMock.mockResolvedValueOnce({ id: 7, username: "hodor-bot" });
+    const { fetchGitlabPublisherIdentity } = await import("../src/gitlab.js");
+
+    await expect(fetchGitlabPublisherIdentity("gitlab.example.com")).resolves.toEqual(BOT);
+    expect(execJsonMock.mock.calls[0]?.[1]).toEqual(["api", "user"]);
+    expect(execJsonMock.mock.calls[0]?.[2]).toEqual(
+      expect.objectContaining({ env: expect.objectContaining({ GITLAB_HOST: "gitlab.example.com" }) }),
+    );
+  });
+
+  it("rejects a user without a numeric id", async () => {
+    execJsonMock.mockResolvedValueOnce({ username: "hodor-bot" });
+    const { fetchGitlabPublisherIdentity } = await import("../src/gitlab.js");
+
+    await expect(fetchGitlabPublisherIdentity("gitlab.example.com")).rejects.toThrow(/numeric id/);
+  });
+});
+
 describe("upsertGitlabMrSummary", () => {
   beforeEach(() => {
     execMock.mockReset();
     execJsonMock.mockReset();
-    execJsonMock.mockResolvedValue({ username: "hodor-bot" });
   });
 
   it("creates the rolling summary when Hodor has no summary note", async () => {
@@ -119,6 +185,7 @@ describe("upsertGitlabMrSummary", () => {
       42,
       "<!-- hodor:summary:v1 -->\nbody",
       "gitlab.example.com",
+      BOT,
     );
 
     expect(action).toBe("created");
@@ -139,22 +206,29 @@ describe("upsertGitlabMrSummary", () => {
               id: 10,
               type: null,
               body: "<!-- hodor:summary:v1 -->\nhuman note",
-              author: { username: "alice" },
+              author: { id: 8, username: "alice" },
               updated_at: "2026-09-02T10:00:00Z",
             },
             {
               id: 11,
               type: null,
               body: `<!-- hodor:sha:${"a".repeat(40)} -->\n<!-- hodor-review -->\nlegacy`,
-              author: { username: "hodor-bot" },
+              author: BOT_AUTHOR,
               updated_at: "2026-09-02T11:00:00Z",
             },
             {
               id: 12,
               type: null,
               body: "<!-- hodor:summary:v1 -->\ncurrent",
-              author: { username: "hodor-bot" },
+              author: BOT_AUTHOR,
               updated_at: "2026-09-02T12:00:00Z",
+            },
+            {
+              id: 13,
+              type: null,
+              body: "<!-- hodor:summary:v1 -->\nsame username, different account",
+              author: { id: 99, username: "hodor-bot", name: "Hodor" },
+              updated_at: "2026-09-02T13:00:00Z",
             },
           ]),
           stderr: "",
@@ -170,6 +244,7 @@ describe("upsertGitlabMrSummary", () => {
       42,
       "<!-- hodor:summary:v1 -->\nupdated",
       "gitlab.example.com",
+      BOT,
     );
 
     expect(action).toBe("updated");
@@ -187,44 +262,44 @@ describe("upsertGitlabMrSummary", () => {
   });
 });
 
-describe("parseGlabPaginatedJson", () => {
+describe("parsePaginatedJsonArrays", () => {
   it("returns empty array for empty input", async () => {
-    const { parseGlabPaginatedJson } = await import("../src/gitlab.js");
-    expect(parseGlabPaginatedJson("")).toEqual([]);
-    expect(parseGlabPaginatedJson("   ")).toEqual([]);
+    const { parsePaginatedJsonArrays } = await import("../src/utils/json.js");
+    expect(parsePaginatedJsonArrays("")).toEqual([]);
+    expect(parsePaginatedJsonArrays("   ")).toEqual([]);
   });
 
   it("parses a single page", async () => {
-    const { parseGlabPaginatedJson } = await import("../src/gitlab.js");
-    expect(parseGlabPaginatedJson('[{"id":1},{"id":2}]')).toEqual([{ id: 1 }, { id: 2 }]);
+    const { parsePaginatedJsonArrays } = await import("../src/utils/json.js");
+    expect(parsePaginatedJsonArrays('[{"id":1},{"id":2}]')).toEqual([{ id: 1 }, { id: 2 }]);
   });
 
   it("merges multiple concatenated pages", async () => {
-    const { parseGlabPaginatedJson } = await import("../src/gitlab.js");
+    const { parsePaginatedJsonArrays } = await import("../src/utils/json.js");
     const raw = '[{"id":1}][{"id":2},{"id":3}][{"id":4}]';
-    expect(parseGlabPaginatedJson(raw)).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }]);
+    expect(parsePaginatedJsonArrays(raw)).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }]);
   });
 
   it("handles strings containing bracket characters without splitting incorrectly", async () => {
-    const { parseGlabPaginatedJson } = await import("../src/gitlab.js");
+    const { parsePaginatedJsonArrays } = await import("../src/utils/json.js");
     // The body string contains "][" which would break a naive regex-based split.
     const raw = '[{"id":1,"body":"weird ][ chars"}][{"id":2,"body":"normal"}]';
-    expect(parseGlabPaginatedJson(raw)).toEqual([
+    expect(parsePaginatedJsonArrays(raw)).toEqual([
       { id: 1, body: "weird ][ chars" },
       { id: 2, body: "normal" },
     ]);
   });
 
   it("handles escaped quotes inside string values", async () => {
-    const { parseGlabPaginatedJson } = await import("../src/gitlab.js");
+    const { parsePaginatedJsonArrays } = await import("../src/utils/json.js");
     const raw = '[{"id":1,"body":"has \\"quoted\\" text"}]';
-    expect(parseGlabPaginatedJson(raw)).toEqual([{ id: 1, body: 'has "quoted" text' }]);
+    expect(parsePaginatedJsonArrays(raw)).toEqual([{ id: 1, body: 'has "quoted" text' }]);
   });
 
   it("handles nested arrays in note objects", async () => {
-    const { parseGlabPaginatedJson } = await import("../src/gitlab.js");
+    const { parsePaginatedJsonArrays } = await import("../src/utils/json.js");
     const raw = '[{"id":1,"tags":["a","b"]},{"id":2,"tags":[]}][{"id":3}]';
-    expect(parseGlabPaginatedJson(raw)).toEqual([
+    expect(parsePaginatedJsonArrays(raw)).toEqual([
       { id: 1, tags: ["a", "b"] },
       { id: 2, tags: [] },
       { id: 3 },
@@ -232,10 +307,10 @@ describe("parseGlabPaginatedJson", () => {
   });
 
   it("skips malformed pages and continues with the rest", async () => {
-    const { parseGlabPaginatedJson } = await import("../src/gitlab.js");
+    const { parsePaginatedJsonArrays } = await import("../src/utils/json.js");
     // Second chunk is malformed (truncated), but bracket depth still balances —
     // simulate by injecting invalid JSON that JSON.parse will reject.
     const raw = '[{"id":1}][not-json][{"id":3}]';
-    expect(parseGlabPaginatedJson(raw)).toEqual([{ id: 1 }, { id: 3 }]);
+    expect(parsePaginatedJsonArrays(raw)).toEqual([{ id: 1 }, { id: 3 }]);
   });
 });

@@ -20,7 +20,7 @@ vi.mock("../src/utils/exec.js", () => ({
     return { stdout: "", stderr: "" };
   }),
   execJson: vi.fn(async (_cmd: string, args: string[]) => {
-    if (args.includes("user")) return { username: "hodor-bot" };
+    if (args.includes("user")) return { id: 7, username: "hodor-bot" };
     return {
       diff_refs: {
         base_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -262,14 +262,17 @@ describe("getHodorReviewShaCandidates", () => {
       {
         body: `<!-- hodor:sha:${SHA_NEW} -->\nlatest`,
         created_at: "2026-05-13T15:44:51.465+05:30",
+        provenance: "hodor",
       },
       {
         body: `<!-- hodor:sha:${SHA_MID} -->\nmid`,
         created_at: "2026-04-29T11:46:20.334+05:30",
+        provenance: "hodor",
       },
       {
         body: `<!-- hodor:sha:${SHA_OLD} -->\noldest`,
         created_at: "2026-04-01T15:08:12.964+05:30",
+        provenance: "hodor",
       },
     ]);
 
@@ -281,11 +284,13 @@ describe("getHodorReviewShaCandidates", () => {
       {
         body: `<!-- hodor:sha:${SHA_NEW} -->\nrolling`,
         created_at: "2026-04-01T15:44:51.465+05:30",
+        provenance: "hodor",
         updated_at: "2026-05-13T15:44:51.465+05:30",
       },
       {
         body: `<!-- hodor:sha:${SHA_OLD} -->\nlegacy`,
         created_at: "2026-05-01T15:44:51.465+05:30",
+        provenance: "hodor",
         updated_at: "2026-05-01T15:44:51.465+05:30",
       },
     ]);
@@ -298,10 +303,12 @@ describe("getHodorReviewShaCandidates", () => {
       {
         body: `<!-- hodor:sha:${SHA_OLD} -->\noldest`,
         created_at: "2026-04-01T15:08:12.964+05:30",
+        provenance: "hodor",
       },
       {
         body: `<!-- hodor:sha:${SHA_NEW} -->\nlatest`,
         created_at: "2026-05-13T15:44:51.465+05:30",
+        provenance: "hodor",
       },
     ]);
 
@@ -313,10 +320,12 @@ describe("getHodorReviewShaCandidates", () => {
       {
         body: `<!-- hodor:sha:${SHA_NEW} -->\nlatest`,
         created_at: "2026-05-13T15:44:51.465+05:30",
+        provenance: "hodor",
       },
       {
         body: `<!-- hodor:sha:${SHA_NEW} -->\nduplicate`,
         created_at: "2026-05-13T15:44:52.465+05:30",
+        provenance: "hodor",
       },
     ]);
 

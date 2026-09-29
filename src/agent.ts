@@ -11,10 +11,7 @@ import type { AgentSession, ToolDefinition } from "@earendil-works/pi-coding-age
 import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
 import { logger } from "./utils/logger.js";
 import { exec } from "./utils/exec.js";
-import {
-  fetchGithubPrInfo,
-  normalizeGithubMetadata,
-} from "./github.js";
+import { fetchGithubPrMetadata } from "./github.js";
 import {
   fetchGitlabMrInfo,
 } from "./gitlab.js";
@@ -55,9 +52,11 @@ import {
   getReviewDiffArgs,
   getChangedFiles,
   getDiffStats,
+  resolveReviewBaseSha,
   type DiffStats,
   type ReviewDiffMode,
 } from "./review-diff.js";
+import { partitionNotesByProvenance, resolvePublisherIdentity } from "./provenance.js";
 import {
   buildReviewCacheMarker,
   findCachedReview,
@@ -385,8 +384,7 @@ export async function reviewPr(opts: {
       }
     } else if (!localMode && platform === "github") {
       try {
-        const githubRaw = await fetchGithubPrInfo(owner, repo, prNumber);
-        mrMetadata = normalizeGithubMetadata(githubRaw);
+        mrMetadata = await fetchGithubPrMetadata(owner, repo, prNumber, host);
       } catch (err) {
         logger.warn(`Failed to fetch GitHub metadata: ${err}`);
       }
@@ -407,20 +405,38 @@ export async function reviewPr(opts: {
       headSha = headShaRaw.trim();
     }
 
+    // Authenticate note provenance once. Only Hodor-marked notes written by
+    // the publishing identity carry machine state; everything else, including
+    // forged markers, stays untrusted context for the prompt.
+    const publisherIdentity = localMode ? null : await resolvePublisherIdentity(platform, host);
+    const notes = partitionNotesByProvenance(mrMetadata?.Notes, publisherIdentity);
+    if (mrMetadata) mrMetadata.Notes = [...notes.others, ...notes.hodor];
+
     // A successful Hodor summary contains a compressed, validated copy of the
     // structured result. Reuse it for an identical review identity so pipeline
     // retries can regenerate artifacts and retry delivery without another LLM
     // invocation. Explicit --full reviews always bypass this fast path.
     let reviewCacheKey: string | null = null;
-    if (!localMode && !full && headSha) {
+    const reviewBaseSha = !localMode && !full && headSha
+      ? await resolveReviewBaseSha(workspacePath, targetBranch, diffBaseSha)
+      : null;
+    if (headSha && reviewBaseSha) {
       reviewCacheKey = getReviewCacheKey({
+        scope: {
+          platform,
+          host,
+          projectPath: `${owner}/${repo}`,
+          reviewNumber: prNumber,
+          targetBranch,
+          baseSha: reviewBaseSha,
+        },
         headSha,
         model,
         requestedReasoningEffort: reasoningEffort,
         reviewInstructions: effectiveReviewInstructions,
         additionalInstructions: effectiveAdditionalInstructions,
       });
-      const cachedReview = findCachedReview(mrMetadata?.Notes, reviewCacheKey);
+      const cachedReview = findCachedReview(notes.hodor, reviewCacheKey);
       if (cachedReview) {
         logger.info(`Reusing cached Hodor review for HEAD ${headSha.slice(0, 8)}`);
         const metrics: ReviewMetrics = {
@@ -471,7 +487,7 @@ export async function reviewPr(opts: {
     // is an ancestor; after a force-push/rebase, use a direct snapshot delta.
     const previousReviewBase = full || localMode
       ? null
-      : await findLatestReviewBase(mrMetadata?.Notes, workspacePath);
+      : await findLatestReviewBase(notes.hodor, workspacePath);
     const previousReviewSha = previousReviewBase?.sha ?? null;
     let reviewMode: ReviewDiffMode = localMode
       ? "local"

@@ -1,6 +1,7 @@
 import { exec, execJson } from "./utils/exec.js";
 import { logger } from "./utils/logger.js";
-import type { MrMetadata, NoteEntry } from "./types.js";
+import { isRecord, parsePaginatedJsonArrays } from "./utils/json.js";
+import type { GitlabPublisherIdentity, MrMetadata, NoteAuthor, NoteEntry } from "./types.js";
 import { HODOR_REVIEW_MARKER, HODOR_SUMMARY_MARKER } from "./render.js";
 
 export { HODOR_REVIEW_MARKER, HODOR_SUMMARY_MARKER };
@@ -32,12 +33,12 @@ const HODOR_NOTE_PREFIX_RE = /^\s*<!--\s*hodor[-:]/;
 const HODOR_CACHE_MARKER_RE = /<!--\s*hodor:cache:v1:[A-Za-z0-9_-]+\s*-->\s*/g;
 const HODOR_SHA_PREFIX_RE = /^\s*<!--\s*hodor:sha:[a-f0-9]{40}\s*-->/i;
 
-function isHodorNote(body: unknown, marker = HODOR_REVIEW_MARKER): boolean {
+export function isHodorGeneratedNote(body: unknown): boolean {
   if (typeof body !== "string") return false;
-  // Default fast-path: body starts with the canonical marker (allowing leading whitespace).
-  if (body.trimStart().startsWith(marker)) return true;
+  // Fast path: body starts with the canonical marker (allowing leading whitespace).
+  if (body.trimStart().startsWith(HODOR_REVIEW_MARKER)) return true;
   // Accept hodor's own SHA prefix, e.g. `<!-- hodor:sha:abc -->\n<!-- hodor-review -->\n...`
-  if (marker === HODOR_REVIEW_MARKER && HODOR_NOTE_PREFIX_RE.test(body)) {
+  if (HODOR_NOTE_PREFIX_RE.test(body)) {
     // Require the canonical marker to appear somewhere in the body so we don't
     // resolve unrelated `<!-- hodor:foo -->` notes that aren't review summaries.
     return body.includes(HODOR_REVIEW_MARKER);
@@ -45,66 +46,18 @@ function isHodorNote(body: unknown, marker = HODOR_REVIEW_MARKER): boolean {
   return false;
 }
 
-export function isHodorGeneratedNote(body: unknown): boolean {
-  return isHodorNote(body);
+function parseGitlabAuthor(value: unknown): NoteAuthor | undefined {
+  if (!isRecord(value)) return undefined;
+  return {
+    id: typeof value.id === "number" && Number.isSafeInteger(value.id) ? value.id : undefined,
+    username: typeof value.username === "string" ? value.username : undefined,
+    name: typeof value.name === "string" ? value.name : undefined,
+  };
 }
 
-/**
- * Parse concatenated JSON arrays from `glab api --paginate`.
- * glab outputs `[...][...][...]` — one array per page, no delimiter.
- * We track bracket depth (respecting strings/escapes) to find each
- * top-level array, parse them individually, and merge with flat().
- */
-export function parseGlabPaginatedJson(raw: string): Array<Record<string, unknown>> {
-  const trimmed = raw.trim();
-  if (!trimmed) return [];
-
-  const chunks: string[] = [];
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  let start = -1;
-
-  for (let i = 0; i < trimmed.length; i++) {
-    const ch = trimmed[i];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (ch === "\\" && inString) {
-      escaped = true;
-      continue;
-    }
-    if (ch === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) continue;
-
-    if (ch === "[") {
-      if (depth === 0) start = i;
-      depth++;
-    } else if (ch === "]") {
-      depth--;
-      if (depth === 0 && start >= 0) {
-        chunks.push(trimmed.slice(start, i + 1));
-        start = -1;
-      }
-    }
-  }
-
-  const results: Array<Record<string, unknown>> = [];
-  for (const chunk of chunks) {
-    try {
-      const parsed = JSON.parse(chunk) as Array<Record<string, unknown>>;
-      if (Array.isArray(parsed)) results.push(...parsed);
-    } catch (err) {
-      logger.warn(
-        `Skipping malformed glab pagination chunk: ${err instanceof Error ? err.message : err}`,
-      );
-    }
-  }
-  return results;
+/** True when a raw GitLab note is a user note written by the publishing identity. */
+function isPublisherNote(note: Record<string, unknown>, identity: GitlabPublisherIdentity): boolean {
+  return note.system !== true && parseGitlabAuthor(note.author)?.id === identity.userId;
 }
 
 export class GitLabAPIError extends Error {
@@ -190,13 +143,13 @@ export async function fetchGitlabMrInfo(
         ["api", `projects/${encoded}/merge_requests/${mrNumber}/notes`, "--paginate"],
         { env },
       );
-      const notes = parseGlabPaginatedJson(rawNotes);
+      const notes = parsePaginatedJsonArrays(rawNotes);
       metadata.Notes = notes.map((n) => ({
-        body: (n.body as string) ?? "",
-        author: n.author as { username?: string; name?: string } | undefined,
-        created_at: n.created_at as string | undefined,
-        updated_at: n.updated_at as string | undefined,
-        system: n.system as boolean | undefined,
+        body: typeof n.body === "string" ? n.body : "",
+        author: parseGitlabAuthor(n.author),
+        created_at: typeof n.created_at === "string" ? n.created_at : undefined,
+        updated_at: typeof n.updated_at === "string" ? n.updated_at : undefined,
+        system: n.system === true,
       }));
     } catch (err) {
       logger.warn(`Failed to fetch MR notes: ${err instanceof Error ? err.message : err}`);
@@ -240,46 +193,55 @@ export async function postGitlabMrComment(
   }
 }
 
+/**
+ * Resolve the numeric id of the account glab authenticates as on this host.
+ * Hodor trusts only notes written by this id.
+ */
+export async function fetchGitlabPublisherIdentity(
+  host?: string | null,
+): Promise<GitlabPublisherIdentity> {
+  let user: unknown;
+  try {
+    user = await execJson<unknown>("glab", ["api", "user"], { env: glabEnv(host) });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new GitLabAPIError(`Failed to resolve the authenticated GitLab user: ${msg}`);
+  }
+  const userId = isRecord(user) ? user.id : undefined;
+  if (typeof userId !== "number" || !Number.isSafeInteger(userId)) {
+    throw new GitLabAPIError("Authenticated GitLab user has no numeric id");
+  }
+  return { platform: "gitlab", userId };
+}
+
 export async function upsertGitlabMrSummary(
   owner: string,
   repo: string,
   mrNumber: number | string,
   body: string,
-  host?: string | null,
+  host: string | null | undefined,
+  identity: GitlabPublisherIdentity,
 ): Promise<"created" | "updated"> {
   const encoded = encodedProjectPath(owner, repo);
   const env = glabEnv(host);
 
   try {
-    const [currentUser, notesResult] = await Promise.all([
-      execJson<Record<string, unknown>>("glab", ["api", "user"], { env }),
-      exec(
-        "glab",
-        [
-          "api",
-          `projects/${encoded}/merge_requests/${mrNumber}/notes?per_page=100`,
-          "--paginate",
-        ],
-        { env },
-      ),
-    ]);
-    const username = currentUser.username;
-    if (typeof username !== "string" || !username) {
-      throw new Error("authenticated GitLab user has no username");
-    }
+    const notesResult = await exec(
+      "glab",
+      [
+        "api",
+        `projects/${encoded}/merge_requests/${mrNumber}/notes?per_page=100`,
+        "--paginate",
+      ],
+      { env },
+    );
 
-    const candidates = parseGlabPaginatedJson(notesResult.stdout)
+    const candidates = parsePaginatedJsonArrays(notesResult.stdout)
       .filter((note) => {
         const noteBody = note.body;
-        const author = note.author;
-        const authorUsername =
-          author && typeof author === "object"
-            ? (author as Record<string, unknown>).username
-            : undefined;
         if (
           typeof noteBody !== "string" ||
-          authorUsername !== username ||
-          note.system === true ||
+          !isPublisherNote(note, identity) ||
           note.type != null ||
           note.position != null
         ) {
@@ -324,24 +286,26 @@ export async function upsertGitlabMrSummary(
 }
 
 /**
- * Summarize GitLab notes into a human-readable bullet list.
+ * Summarize notes that are not authenticated Hodor state into a bullet list.
+ * A participant note that copies a Hodor marker stays here, as human context.
  */
 export function summarizeGitlabNotes(
-  notes: NoteEntry[] | undefined | null,
+  notes: readonly NoteEntry[] | undefined | null,
   maxEntries = 5,
 ): string {
-  return summarizeNotes(notes, maxEntries, (note) => !isHodorNote(note.body));
+  return summarizeNotes(notes, maxEntries, (note) => note.provenance !== "hodor");
 }
 
+/** Summarize only notes that partitionNotesByProvenance authenticated. */
 export function summarizeHodorNotes(
-  notes: NoteEntry[] | undefined | null,
+  notes: readonly NoteEntry[] | undefined | null,
   maxEntries = 5,
 ): string {
-  return summarizeNotes(notes, maxEntries, (note) => isHodorNote(note.body));
+  return summarizeNotes(notes, maxEntries, (note) => note.provenance === "hodor");
 }
 
 function summarizeNotes(
-  notes: NoteEntry[] | undefined | null,
+  notes: readonly NoteEntry[] | undefined | null,
   maxEntries: number,
   include: (note: NoteEntry) => boolean,
 ): string {
@@ -603,12 +567,17 @@ export async function postGitlabCommitStatus(
   }
 }
 
+/**
+ * List resolvable Hodor discussions written by the publishing identity. Notes
+ * from other authors are dropped before fingerprinting, deduplication, merge,
+ * status, code quality, and resolution, even if they copy a Hodor marker.
+ */
 export async function listHodorDiscussions(
   owner: string,
   repo: string,
   mrNumber: number | string,
-  host?: string | null,
-  marker = HODOR_REVIEW_MARKER,
+  host: string | null | undefined,
+  identity: GitlabPublisherIdentity,
 ): Promise<HodorDiscussion[]> {
   const encoded = encodedProjectPath(owner, repo);
   const env = glabEnv(host);
@@ -624,7 +593,7 @@ export async function listHodorDiscussions(
       ],
       { env },
     );
-    discussions = parseGlabPaginatedJson(rawDiscussions);
+    discussions = parsePaginatedJsonArrays(rawDiscussions);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new GitLabAPIError(`Failed to list discussions for MR !${mrNumber}: ${msg}`);
@@ -643,21 +612,22 @@ export async function listHodorDiscussions(
       continue;
     }
 
-    for (const note of notes) {
-      if (!note || typeof note !== "object") {
+    for (const noteObj of notes) {
+      if (!isRecord(noteObj)) {
         continue;
       }
-      const noteObj = note as Record<string, unknown>;
       const noteId = noteObj.id;
       const body = noteObj.body;
-      if (typeof noteId !== "number" || typeof body !== "string" || !isHodorNote(body, marker)) {
+      if (
+        typeof noteId !== "number" ||
+        typeof body !== "string" ||
+        !isHodorGeneratedNote(body) ||
+        !isPublisherNote(noteObj, identity)
+      ) {
         continue;
       }
 
-      const position =
-        noteObj.position && typeof noteObj.position === "object"
-          ? (noteObj.position as Record<string, unknown>)
-          : undefined;
+      const position = isRecord(noteObj.position) ? noteObj.position : undefined;
 
       const filePath =
         typeof position?.new_path === "string"

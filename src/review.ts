@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import { Type } from "typebox";
 import type { ReviewOutput, ReviewPriority } from "./types.js";
+import { isRecord } from "./utils/json.js";
 
 const REVIEW_PRIORITY_TAGS = new Map<string, ReviewPriority>([
   ["[P0]", 0],
@@ -48,10 +49,6 @@ export const SUBMIT_REVIEW_SCHEMA = Type.Object(
 );
 
 const NULLABLE_FINDING_FIELDS = ["existing_code", "suggestion"];
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /**
  * Models often send `null` for optional finding fields. The schema rejects null. Pi's

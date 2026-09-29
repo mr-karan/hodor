@@ -259,7 +259,7 @@ Hodor automatically optimizes token usage:
 
 - **Diff embedding**: For PRs under 200KB, the diff is embedded directly in the prompt, cutting agent turns from ~60 to ~5.
 - **Incremental reviews**: On re-runs, only reviews changes since the last hodor comment. After a force-push or rebase, Hodor compares the last reviewed snapshot directly with the current HEAD instead of reviewing the whole MR again.
-- **Identical-HEAD reuse**: Successful summaries include a versioned, compressed review payload. Pipeline retries with the same HEAD, model, reasoning request, review profile, and additional instructions reuse that result while still regenerating artifacts and retrying delivery.
+- **Identical-HEAD reuse**: Successful summaries include a versioned, compressed review payload. Pipeline retries with the same MR/PR, target branch and base commit, HEAD, model, reasoning request, review profile, and additional instructions reuse that result while still regenerating artifacts and retrying delivery.
 - **Adaptive reasoning**: Models that default to `xhigh` (Opus 4.7 and later) use `high` for incremental reviews and small diffs (10 files or fewer, 500 changed lines or fewer). High-risk, large, and `--full` reviews keep `xhigh`. An explicit `--reasoning-effort` always wins.
 - **Focused exploration**: Embedded diffs include a changed-file manifest and direct the agent toward bounded context reads without limiting how far it may investigate.
 - **Compaction**: Hodor auto-summarizes older conversation turns when context grows too large.
@@ -296,6 +296,7 @@ Hodor reviews untrusted code, so plan CI permissions around these facts:
 - **The agent has a shell.** Besides read, grep, find, and ls, the agent can run shell commands (for git). The review protocol forbids changes, but the protocol is a prompt, not a sandbox. Commands inherit Hodor's environment, including API keys and platform tokens.
 - **Give Hodor least-privilege credentials.** Use a token scoped to comments and statuses, a dedicated bot account, and short-lived cloud credentials. Restrict network egress from the runner where you can. Rotate keys and keep audit logging on.
 - **Diffs and repository text are untrusted input.** Treat a review as advice. Keep `allow_failure` and human approval in the merge path.
+- **Hodor trusts only its own notes.** Review SHAs, cached reviews, prior review context, and inline discussions are read back only from notes written by the account Hodor posts as: the numeric user id behind the GitLab, Gitea, or GitHub token (`gh api user` on GitHub). Set `HODOR_GITHUB_BOT_LOGIN` to name the GitHub account explicitly; Hodor resolves it to its id. In GitHub Actions, Hodor falls back to the id of `github-actions[bot]`, which every workflow in the repository shares; use a dedicated app or bot account to isolate Hodor state. If Hodor cannot resolve its identity, it runs a full review with no reuse, and GitLab posting fails instead of guessing.
 - **`HODOR_MODELS_JSON` is trusted configuration.** It can run commands and redirect traffic. Never load it from the checkout under review. See [Custom endpoints](./docs/MODELS.md#treat-the-file-as-trusted-code).
 
 ## Development
@@ -346,6 +347,7 @@ flowchart LR
 | `src/resolve-location.ts` | Snippet-based line resolution ([details](./docs/SNIPPET_LINE_RESOLUTION.md)) |
 | `src/review-state.ts` | Finding fingerprints and dedupe against open discussions |
 | `src/review-cache.ts` | Identical-HEAD review reuse |
+| `src/provenance.ts` | Publishing identity and trusted Hodor note partitioning |
 | `src/review-policy.ts` | `--fail-on-priority` evaluation |
 | `src/publisher.ts` | Inline notes, rolling summary, commit status, discussion reconciliation |
 | `src/gitlab.ts`, `src/github.ts`, `src/gitea.ts` | Platform APIs via `glab`, `gh`, and the Gitea REST API |

@@ -3,8 +3,18 @@ import {
   buildReviewCacheMarker,
   findCachedReview,
   getReviewCacheKey,
+  type ReviewCacheScope,
 } from "../src/review-cache.js";
 import type { ReviewOutput } from "../src/types.js";
+
+const scope: ReviewCacheScope = {
+  platform: "gitlab",
+  host: "gitlab.example.com",
+  projectPath: "team/widget",
+  reviewNumber: 42,
+  targetBranch: "main",
+  baseSha: "b".repeat(40),
+};
 
 const review: ReviewOutput = {
   findings: [{
@@ -24,6 +34,7 @@ const review: ReviewOutput = {
 describe("review cache", () => {
   it("round-trips a validated review without retaining workspace paths", () => {
     const key = getReviewCacheKey({
+      scope,
       headSha: "a".repeat(40),
       model: "anthropic/claude-opus-4-7",
       reviewInstructions: "default review profile",
@@ -32,6 +43,7 @@ describe("review cache", () => {
     const cached = findCachedReview([{
       body: `<!-- hodor:sha:${"a".repeat(40)} -->\n${marker}\n<!-- hodor-review -->`,
       created_at: "2026-07-16T00:00:00Z",
+      provenance: "hodor",
     }], key);
 
     expect(marker).not.toContain("private");
@@ -41,6 +53,7 @@ describe("review cache", () => {
 
   it("prefers the most recently updated rolling-summary cache", () => {
     const key = getReviewCacheKey({
+      scope,
       headSha: "a".repeat(40),
       model: "anthropic/claude-opus-4-7",
       reviewInstructions: "default review profile",
@@ -59,11 +72,13 @@ describe("review cache", () => {
         body: buildReviewCacheMarker(key, legacyReview),
         created_at: "2026-07-16T00:00:00Z",
         updated_at: "2026-07-16T00:00:00Z",
+        provenance: "hodor",
       },
       {
         body: buildReviewCacheMarker(key, rollingReview),
         created_at: "2026-07-15T00:00:00Z",
         updated_at: "2026-07-17T00:00:00Z",
+        provenance: "hodor",
       },
     ], key);
 
@@ -72,11 +87,13 @@ describe("review cache", () => {
 
   it("does not reuse a result with a different review identity", () => {
     const oldKey = getReviewCacheKey({
+      scope,
       headSha: "a".repeat(40),
       model: "anthropic/claude-opus-4-7",
       reviewInstructions: "default review profile",
     });
     const newKey = getReviewCacheKey({
+      scope,
       headSha: "a".repeat(40),
       model: "anthropic/claude-opus-4-7",
       requestedReasoningEffort: "high",
@@ -84,11 +101,13 @@ describe("review cache", () => {
     });
     const marker = buildReviewCacheMarker(oldKey, review);
 
-    expect(findCachedReview([{ body: `${marker}\n<!-- hodor-review -->` }], newKey)).toBeNull();
+    expect(findCachedReview([{ body: `${marker}\n<!-- hodor-review -->`, provenance: "hodor" }], newKey))
+      .toBeNull();
   });
 
   it("changes cache identity when the effective profile or additional instructions change", () => {
     const base = {
+      scope,
       headSha: "a".repeat(40),
       model: "anthropic/claude-opus-4-7",
       reviewInstructions: "Review authentication changes.",
@@ -109,9 +128,42 @@ describe("review cache", () => {
     expect(changedAdditionalInstructions).not.toBe(sameContent);
   });
 
+  const scopeChanges: Array<[string, Partial<ReviewCacheScope>]> = [
+    ["platform", { platform: "github" }],
+    ["host", { host: "gitlab.other.example" }],
+    ["project path", { projectPath: "team/other" }],
+    ["MR number", { reviewNumber: 43 }],
+    ["target branch", { targetBranch: "release" }],
+    ["target base SHA", { baseSha: "c".repeat(40) }],
+  ];
+
+  it.each(scopeChanges)("changes cache identity when the %s changes", (_field, change) => {
+    const base = {
+      scope,
+      headSha: "a".repeat(40),
+      model: "anthropic/claude-opus-4-7",
+      reviewInstructions: "default review profile",
+    };
+
+    expect(getReviewCacheKey({ ...base, scope: { ...scope, ...change } }))
+      .not.toBe(getReviewCacheKey(base));
+  });
+
+  it("keeps cache identity stable for an identical retry", () => {
+    const opts = {
+      scope,
+      headSha: "a".repeat(40),
+      model: "anthropic/claude-opus-4-7",
+      reviewInstructions: "default review profile",
+    };
+
+    expect(getReviewCacheKey({ ...opts, scope: { ...scope } })).toBe(getReviewCacheKey(opts));
+  });
+
   it("ignores malformed cache markers", () => {
     expect(findCachedReview([{
       body: "<!-- hodor:cache:v1:not-valid-gzip -->\n<!-- hodor-review -->",
+      provenance: "hodor",
     }], "key")).toBeNull();
   });
 });

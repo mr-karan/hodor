@@ -9,7 +9,7 @@ import packageJson from "../package.json" with { type: "json" };
 import { detectPlatform, parsePrUrl, postReviewComment, postReviewStructured, reviewPr } from "./agent.js";
 import type { AgentProgressEvent } from "./agent.js";
 import { formatCodeQualityReport } from "./codequality.js";
-import { listHodorDiscussions } from "./gitlab.js";
+import { fetchGitlabPublisherIdentity, listHodorDiscussions } from "./gitlab.js";
 import { mergeReviewStateFindings } from "./review-state.js";
 import type { PostCommentResult, ReviewStateFinding } from "./types.js";
 import { renderMarkdown } from "./render.js";
@@ -456,6 +456,7 @@ program
               parsed.repo,
               parsed.prNumber,
               parsed.host,
+              await fetchGitlabPublisherIdentity(parsed.host),
             );
             reviewFindings = mergeReviewStateFindings(
               review.findings,

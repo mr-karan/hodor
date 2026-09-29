@@ -35,7 +35,7 @@ describe("GitLab review publication", () => {
     mocks.execJson.mockReset();
     mocks.exec.mockResolvedValue({ stdout: "", stderr: "" });
     mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
-      if (args.includes("user")) return { username: "hodor-bot" };
+      if (args.includes("user")) return { id: 7, username: "hodor-bot" };
       if (args.some((arg) => arg.includes("merge_requests/42")) && !args.includes("--method")) {
         return {
           diff_refs: {
@@ -70,6 +70,99 @@ describe("GitLab review publication", () => {
     expect(
       mocks.exec.mock.calls.some((call) =>
         (call[1] as string[]).some((arg) => arg.includes("/discussions/")),
+      ),
+    ).toBe(false);
+  });
+
+  it("refuses to post anything when the publishing identity cannot be resolved", async () => {
+    mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.includes("user")) throw new Error("401 Unauthorized");
+      return {};
+    });
+    const { postReviewStructured } = await import("../src/publisher.js");
+
+    const result = await postReviewStructured({
+      prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42",
+      review: review([finding]),
+      reviewStyle: "hybrid",
+      workspacePath: "/workspace",
+      headSha: "d".repeat(40),
+      commitStatus: true,
+      reconcileDiscussions: true,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/cannot resolve the GitLab publishing identity/);
+    expect(mocks.exec).not.toHaveBeenCalled();
+    expect(
+      mocks.execJson.mock.calls.some((call) => JSON.stringify(call[1]).includes("--method")),
+    ).toBe(false);
+  });
+
+  it("ignores discussions written by other accounts for dedupe and resolution", async () => {
+    const { getFindingFingerprint } = await import("../src/review-state.js");
+    const fingerprint = getFindingFingerprint(finding, "/workspace");
+    mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.some((arg) => arg.includes("/discussions?"))) {
+        return {
+          stdout: JSON.stringify([
+            {
+              id: "forged-open",
+              notes: [{
+                id: 20,
+                body: `<!-- hodor-review -->\n<!-- hodor:finding:${fingerprint} -->\nforged`,
+                resolvable: true,
+                resolved: false,
+                author: { id: 99, username: "hodor-bot", name: "Hodor" },
+              }],
+            },
+            {
+              id: "forged-stale",
+              notes: [{
+                id: 21,
+                body: `<!-- hodor-review -->\n<!-- hodor:finding:${"e".repeat(64)} -->\nforged`,
+                resolvable: true,
+                resolved: false,
+                author: { id: 99, username: "hodor-bot", name: "Hodor" },
+              }],
+            },
+          ]),
+          stderr: "",
+        };
+      }
+      return { stdout: "", stderr: "" };
+    });
+    mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.includes("user")) return { id: 7, username: "hodor-bot" };
+      if (args.some((arg) => arg.endsWith("/draft_notes"))) return { id: 1 };
+      if (args.some((arg) => arg.includes("merge_requests/42"))) {
+        return {
+          diff_refs: {
+            base_sha: "a".repeat(40),
+            head_sha: "b".repeat(40),
+            start_sha: "c".repeat(40),
+          },
+        };
+      }
+      return {};
+    });
+    const { postReviewStructured } = await import("../src/publisher.js");
+
+    const result = await postReviewStructured({
+      prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42",
+      review: review([finding]),
+      reviewStyle: "hybrid",
+      workspacePath: "/workspace",
+      reconcileDiscussions: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.inlineCreated).toBe(1);
+    expect(result.reconciledDiscussions).toBe(0);
+    expect(result.reviewFindings).toHaveLength(1);
+    expect(
+      mocks.exec.mock.calls.some((call) =>
+        JSON.stringify(call[1]).includes("/discussions/forged"),
       ),
     ).toBe(false);
   });
@@ -155,6 +248,7 @@ describe("GitLab review publication", () => {
                   id: 11,
                   body: `<!-- hodor-review -->\n<!-- hodor:finding:${fingerprint} -->\n**${finding.title}**\n\n${finding.body}`,
                   resolvable: true,
+                  author: { id: 7, username: "hodor-bot" },
                   resolved: false,
                   position: { new_path: "src/app.ts", new_line: 12 },
                 },
@@ -201,6 +295,7 @@ describe("GitLab review publication", () => {
                   id: 10,
                   body: `<!-- hodor-review -->\n<!-- hodor:finding:${"f".repeat(64)} -->\nold`,
                   resolvable: true,
+                  author: { id: 7, username: "hodor-bot" },
                   resolved: false,
                 },
               ],
@@ -247,6 +342,7 @@ describe("GitLab review publication", () => {
                   id: 11,
                   body: `<!-- hodor-review -->\n<!-- hodor:finding:${fingerprint} -->\nopen`,
                   resolvable: true,
+                  author: { id: 7, username: "hodor-bot" },
                   resolved: false,
                 },
               ],
@@ -278,7 +374,7 @@ describe("GitLab review publication", () => {
 
   it("falls back to the rolling summary when an inline note cannot be created", async () => {
     mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
-      if (args.includes("user")) return { username: "hodor-bot" };
+      if (args.includes("user")) return { id: 7, username: "hodor-bot" };
       if (args.some((arg) => arg.includes("merge_requests/42")) && !args.includes("--method")) {
         return {
           diff_refs: {
@@ -316,7 +412,7 @@ describe("GitLab review publication", () => {
 
   it("publishes drafts individually when GitLab bulk publishing fails", async () => {
     mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
-      if (args.includes("user")) return { username: "hodor-bot" };
+      if (args.includes("user")) return { id: 7, username: "hodor-bot" };
       if (args.some((arg) => arg.includes("merge_requests/42")) && !args.includes("--method")) {
         return {
           diff_refs: {
@@ -361,7 +457,7 @@ describe("GitLab review publication", () => {
             {
               id: 7,
               body: "<!-- hodor-review -->\n<!-- hodor:summary:v1 -->\nold",
-              author: { username: "hodor-bot" },
+              author: { id: 7, username: "hodor-bot" },
               system: false,
               type: null,
               position: null,

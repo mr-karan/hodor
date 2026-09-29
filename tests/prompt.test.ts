@@ -55,6 +55,7 @@ describe("buildMrSections", () => {
         {
           body: "<!-- hodor:sha:1111111111111111111111111111111111111111 -->\n<!-- hodor-review -->\nPrior finding with enough text",
           author: { username: "hodor" },
+          provenance: "hodor",
         },
       ],
     });
