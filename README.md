@@ -4,7 +4,7 @@
 
 > Agentic code reviewer for GitHub PRs, GitLab MRs, Gitea/Forgejo PRs, and local diffs.
 
-Hodor checks out the change, gives an LLM agent inspection tools (read, grep, find, ls, and a shell for git), and asks it for structured findings. It posts them as inline comments and a rolling summary, or prints them locally.
+Hodor checks out the change, gives an LLM agent confined inspection tools (`git_diff`, `read`, `grep`, `find`, `ls`) over the tracked repository, and asks it for structured findings. It posts them as inline comments and a rolling summary, or prints them locally.
 
 ## Install
 
@@ -293,7 +293,8 @@ Skills are loaded automatically during reviews. See [SKILLS.md](./docs/SKILLS.md
 
 Hodor reviews untrusted code, so plan CI permissions around these facts:
 
-- **The agent has a shell.** Besides read, grep, find, and ls, the agent can run shell commands (for git). The review protocol forbids changes, but the protocol is a prompt, not a sandbox. Commands inherit Hodor's environment, including API keys and platform tokens.
+- **The agent has no shell.** Its tools are `git_diff` (the review diff Hodor already computed), and `read`, `grep`, `find`, and `ls` confined to files tracked by git in the checkout. Every path and its symlink target must be tracked and inside the repository, and `.git` is refused, so untracked files such as `.env`, restored caches, and CI credential files are unreachable. Git subprocesses run with a minimal environment, timeouts, and output caps.
+- **The Hodor process still holds credentials.** It needs the model and platform credentials to do its job. Keep the checkout free of secrets, and do not add tools that run commands.
 - **Give Hodor least-privilege credentials.** Use a token scoped to comments and statuses, a dedicated bot account, and short-lived cloud credentials. Restrict network egress from the runner where you can. Rotate keys and keep audit logging on.
 - **Diffs and repository text are untrusted input.** Treat a review as advice. Keep `allow_failure` and human approval in the merge path.
 - **Hodor trusts only its own notes.** Review SHAs, cached reviews, prior review context, and inline discussions are read back only from notes written by the account Hodor posts as: the numeric user id behind the GitLab, Gitea, or GitHub token (`gh api user` on GitHub). Set `HODOR_GITHUB_BOT_LOGIN` to name the GitHub account explicitly; Hodor resolves it to its id. In GitHub Actions, Hodor falls back to the id of `github-actions[bot]`, which every workflow in the repository shares; use a dedicated app or bot account to isolate Hodor state. If Hodor cannot resolve its identity, it runs a full review with no reuse, and GitLab posting fails instead of guessing.

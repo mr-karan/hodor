@@ -32,7 +32,7 @@ describe("review system prompt", () => {
     expect(prompt).toContain("Do not build, compile, run tests, or run linters or formatters");
     expect(prompt).toContain("their absence is never a finding");
     expect(prompt).toContain("The runtime task's tool list is exhaustive");
-    expect(prompt).toContain("do not probe for executables through the shell");
+    expect(prompt).toContain("There is no shell.");
   });
 
   it("uses a custom profile verbatim instead of adding the bundled profile", () => {
