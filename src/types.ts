@@ -35,6 +35,8 @@ export interface NoteAuthor {
 }
 
 interface NoteFields {
+  /** Platform note id, when the platform reports one. */
+  id?: number;
   body?: string;
   author?: NoteAuthor;
   created_at?: string;
@@ -98,6 +100,8 @@ export interface ReviewMetrics {
   diffAdditions?: number;
   diffDeletions?: number;
   diffBytes?: number;
+  /** True when the diff was embedded in the prompt; false when served through git_diff. */
+  diffEmbedded?: boolean;
   reused?: boolean;
   /** Whether the single-turn tiny-diff fast path gated tools to submit_review. */
   fastPath?: boolean;
@@ -143,6 +147,26 @@ export interface ReviewOutput {
   resolved_findings?: string[];
 }
 
+/** The commits a review compared. */
+export interface ReviewRange {
+  /** Null in local mode, which reviews the working tree. */
+  headSha: string | null;
+  /** Target branch, or the --diff-against ref in local mode. */
+  targetBranch: string;
+  /** The commit the diff starts from, when known. */
+  baseSha: string | null;
+}
+
+/** What the review prompt carried besides the diff. */
+export interface ReviewContextManifest {
+  /** Hodor finding threads shown, by status, and threads left out by the limit. */
+  hodorThreads: { open: number; fixedWaiting: number; resolved: number; droppedByLimit: number };
+  /** Top-level human notes shown, and qualifying notes left out by the budget. */
+  humanComments: { included: number; droppedByBudget: number };
+  /** Prior Hodor summaries shown for deduplication. */
+  priorHodorReviews: number;
+}
+
 export interface PostCommentResult {
   success: boolean;
   platform?: Platform;
@@ -151,10 +175,16 @@ export interface PostCommentResult {
   error?: string;
   errors?: string[];
   summaryPosted?: boolean;
+  /** Web URL of the new GitLab summary note, when GitLab returned its id. */
+  summaryUrl?: string;
   inlineCreated?: number;
   inlineFailed?: number;
   draftsPublished?: boolean;
   commitStatusPosted?: boolean;
+  /** "Fixed in <sha>" replies posted on threads this review verified fixed. */
+  fixedReplies?: number;
+  /** Open threads confirmed fixed and waiting for a human to resolve them. */
+  fixedAwaiting?: number;
   reviewFindings?: ReviewStateFinding[];
   reviewStateComplete?: boolean;
 }

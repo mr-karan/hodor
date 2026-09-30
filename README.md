@@ -141,7 +141,7 @@ Local mode:
 | `--prometheus-push` | None | Push review metrics to a Prometheus Pushgateway or VictoriaMetrics import endpoint |
 | `--tiny-diff-fast-path` | Off | For tiny, low-risk, fully embedded diffs, decide in one turn with no repository exploration (cheaper) |
 | `--codemode` | Off | Let the agent batch its read-only tool calls in Pi's codemode sandbox (see [Codemode](#codemode)) |
-| `-v, --verbose` | Off | Stream agent reasoning and tool calls |
+| `-v, --verbose` | Off | Print all log lines live, with tool result previews and agent reasoning |
 
 ## Environment Variables
 
@@ -256,6 +256,19 @@ The summary's count table lists **unresolved Hodor threads at the time of the re
 
 **Verified fixes:** each GitLab review shows the model Hodor's earlier finding threads, with the latest human replies. When the model confirms from the code it inspected that an open finding on a changed file is fixed, Hodor replies on that thread ("Fixed in `<sha>`. Resolve this thread if you agree.") and counts it as "Fixed, waiting to be resolved" instead of open, so it no longer fails the commit status. Hodor never resolves threads itself (the bot often has Reporter access only); a human resolves them. If a later review reports the same finding again, it counts as open again.
 
+**Human comments:** the prompt carries every non-trivial human MR comment (bare reactions such as "+1" or "lgtm" are skipped), newest first, each capped at 2,000 characters, up to 30,000 characters in total. Replies inside Hodor finding threads appear only with their thread.
+
+### CI job log
+
+The default job log is short:
+
+- **Start line:** `Hodor <version> · <project> !<mr> · <model> (<reasoning>)`, with `· codemode` when codemode is on. Local runs show `local diff vs <ref>`.
+- **Agent trace:** one line per tool call (`turn 12  read   crux/foo.py`). Calls that a codemode script makes are indented under the script line with `↳`. A failed call prints one red line with the first line of its error. Retries and compaction print one line each. In GitLab CI this is a collapsed section; elsewhere it has a plain header.
+- **Diagnostics:** info lines, including the `Review telemetry: {...}` JSON line, are held back and printed at the end in a second collapsed section. Warnings and errors always print when they happen.
+- **Summary block:** the reviewed range, diff size, the context the prompt carried (Hodor threads by status, human comments included and dropped by the budget), the new findings with their locations, what was posted (summary note URL, inline notes, fixed replies), cost and token use, and the warning count.
+
+Without `--post`, the review markdown goes to stdout after the summary. `-v` prints everything live instead: tool result previews, reasoning, and model text.
+
 See [AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md) for advanced workflows.
 
 ## Token optimization
@@ -348,7 +361,8 @@ flowchart LR
 
 | Module | Purpose |
 |--------|---------|
-| `src/cli.ts` | Commander CLI, verbose progress rendering, exit policy |
+| `src/cli.ts` | Commander CLI, exit policy |
+| `src/cli-output.ts` | Job log formatting: start line, agent trace, Diagnostics section, summary block |
 | `src/agent.ts` | Review orchestration: preflight, workspace, Pi session, `submit_review`, recovery, metrics |
 | `src/model.ts` | Model strings, Bedrock ARN models, adaptive reasoning, API keys |
 | `src/models-json.ts` | `HODOR_MODELS_JSON` loading and fail-closed validation |

@@ -13,7 +13,8 @@ export function buildPrReviewPrompt(opts: {
   platform: Platform;
   targetBranch?: string;
   diffBaseSha?: string | null;
-  mrMetadata?: MrMetadata | null;
+  /** Sections from buildMrSections; omitted when there is no MR metadata. */
+  mrSections?: MrSections;
   embeddedDiff?: string | null;
   previousReviewSha?: string | null;
   reviewDiffMode?: ReviewDiffMode;
@@ -27,7 +28,7 @@ export function buildPrReviewPrompt(opts: {
     platform,
     targetBranch = "main",
     diffBaseSha,
-    mrMetadata,
+    mrSections = buildMrSections(null),
     embeddedDiff,
     previousReviewSha,
     reviewDiffMode,
@@ -94,8 +95,6 @@ export function buildPrReviewPrompt(opts: {
       `excluding changes already on \`${targetBranch}\`.`;
   }
 
-  // Step 3: Build MR sections
-  const mrSections = buildMrSections(mrMetadata);
   const { contextSection, reminderSection } = mrSections;
   const notesSection = mrSections.notesSection + buildFindingThreadsSection(findingThreads);
 
@@ -245,13 +244,30 @@ export function buildPrReviewPrompt(opts: {
     .replace(/\{start_instruction\}/g, startInstruction);
 }
 
-export function buildMrSections(mrMetadata?: MrMetadata | null): {
+export interface MrSections {
   contextSection: string;
   notesSection: string;
   reminderSection: string;
-} {
+  humanNotes: { included: number; droppedByBudget: number };
+  priorHodorReviews: number;
+}
+
+/**
+ * MR context and note sections for the review prompt. Notes whose id is in
+ * `excludeNoteIds` are replies the Hodor Finding Threads section shows.
+ */
+export function buildMrSections(
+  mrMetadata?: MrMetadata | null,
+  options: { excludeNoteIds?: ReadonlySet<number> } = {},
+): MrSections {
   if (!mrMetadata) {
-    return { contextSection: "", notesSection: "", reminderSection: "" };
+    return {
+      contextSection: "",
+      notesSection: "",
+      reminderSection: "",
+      humanNotes: { included: 0, droppedByBudget: 0 },
+      priorHodorReviews: 0,
+    };
   }
 
   const contextLines: string[] = [];
@@ -312,8 +328,10 @@ export function buildMrSections(mrMetadata?: MrMetadata | null): {
   }
 
   let notesSection = "";
-  const humanNotesSummary = summarizeGitlabNotes(mrMetadata.Notes);
-  const hodorNotesSummary = summarizeHodorNotes(mrMetadata.Notes);
+  const humanNotes = summarizeGitlabNotes(mrMetadata.Notes, { excludeNoteIds: options.excludeNoteIds });
+  const hodorNotes = summarizeHodorNotes(mrMetadata.Notes);
+  const humanNotesSummary = humanNotes.text;
+  const hodorNotesSummary = hodorNotes.text;
   if (humanNotesSummary) {
     notesSection += `## Existing Human MR Notes\n${humanNotesSummary}\n`;
   }
@@ -334,7 +352,13 @@ export function buildMrSections(mrMetadata?: MrMetadata | null): {
       "Focus on discovering NEW issues not yet discussed.\n";
   }
 
-  return { contextSection, notesSection, reminderSection };
+  return {
+    contextSection,
+    notesSection,
+    reminderSection,
+    humanNotes: { included: humanNotes.included, droppedByBudget: humanNotes.droppedByBudget },
+    priorHodorReviews: hodorNotes.included,
+  };
 }
 
 const MAX_THREAD_REPLY_CHARS = 200;

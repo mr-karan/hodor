@@ -7,11 +7,18 @@ import "dotenv/config";
 import packageJson from "../package.json" with { type: "json" };
 
 import { detectPlatform, parsePrUrl, postReviewComment, postReviewStructured, reviewPr } from "./agent.js";
-import type { AgentProgressEvent } from "./agent.js";
+import {
+  createTraceRenderer,
+  formatDiagnostics,
+  formatReviewSummary,
+  formatStartLine,
+  type Delivery,
+  type ReviewTarget,
+} from "./cli-output.js";
 import { formatCodeQualityReport } from "./codequality.js";
 import { fetchGitlabPublisherIdentity, listHodorDiscussions } from "./gitlab.js";
 import { mergeReviewStateFindings } from "./review-state.js";
-import type { PostCommentResult, ReviewStateFinding } from "./types.js";
+import type { Platform, PostCommentResult, ReviewStateFinding } from "./types.js";
 import { renderMarkdown } from "./render.js";
 import { pushMetrics } from "./metrics.js";
 import {
@@ -20,7 +27,7 @@ import {
   type FailOnPriority,
 } from "./review-policy.js";
 import { loadReviewInstructionsFile } from "./review-instructions.js";
-import { logger, setLogLevel } from "./utils/logger.js";
+import { drainBufferedLogs, getWarnings, logger, setLogBuffering, setLogLevel } from "./utils/logger.js";
 
 const program = new Command();
 
@@ -206,97 +213,23 @@ program
       }
     }
 
-    const log = console.log;
-    const logStream = process.stdout;
-
-    const toolIcons: Record<string, string> = {
-      git_diff: "git diff",
-      read: "cat",
-      grep: "grep",
-      find: "find",
-      ls: "ls",
-    };
-
-    /** Write a line to the log stream */
-    function streamLog(msg: string): void {
-      logStream.write(`${msg}\n`);
-    }
-
-    /** Write inline text (no newline) for streaming deltas */
-    function streamWrite(text: string): void {
+    const gitlabCi = process.env.GITLAB_CI === "true";
+    if (!verbose) setLogBuffering(true);
+    const writeLog = (text: string): void => {
       process.stderr.write(text);
-    }
-
-    function handleEvent(event: AgentProgressEvent): void {
-      switch (event.type) {
-        case "agent_start":
-          streamLog(chalk.dim("▶ Agent started"));
-          break;
-        case "turn_start":
-          streamLog(chalk.dim(`\n── Turn ${event.turnIndex ?? "?"} ──`));
-          break;
-        case "tool_start": {
-          const icon = toolIcons[event.toolName ?? ""] ?? event.toolName;
-          const preview = event.toolArgs ? ` ${event.toolArgs}` : "";
-          const maxLen = 160;
-          const truncated = preview.length > maxLen ? preview.slice(0, maxLen) + "…" : preview;
-          streamLog(chalk.green(`  ${icon}${truncated}`));
-          break;
-        }
-        case "tool_end": {
-          if (event.isError) {
-            streamLog(chalk.red(`  ✗ error`));
-          }
-          if (event.result) {
-            const lines = event.result.split("\n");
-            const maxLines = verbose ? 15 : 6;
-            const maxChars = verbose ? 400 : 200;
-            let chars = 0;
-            for (let i = 0; i < Math.min(lines.length, maxLines); i++) {
-              const line = lines[i];
-              if (chars + line.length > maxChars) {
-                streamLog(chalk.dim(`    …(${lines.length - i} more lines)`));
-                break;
-              }
-              streamLog(chalk.dim(`    ${line}`));
-              chars += line.length;
-            }
-          }
-          break;
-        }
-        case "text_delta":
-          if (verbose && event.delta) {
-            streamWrite(event.delta);
-          }
-          break;
-        case "thinking_delta":
-          // Only show reasoning in verbose mode
-          if (verbose && event.delta) {
-            streamWrite(chalk.dim(event.delta));
-          }
-          break;
-        case "retry":
-          if (event.phase === "start") {
-            streamLog(chalk.yellow(`  ↻ Retry ${event.attempt}/${event.maxAttempts} in ${event.delayMs}ms: ${event.reason}`));
-          } else {
-            streamLog(chalk.dim(`  ↻ Retry ${event.success ? "succeeded" : "failed"} (attempt ${event.attempt})`));
-          }
-          break;
-        case "compaction":
-          streamLog(chalk.dim(`  ⧉ Compaction ${event.phase === "start" ? "started" : "finished"} (${event.reason})`));
-          break;
-        case "agent_end":
-          streamLog(chalk.dim("\n▶ Extracting review..."));
-          break;
-      }
-    }
+    };
+    const trace = createTraceRenderer({ verbose, gitlabCi, write: writeLog });
+    const printDiagnostics = (): void => {
+      writeLog(formatDiagnostics(drainBufferedLogs(), gitlabCi, Math.floor(Date.now() / 1000)));
+    };
 
     try {
       const reviewInstructions = reviewInstructionsPath
         ? loadReviewInstructionsFile(reviewInstructionsPath)
         : undefined;
       // Detect platform and warn about missing tokens
-      let platform: string = "local";
+      let platform: Platform | "local" = "local";
+      let target: ReviewTarget = { kind: "local", ref: diffAgainst };
       let metricsProject: string | undefined;
       let metricsOutcome = "reviewed";
       let requestedExitCode = 0;
@@ -304,6 +237,7 @@ program
         platform = detectPlatform(prUrl);
         const parsedPr = parsePrUrl(prUrl);
         metricsProject = `${parsedPr.owner}/${parsedPr.repo}`;
+        target = { kind: "remote", platform, project: metricsProject, number: parsedPr.prNumber };
         const githubToken = process.env.GITHUB_TOKEN;
         const gitlabToken =
           process.env.GITLAB_TOKEN ??
@@ -325,29 +259,33 @@ program
         }
       }
 
-      log(`\n${chalk.bold.cyan("Hodor - AI Code Review Agent")}`);
-      if (localMode) {
-        log(chalk.dim(`Mode: Local diff review`));
-        log(chalk.dim(`Diff against: ${diffAgainst}`));
-        log(chalk.dim(`Workspace: ${workspace ?? process.cwd()}`));
-      } else {
-        log(chalk.dim(`Platform: ${platform.toUpperCase()}`));
-        log(chalk.dim(`PR URL: ${prUrl}`));
-        if (full) {
-          log(chalk.dim(`Mode: Full review (source vs ${targetBranchOverride ?? "target branch"}, incremental disabled)`));
-        }
-      }
-      log(chalk.dim(`Model: ${model}`));
-      log(chalk.dim(`Review instructions: ${reviewInstructionsPath ?? "bundled default"}`));
-      if (additionalInstructions) {
-        log(chalk.dim("Additional instructions: supplied"));
-      }
-      if (reasoningEffort) {
-        log(chalk.dim(`Reasoning Effort: ${reasoningEffort}`));
-      }
-      log();
+      writeLog(`${formatStartLine({ version: packageJson.version, target, model, reasoningEffort, codemode })}\n`);
+      logger.info(`Review instructions: ${reviewInstructionsPath ?? "bundled default"}`);
+      if (additionalInstructions) logger.info("Additional instructions: supplied");
 
-      streamLog(chalk.dim("▶ Setting up workspace..."));
+      let reviewResult: Awaited<ReturnType<typeof reviewPr>>;
+      try {
+        reviewResult = await reviewPr({
+          prUrl: localMode ? undefined : prUrl,
+          model,
+          reasoningEffort,
+          reviewInstructions,
+          additionalInstructions,
+          cleanup: !workspace,
+          workspaceDir: workspace,
+          includeMetricsFooter: post && !localMode,
+          onEvent: (event) => trace.handle(event),
+          bedrockTags,
+          localMode,
+          diffAgainst,
+          full,
+          targetBranchOverride,
+          tinyDiffFastPath,
+          codemode,
+        });
+      } finally {
+        trace.close();
+      }
       const {
         review,
         metricsFooter,
@@ -356,29 +294,12 @@ program
         workspacePath,
         cacheMarker,
         reusedReview,
-      } = await reviewPr({
-        prUrl: localMode ? undefined : prUrl,
-        model,
-        reasoningEffort,
-        reviewInstructions,
-        additionalInstructions,
-        cleanup: !workspace,
-        workspaceDir: workspace,
-        includeMetricsFooter: post && !localMode,
-        onEvent: handleEvent,
-        bedrockTags,
-        localMode,
-        diffAgainst,
-        full,
-        targetBranchOverride,
-        tinyDiffFastPath,
-        codemode,
-      });
+        range,
+        context,
+      } = reviewResult;
       const reviewText = renderMarkdown(review);
-
-      streamLog(chalk.green("✔ Review complete!"));
       if (reusedReview) {
-        log(chalk.dim("Reused the existing review for this HEAD; no LLM request was made."));
+        logger.info("Reused the existing review for this HEAD; no LLM request was made.");
       }
 
       let reviewFindings: ReviewStateFinding[] = mergeReviewStateFindings(
@@ -389,10 +310,8 @@ program
       let gitlabReviewStateLoaded = false;
       let codeQualityWritten = false;
 
+      let delivery: Delivery = localMode ? { kind: "local" } : { kind: "not-posted" };
       if (post && prUrl) {
-        log(chalk.cyan("\nPosting review to PR/MR..."));
-
-        const platform = detectPlatform(prUrl);
         const useStructured = platform === "gitlab";
 
         let result: PostCommentResult;
@@ -414,7 +333,7 @@ program
         } else if (reusedReview) {
           result = {
             success: true,
-            platform: platform as "github" | "gitlab" | "gitea",
+            platform: detectPlatform(prUrl),
             summaryPosted: true,
           };
         } else {
@@ -427,28 +346,16 @@ program
             cacheMarker,
           });
         }
+        delivery = { kind: "posted", result };
 
         if (result.reviewFindings) {
           reviewFindings = result.reviewFindings;
           gitlabReviewStateLoaded = result.reviewStateComplete === true;
         }
 
-
-        if (result.success) {
-          log(chalk.bold.green("Review posted successfully!"));
-          log(chalk.dim(`  ${platform === "gitlab" ? "MR" : "PR"}: ${prUrl}`));
-        } else {
-          log(chalk.bold.red(`Failed to post review: ${result.error}`));
-          log(chalk.yellow("\nReview output:\n"));
-          console.log(reviewText);
+        if (!result.success) {
           metricsOutcome = "delivery_failed";
           if (requireDelivery) requestedExitCode = 1;
-        }
-      } else {
-        log(chalk.bold.green("Review Complete\n"));
-        console.log(reviewText);
-        if (!localMode) {
-          log(chalk.dim("\nTip: Use --post to automatically post this review to the PR/MR"));
         }
       }
 
@@ -476,9 +383,9 @@ program
 
           writeFileSync(codeQuality, formatCodeQualityReport(reviewFindings), "utf-8");
           codeQualityWritten = true;
-          log(chalk.dim(`Wrote code quality report to ${codeQuality}`));
+          logger.info(`Wrote code quality report to ${codeQuality}`);
         } catch (err) {
-          log(chalk.yellow(`Failed to write code quality report: ${err}`));
+          logger.warn(`Failed to write code quality report: ${err}`);
           metricsOutcome = "delivery_failed";
           if (requireDelivery) requestedExitCode = 1;
         }
@@ -487,16 +394,13 @@ program
       if (requireDelivery && codeQuality && !codeQualityWritten) {
         requestedExitCode = 1;
       }
+      let policyFailure: string | null = null;
       if (failOnPriority && hasBlockingFinding(review, failOnPriority)) {
         const maximumPriority = Number(failOnPriority.slice(1));
         const blocking = review.findings.filter(
           (finding) => finding.priority <= maximumPriority,
         ).length;
-        log(
-          chalk.bold.red(
-            `Review policy failed: ${blocking} finding(s) at ${failOnPriority} or higher`,
-          ),
-        );
+        policyFailure = `Review policy failed: ${blocking} finding(s) at ${failOnPriority} or higher`;
         metricsOutcome = "policy_failed";
         requestedExitCode = 1;
       }
@@ -524,15 +428,25 @@ program
           labels,
         });
       }
+
+      printDiagnostics();
+      writeLog(formatReviewSummary({
+        platform,
+        range,
+        metrics,
+        context,
+        review,
+        workspacePath,
+        delivery,
+        warnings: getWarnings(),
+      }));
+      if (policyFailure) writeLog(`${chalk.bold.red(policyFailure)}\n`);
+      // The review markdown goes to stdout whenever it was not delivered.
+      if (delivery.kind !== "posted" || !delivery.result.success) {
+        console.log(`\n${reviewText}`);
+      }
       if (requestedExitCode !== 0) process.exitCode = requestedExitCode;
     } catch (err) {
-      streamLog(chalk.red("✗ Review failed"));
-      console.error(
-        chalk.bold.red(`\nError: ${err instanceof Error ? err.message : err}`),
-      );
-      if (verbose && err instanceof Error && err.stack) {
-        console.error(chalk.dim(err.stack));
-      }
       let failurePlatform = "local";
       let failureProject: string | undefined;
       if (!localMode && prUrl) {
@@ -560,6 +474,11 @@ program
         reused: false,
         error: err instanceof Error ? err.message : String(err),
       })}`);
+      printDiagnostics();
+      console.error(chalk.bold.red(`Review failed: ${err instanceof Error ? err.message : err}`));
+      if (verbose && err instanceof Error && err.stack) {
+        console.error(chalk.dim(err.stack));
+      }
 
       if (prometheusPush) {
         const labels: Record<string, string> = {

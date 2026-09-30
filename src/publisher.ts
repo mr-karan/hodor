@@ -7,6 +7,7 @@ import {
   createGitlabDraftNote,
   fetchGitlabPublisherIdentity,
   getGitlabMrDiffRefs,
+  gitlabNoteUrl,
   HODOR_REVIEW_MARKER,
   listHodorDiscussions,
   postGitlabCommitStatus,
@@ -79,11 +80,12 @@ async function resolveGitlabIdentityForPosting(
   }
 }
 
+/** Post the summary note and return its web URL, or null when GitLab gave no id. */
 async function publishSummary(
   parsed: ParsedPrUrl,
   body: string,
   identity: GitlabPublisherIdentity,
-): Promise<void> {
+): Promise<string | null> {
   const { noteId, collapsed } = await publishGitlabMrSummary(
     parsed.owner,
     parsed.repo,
@@ -95,6 +97,9 @@ async function publishSummary(
   logger.info(
     `Posted summary note${noteId === null ? "" : ` ${noteId}`}; collapsed ${collapsed} older summary note(s)`,
   );
+  return noteId === null
+    ? null
+    : gitlabNoteUrl(parsed.owner, parsed.repo, parsed.prNumber, noteId, parsed.host);
 }
 
 function appendReviewDetails(
@@ -114,7 +119,8 @@ function appendReviewDetails(
   return `${body.trimEnd()}\n\n${details.join("\n")}\n`;
 }
 
-function displayModel(model: string): string {
+/** The model id without provider routing, or the profile name of a Bedrock ARN. */
+export function displayModel(model: string): string {
   const baseModel = model.slice(model.lastIndexOf("@") + 1);
   return baseModel.startsWith("arn:")
     ? baseModel.slice(baseModel.lastIndexOf("/") + 1)
@@ -172,12 +178,13 @@ export async function postReviewComment(opts: {
     if ("error" in resolved) {
       return { success: false, platform, error: resolved.error };
     }
-    await publishSummary(parsed, body, resolved.identity);
+    const summaryUrl = await publishSummary(parsed, body, resolved.identity);
     return {
       success: true,
       platform,
       mrNumber: parsed.prNumber,
       summaryPosted: true,
+      ...(summaryUrl ? { summaryUrl } : {}),
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -406,6 +413,7 @@ export async function postReviewStructured(opts: {
   }
 
   let summaryPosted = false;
+  let summaryUrl: string | null = null;
   if (
     !skipSummary &&
     (
@@ -434,7 +442,7 @@ export async function postReviewStructured(opts: {
     if (cacheMarker) summaryBody = summaryBody.replace("\n", `\n${cacheMarker}\n`);
     summaryBody = appendReviewDetails(summaryBody, model, metricsFooter);
     try {
-      await publishSummary(parsed, summaryBody, identity);
+      summaryUrl = await publishSummary(parsed, summaryBody, identity);
       summaryPosted = true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -455,7 +463,7 @@ export async function postReviewStructured(opts: {
     }
   }
 
-  await replyToFixedThreads({
+  const fixedReplies = await replyToFixedThreads({
     parsed,
     fixedThreads: resolveFixedThreads(review.resolved_findings ?? [], discussions),
     currentFingerprints,
@@ -480,10 +488,13 @@ export async function postReviewStructured(opts: {
     error: success ? undefined : errors[0] ?? "Review delivery was incomplete",
     errors,
     summaryPosted,
+    ...(summaryUrl ? { summaryUrl } : {}),
     inlineCreated,
     inlineFailed,
     draftsPublished,
     commitStatusPosted,
+    fixedReplies,
+    fixedAwaiting,
     reviewStateComplete: !discussionListingFailed,
     reviewFindings,
   };
@@ -493,18 +504,19 @@ export async function postReviewStructured(opts: {
  * Reply on each thread this review verified fixed. Hodor cannot resolve
  * threads at Reporter access, so a human resolves them. A thread that already
  * has a fixed-reply gets no second one. Failures are warnings only.
+ * Returns the number of replies posted.
  */
 async function replyToFixedThreads(opts: {
   parsed: ParsedPrUrl;
   fixedThreads: ReadonlyMap<string, HodorDiscussion>;
   currentFingerprints: ReadonlySet<string>;
   headSha?: string | null;
-}): Promise<void> {
+}): Promise<number> {
   const { parsed, fixedThreads, currentFingerprints, headSha } = opts;
-  if (fixedThreads.size === 0) return;
+  if (fixedThreads.size === 0) return 0;
   if (!headSha || !isCommitSha(headSha)) {
     logger.warn("Skipping fixed-thread replies: no 40-character head SHA for the fixed marker");
-    return;
+    return 0;
   }
   let posted = 0;
   for (const [fingerprint, thread] of fixedThreads) {
@@ -525,4 +537,5 @@ async function replyToFixedThreads(opts: {
     }
   }
   if (posted > 0) logger.info(`Replied on ${posted} thread(s) verified fixed`);
+  return posted;
 }

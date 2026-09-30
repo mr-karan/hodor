@@ -21,7 +21,7 @@ import {
   fetchGiteaPrInfo,
 } from "./gitea.js";
 import { setupWorkspace, cleanupWorkspace } from "./workspace.js";
-import { buildPrReviewPrompt } from "./prompt.js";
+import { buildMrSections, buildPrReviewPrompt } from "./prompt.js";
 import {
   addOpenAiBedrockReasoning,
   buildBedrockArnModel,
@@ -39,7 +39,7 @@ import {
   loadModelsJsonConfig,
 } from "./models-json.js";
 import { createCodemodeLimitsExtension, type CodemodeLimits } from "./codemode-limits.js";
-import { formatMetricsMarkdown, printMetrics } from "./metrics.js";
+import { formatMetricsMarkdown } from "./metrics.js";
 import { SUBMIT_REVIEW_SCHEMA, validateReviewOutput } from "./review.js";
 import { resolveReviewLocations } from "./resolve-location.js";
 import { createReviewToolset, REVIEW_TOOL_NAMES, type ReviewToolset } from "./review-tools.js";
@@ -63,6 +63,7 @@ import { partitionNotesByProvenance, resolvePublisherIdentity } from "./provenan
 import {
   buildFixCandidates,
   getFindingFingerprint,
+  MAX_PROMPT_FINDING_THREADS,
   selectFindingThreads,
   selectVerifiedFixes,
   type FindingThread,
@@ -89,7 +90,9 @@ export {
 } from "./publisher.js";
 import type {
   Platform,
+  ReviewContextManifest,
   ReviewMetrics,
+  ReviewRange,
   MrMetadata,
   ReviewOutput,
 } from "./types.js";
@@ -98,6 +101,10 @@ export interface AgentProgressEvent {
   type: "tool_start" | "tool_end" | "thinking" | "turn_start" | "turn_end" | "agent_start" | "agent_end" | "text_delta" | "thinking_delta" | "tool_result" | "retry" | "compaction";
   toolName?: string;
   toolArgs?: string;
+  /** Set on tool_start and tool_end. */
+  toolCallId?: string;
+  /** Set on tool_start and tool_end of calls a codemode script made. */
+  parentToolCallId?: string;
   isError?: boolean;
   turnIndex?: number;
   delta?: string;
@@ -248,6 +255,9 @@ export async function reviewPr(opts: {
   workspacePath: string;
   cacheMarker: string | null;
   reusedReview: boolean;
+  range: ReviewRange;
+  /** Null for local and reused reviews, which build no MR prompt context. */
+  context: ReviewContextManifest | null;
 }> {
   const {
     prUrl,
@@ -508,10 +518,10 @@ export async function reviewPr(opts: {
     // retries can regenerate artifacts and retry delivery without another LLM
     // invocation. Explicit --full reviews always bypass this fast path.
     let reviewCacheKey: string | null = null;
-    const reviewBaseSha = !localMode && !full && headSha
+    const reviewBaseSha = !localMode && headSha
       ? await resolveReviewBaseSha(workspacePath, targetBranch, diffBaseSha)
       : null;
-    if (headSha && reviewBaseSha) {
+    if (!full && headSha && reviewBaseSha) {
       reviewCacheKey = getReviewCacheKey({
         scope: {
           platform,
@@ -561,7 +571,6 @@ export async function reviewPr(opts: {
           reused: true,
           findings: cachedReview.findings.length,
         })}`);
-        printMetrics(metrics);
         return {
           review: cachedReview,
           metricsFooter: includeMetricsFooter ? formatMetricsMarkdown(metrics) : null,
@@ -570,6 +579,8 @@ export async function reviewPr(opts: {
           workspacePath,
           cacheMarker: null,
           reusedReview: true,
+          range: { headSha, targetBranch, baseSha: reviewBaseSha },
+          context: null,
         };
       }
     }
@@ -631,11 +642,20 @@ export async function reviewPr(opts: {
     // and name the open ones it may confirm fixed.
     let fixCandidates: FixCandidate[] = [];
     let findingThreads: FindingThread[] = [];
+    let droppedFindingThreads = 0;
+    // Human replies in Hodor finding threads are shown with their thread, so
+    // the top-level human notes leave them out.
+    const findingThreadNoteIds = new Set<number>();
     if (!localMode && platform === "gitlab" && publisherIdentity?.platform === "gitlab") {
       try {
         const discussions = await listHodorDiscussions(owner, repo, prNumber, host, publisherIdentity);
+        for (const discussion of discussions) {
+          for (const reply of discussion.humanReplies) findingThreadNoteIds.add(reply.noteId);
+        }
         const candidates = buildFixCandidates(discussions);
-        findingThreads = selectFindingThreads(discussions, candidates, changedFiles);
+        const allThreads = selectFindingThreads(discussions, candidates, changedFiles, Number.POSITIVE_INFINITY);
+        findingThreads = allThreads.slice(0, MAX_PROMPT_FINDING_THREADS);
+        droppedFindingThreads = allThreads.length - findingThreads.length;
         const presentedIds = new Set(findingThreads.flatMap((thread) => thread.fixId ? [thread.fixId] : []));
         fixCandidates = candidates.filter((candidate) => presentedIds.has(candidate.id));
         logger.info(
@@ -675,13 +695,28 @@ export async function reviewPr(opts: {
     reviewToolset = await createReviewToolset({ workspacePath, reviewDiff: rawReviewDiff });
     logger.info(`Review tools confined to ${reviewToolset.tree.files.length} tracked file(s)`);
 
+    const mrSections = buildMrSections(mrMetadata, { excludeNoteIds: findingThreadNoteIds });
+    const context: ReviewContextManifest | null = localMode
+      ? null
+      : {
+        hodorThreads: {
+          open: findingThreads.filter((thread) => thread.status === "open").length,
+          fixedWaiting: findingThreads.filter((thread) => thread.status === "fixed").length,
+          resolved: findingThreads.filter((thread) => thread.status === "resolved").length,
+          droppedByLimit: droppedFindingThreads,
+        },
+        humanComments: mrSections.humanNotes,
+        priorHodorReviews: mrSections.priorHodorReviews,
+      };
+    if (context) logger.info(`Review context: ${JSON.stringify(context)}`);
+
     // Build the dynamic review task sent as the first user message.
     const prompt = buildPrReviewPrompt({
       prUrl: prUrl ?? `local diff (against ${targetBranch})`,
       platform,
       targetBranch,
       diffBaseSha,
-      mrMetadata,
+      mrSections,
       embeddedDiff,
       previousReviewSha,
       reviewDiffMode: reviewMode,
@@ -808,14 +843,25 @@ export async function reviewPr(opts: {
     let codemodeCallCount = 0;
 
     /** Extract human-readable summary from tool args */
-    function formatToolArgs(_toolName: string, args: unknown): string {
+    function formatToolArgs(toolName: string, args: unknown): string {
       if (typeof args === "string") return args.slice(0, 200);
       const obj = args as Record<string, unknown> | undefined;
       if (!obj || Object.keys(obj).length === 0) return "";
-      // grep/find: show pattern + path
+      // submit_review: the outcome, not the payload
+      if (toolName === "submit_review" && Array.isArray(obj.findings)) {
+        const findings = obj.findings.length;
+        const fixed = Array.isArray(obj.resolved_findings) ? obj.resolved_findings.length : 0;
+        return `${findings} finding${findings === 1 ? "" : "s"}${fixed > 0 ? `, ${fixed} confirmed fixed` : ""}`;
+      }
+      // grep/find: show the quoted pattern + path
       if (obj.pattern) {
         const path = obj.path ? ` in ${obj.path}` : "";
-        return `${obj.pattern}${path}`;
+        return `"${obj.pattern}"${path}`;
+      }
+      // codemode: the script size, not its source
+      if (typeof obj.code === "string") {
+        const lines = obj.code.trimEnd().split("\n").length;
+        return `${lines}-line script`;
       }
       // read/ls: show the path
       if (obj.path || obj.file_path) return String(obj.path ?? obj.file_path);
@@ -861,6 +907,8 @@ export async function reviewPr(opts: {
             type: "tool_start",
             toolName: event.toolName,
             toolArgs: formatToolArgs(event.toolName, event.args),
+            toolCallId: event.toolCallId,
+            ...(event.parentToolCallId ? { parentToolCallId: event.parentToolCallId } : {}),
           });
           break;
         case "tool_execution_end":
@@ -869,6 +917,8 @@ export async function reviewPr(opts: {
             toolName: event.toolName,
             isError: event.isError,
             result: formatToolResult(event.result),
+            toolCallId: event.toolCallId,
+            ...(event.parentToolCallId ? { parentToolCallId: event.parentToolCallId } : {}),
           });
           break;
         case "auto_retry_start":
@@ -1055,6 +1105,7 @@ export async function reviewPr(opts: {
       diffAdditions: diffStats?.additions ?? 0,
       diffDeletions: diffStats?.deletions ?? 0,
       diffBytes: diffStats?.bytes ?? 0,
+      diffEmbedded: embeddedDiff != null,
       reused: false,
       fastPath: singleTurn,
     };
@@ -1081,7 +1132,6 @@ export async function reviewPr(opts: {
       cost: metrics.cost,
       findings: review.findings.length,
     })}`);
-    printMetrics(metrics);
 
     let metricsFooter: string | null = null;
     if (includeMetricsFooter) {
@@ -1100,6 +1150,15 @@ export async function reviewPr(opts: {
       workspacePath,
       cacheMarker,
       reusedReview: false,
+      range: {
+        headSha,
+        targetBranch,
+        // A rebased GitLab MR is reviewed against the MR base, not the old SHA.
+        baseSha: previousReviewSha && !(platform === "gitlab" && reviewMode === "snapshot")
+          ? previousReviewSha
+          : reviewBaseSha,
+      },
+      context,
     };
   } finally {
     activeSession?.dispose();

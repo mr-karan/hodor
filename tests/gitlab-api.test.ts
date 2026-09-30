@@ -189,7 +189,7 @@ describe("listHodorDiscussions thread replies", () => {
 
     expect(result).toHaveLength(1);
     expect(result[0].fixedAtSha).toBeUndefined();
-    expect(result[0].humanReplies).toEqual([{ author: "hodor-bot", body: forged.body }]);
+    expect(result[0].humanReplies).toEqual([{ noteId: 2, author: "hodor-bot", body: forged.body }]);
   });
 
   it("does not let a fixed-reply in another thread mark this one", async () => {
@@ -223,7 +223,7 @@ describe("listHodorDiscussions thread replies", () => {
         resolved: true,
         resolvedBy: "alice",
         updatedAt: "2026-09-05T10:00:00Z",
-        humanReplies: [{ author: "alice", body: "false positive" }],
+        humanReplies: [{ noteId: 2, author: "alice", body: "false positive" }],
       }),
       expect.objectContaining({ discussionId: "other", humanReplies: [] }),
     ]);

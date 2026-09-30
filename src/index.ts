@@ -1,6 +1,7 @@
 export { reviewPr, detectPlatform, parsePrUrl, postReviewComment } from "./agent.js";
 export type { AgentProgressEvent } from "./agent.js";
-export { buildPrReviewPrompt } from "./prompt.js";
+export { buildMrSections, buildPrReviewPrompt } from "./prompt.js";
+export type { MrSections } from "./prompt.js";
 export { parseModelString, mapReasoningEffort, getApiKey } from "./model.js";
 export { formatMetricsMarkdown, printMetrics, pushMetrics } from "./metrics.js";
 export { validateReviewOutput } from "./review.js";
@@ -25,6 +26,8 @@ export type {
   ReviewStateFinding,
   ReviewCorrectness,
   PostCommentResult,
+  ReviewContextManifest,
+  ReviewRange,
   MrMetadata,
   NoteEntry,
 } from "./types.js";

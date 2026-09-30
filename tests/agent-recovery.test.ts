@@ -455,6 +455,31 @@ describe("reviewPr submit_review recovery", () => {
     infoSpy.mockRestore();
   });
 
+  it("passes tool call ids and codemode parents through progress events", async () => {
+    mocks.promptResponses = [{ kind: "tool" }];
+    mocks.extraEvents = [
+      { type: "tool_execution_start", toolCallId: "c1", toolName: "codemode", args: { code: "a();\nb();\n" } },
+      { type: "tool_execution_start", toolCallId: "c2", parentToolCallId: "c1", toolName: "grep", args: { pattern: "has_role\\(", path: "crux" } },
+      { type: "tool_execution_end", toolCallId: "c2", parentToolCallId: "c1", toolName: "grep", result: { content: [] }, isError: false },
+    ];
+    const events: AgentProgressEvent[] = [];
+
+    const result = await reviewPr({
+      localMode: true,
+      workspaceDir,
+      cleanup: false,
+      model: "anthropic/test-model",
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(events.filter((e) => e.type === "tool_start" || e.type === "tool_end")).toEqual([
+      { type: "tool_start", toolName: "codemode", toolArgs: "2-line script", toolCallId: "c1" },
+      { type: "tool_start", toolName: "grep", toolArgs: '"has_role\\(" in crux', toolCallId: "c2", parentToolCallId: "c1" },
+      { type: "tool_end", toolName: "grep", isError: false, result: "", toolCallId: "c2", parentToolCallId: "c1" },
+    ]);
+    expect(result.context).toBeNull();
+  });
+
   describe("verified fixes on GitLab", () => {
     const HEAD = "0123456789abcdef0123456789abcdef01234567";
     const ENV_KEYS = ["GITLAB_CI", "CI_PROJECT_DIR", "CI_PROJECT_PATH", "CI_MERGE_REQUEST_TARGET_BRANCH_NAME"];
@@ -542,6 +567,42 @@ describe("reviewPr submit_review recovery", () => {
       expect(mocks.prompts[0]).toContain("- [P3] Rename the helper (src/other.ts): open");
       expect(result.review.resolved_findings).toEqual(["57a2a375"]);
       expect(result.cacheMarker).not.toBeNull();
+    });
+
+    it("records the context manifest and shows in-thread replies only with their thread", async () => {
+      const fallback = mocks.exec.getMockImplementation();
+      mocks.exec.mockImplementation(async (cmd: string, args: string[], opts?: unknown) => {
+        if (args.some((arg) => arg.endsWith("/notes"))) {
+          return {
+            stdout: JSON.stringify([
+              { id: 2, body: "not a bug", author: { id: 8, username: "alice" }, created_at: "2026-09-02T10:00:00Z" },
+              { id: 10, body: "false positive", author: { id: 9, username: "bob" }, created_at: "2026-09-03T10:00:00Z" },
+              { id: 11, body: "lgtm", author: { id: 9, username: "bob" }, created_at: "2026-09-03T11:00:00Z" },
+            ]),
+            stderr: "",
+          };
+        }
+        if (!fallback) throw new Error("exec fallback missing");
+        return fallback(cmd, args, opts);
+      });
+      mocks.promptResponses = [{ kind: "tool" }];
+
+      const result = await reviewPr({
+        prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42",
+        cleanup: false,
+        model: "anthropic/test-model",
+      });
+
+      expect(mocks.prompts[0]).toContain("## Existing Human MR Notes");
+      expect(mocks.prompts[0]).toContain("@bob:\n  false positive");
+      expect(mocks.prompts[0].split("not a bug")).toHaveLength(2);
+      expect(result.context).toEqual({
+        hodorThreads: { open: 2, fixedWaiting: 0, resolved: 0, droppedByLimit: 0 },
+        humanComments: { included: 1, droppedByBudget: 0 },
+        priorHodorReviews: 0,
+      });
+      expect(result.range).toEqual({ headSha: HEAD, targetBranch: "main", baseSha: "a".repeat(40) });
+      expect(result.metrics.diffEmbedded).toBe(true);
     });
 
     it("drops an id whose finding the review reports again", async () => {

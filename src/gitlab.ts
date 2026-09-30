@@ -38,6 +38,7 @@ export interface HodorDiscussion {
 }
 
 export interface ThreadReply {
+  noteId: number;
   author: string;
   body: string;
 }
@@ -170,6 +171,7 @@ export async function fetchGitlabMrInfo(
       );
       const notes = parsePaginatedJsonArrays(rawNotes);
       metadata.Notes = notes.map((n) => ({
+        ...(typeof n.id === "number" && Number.isSafeInteger(n.id) ? { id: n.id } : {}),
         body: typeof n.body === "string" ? n.body : "",
         author: parseGitlabAuthor(n.author),
         created_at: typeof n.created_at === "string" ? n.created_at : undefined,
@@ -262,9 +264,7 @@ export async function publishGitlabMrSummary(
     return { noteId, collapsed: 0 };
   }
 
-  const collapsedBody = renderSupersededSummary(
-    `${normalizeBaseUrl(host)}/${projectPath(owner, repo)}/-/merge_requests/${mrNumber}#note_${noteId}`,
-  );
+  const collapsedBody = renderSupersededSummary(gitlabNoteUrl(owner, repo, mrNumber, noteId, host));
   let collapsed = 0;
   for (const priorId of priorSummaryIds) {
     try {
@@ -280,6 +280,17 @@ export async function publishGitlabMrSummary(
     }
   }
   return { noteId, collapsed };
+}
+
+/** Web URL of one note on a merge request. */
+export function gitlabNoteUrl(
+  owner: string,
+  repo: string,
+  mrNumber: number | string,
+  noteId: number,
+  host?: string | null,
+): string {
+  return `${normalizeBaseUrl(host)}/${projectPath(owner, repo)}/-/merge_requests/${mrNumber}#note_${noteId}`;
 }
 
 function parseCreatedNoteId(stdout: string): number | null {
@@ -316,41 +327,85 @@ function isSupersededSummary(body: string): boolean {
   return HODOR_SUPERSEDED_PREFIX_RE.test(body);
 }
 
+/** Per-note cap for prompt context. */
+const MAX_NOTE_CHARS = 2_000;
+/** Total characters of human notes, rendered, that one prompt may carry. */
+const HUMAN_NOTES_BUDGET_CHARS = 30_000;
+
+/** Whole-note reactions with no review content. */
+const NOISE_NOTES = new Set([
+  "lgtm",
+  "+1",
+  "-1",
+  "thanks",
+  "thank you",
+  "ty",
+  "looks good",
+  "looks good to me",
+  "approved",
+  "ship it",
+  "nice",
+]);
+
+export interface NotesSummary {
+  /** Bullet list, oldest first. Empty when no note qualifies. */
+  text: string;
+  included: number;
+}
+
+export interface HumanNotesSummary extends NotesSummary {
+  /** Qualifying notes left out because the character budget was spent. */
+  droppedByBudget: number;
+}
+
+interface SummarizedNote {
+  username: string;
+  body: string;
+  createdAt: string;
+}
+
 /**
- * Summarize notes that are not authenticated Hodor state into a bullet list.
- * A participant note that copies a Hodor marker stays here, as human context.
+ * Summarize every non-trivial note that is not authenticated Hodor state,
+ * newest first, until the character budget is spent. A participant note that
+ * copies a Hodor marker stays here, as human context. Notes whose id is in
+ * `excludeNoteIds` (replies shown with their Hodor finding thread) are skipped.
  */
 export function summarizeGitlabNotes(
   notes: readonly NoteEntry[] | undefined | null,
-  maxEntries = 5,
-): string {
-  return summarizeNotes(notes, maxEntries, (note) => note.provenance !== "hodor");
+  options: { excludeNoteIds?: ReadonlySet<number>; budgetChars?: number } = {},
+): HumanNotesSummary {
+  const { excludeNoteIds, budgetChars = HUMAN_NOTES_BUDGET_CHARS } = options;
+  const candidates: SummarizedNote[] = [];
+  for (const note of notes ?? []) {
+    if (note.provenance === "hodor" || note.system) continue;
+    if (note.id !== undefined && excludeNoteIds?.has(note.id)) continue;
+    const body = cleanNoteBody(note);
+    if (!body || isNoiseNote(body)) continue;
+    candidates.push(toSummarizedNote(note, body));
+  }
+
+  const newestFirst = sortOldestFirst(candidates).reverse();
+  const selected: string[] = [];
+  let used = 0;
+  for (const note of newestFirst) {
+    const entry = renderNoteEntry(note);
+    if (used + entry.length > budgetChars) break;
+    selected.push(entry);
+    used += entry.length;
+  }
+  return {
+    text: selected.reverse().join("\n"),
+    included: selected.length,
+    droppedByBudget: newestFirst.length - selected.length,
+  };
 }
 
 /** Summarize only notes that partitionNotesByProvenance authenticated. */
 export function summarizeHodorNotes(
   notes: readonly NoteEntry[] | undefined | null,
   maxEntries = 5,
-): string {
-  return summarizeNotes(
-    notes,
-    maxEntries,
-    // Fixed-replies are thread state, shown with their finding in the prompt.
-    (note) =>
-      note.provenance === "hodor" &&
-      !isSupersededSummary(note.body ?? "") &&
-      getFixedMarker(note.body ?? "") === null,
-  );
-}
-
-function summarizeNotes(
-  notes: readonly NoteEntry[] | undefined | null,
-  maxEntries: number,
-  include: (note: NoteEntry) => boolean,
-): string {
-  if (!notes || notes.length === 0) return "";
-
-  const trivialPatterns = new Set([
+): NotesSummary {
+  const trivialPatterns = [
     "lgtm",
     "+1",
     "-1",
@@ -363,60 +418,62 @@ function summarizeNotes(
     "🚀",
     "✅",
     "❌",
-  ]);
+  ];
 
-  const filtered: Array<{ username: string; body: string; createdAt: string }> = [];
-  for (const note of notes) {
-    if (!include(note)) continue;
-    // Cache payloads are machine-only and can be large. Never feed their
-    // compressed representation back into reviewer context.
-    const body = (note.body ?? "").replace(HODOR_CACHE_MARKER_RE, "").trim();
-    if (!body) continue;
-    if (note.system) continue;
+  const candidates: SummarizedNote[] = [];
+  for (const note of notes ?? []) {
+    // Fixed-replies are thread state, shown with their finding in the prompt.
+    if (
+      note.provenance !== "hodor" ||
+      note.system ||
+      isSupersededSummary(note.body ?? "") ||
+      getFixedMarker(note.body ?? "") !== null
+    ) {
+      continue;
+    }
+    const body = cleanNoteBody(note);
     if (body.length < 20) continue;
-
     const bodyLower = body.toLowerCase();
-    let isTrivial = false;
-    for (const pattern of trivialPatterns) {
-      if (bodyLower.includes(pattern) && body.length < 50) {
-        isTrivial = true;
-        break;
-      }
-    }
-    if (isTrivial) continue;
-
-    const username =
-      note.author?.username ?? note.author?.name ?? "unknown";
-    filtered.push({ username, body, createdAt: note.created_at ?? "" });
+    if (body.length < 50 && trivialPatterns.some((pattern) => bodyLower.includes(pattern))) continue;
+    candidates.push(toSummarizedNote(note, body));
   }
 
-  // Sort oldest first
-  filtered.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const recent = sortOldestFirst(candidates).slice(-maxEntries);
+  return { text: recent.map(renderNoteEntry).join("\n"), included: recent.length };
+}
 
-  // Take most recent
-  const recent = filtered.slice(-maxEntries);
+/** Body without machine cache payloads, which are large and never context. */
+function cleanNoteBody(note: NoteEntry): string {
+  return (note.body ?? "").replace(HODOR_CACHE_MARKER_RE, "").trim();
+}
 
-  const lines: string[] = [];
-  for (const { username, body, createdAt } of recent) {
-    let timestampStr = "";
-    if (createdAt) {
-      try {
-        const dt = new Date(createdAt);
-        timestampStr = dt.toISOString().replace("T", " ").slice(0, 16);
-      } catch {
-        timestampStr = createdAt.slice(0, 10);
-      }
-    }
+/** A bare reaction: emoji or punctuation only, or a stock phrase like "lgtm". */
+function isNoiseNote(body: string): boolean {
+  if (!/[\p{L}\p{N}]/u.test(body)) return true;
+  const words = body.toLowerCase().replace(/[^\p{L}\p{N}+\- ]/gu, " ").replace(/\s+/g, " ").trim();
+  return NOISE_NOTES.has(words);
+}
 
-    const header = timestampStr
-      ? `- ${timestampStr} @${username}:`
-      : `- @${username}:`;
-    const boundedBody = body.length > 2_000 ? `${body.slice(0, 1_999).trimEnd()}…` : body;
-    const indentedBody = boundedBody.split("\n").join("\n  ");
-    lines.push(`${header}\n  ${indentedBody}`);
-  }
+function toSummarizedNote(note: NoteEntry, body: string): SummarizedNote {
+  return {
+    username: note.author?.username ?? note.author?.name ?? "unknown",
+    body,
+    createdAt: note.created_at ?? "",
+  };
+}
 
-  return lines.join("\n");
+function sortOldestFirst(notes: SummarizedNote[]): SummarizedNote[] {
+  return [...notes].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+function renderNoteEntry({ username, body, createdAt }: SummarizedNote): string {
+  const parsed = Date.parse(createdAt);
+  const timestamp = Number.isNaN(parsed)
+    ? createdAt.slice(0, 10)
+    : new Date(parsed).toISOString().replace("T", " ").slice(0, 16);
+  const header = timestamp ? `- ${timestamp} @${username}:` : `- @${username}:`;
+  const bounded = body.length > MAX_NOTE_CHARS ? `${body.slice(0, MAX_NOTE_CHARS - 1).trimEnd()}…` : body;
+  return `${header}\n  ${bounded.split("\n").join("\n  ")}`;
 }
 
 export async function getGitlabMrDiffRefs(
@@ -669,7 +726,7 @@ export async function listHodorDiscussions(
       }
       if (!isPublisherNote(noteObj, identity)) {
         const author = parseGitlabAuthor(noteObj.author);
-        humanReplies.push({ author: author?.username ?? author?.name ?? "unknown", body });
+        humanReplies.push({ noteId, author: author?.username ?? author?.name ?? "unknown", body });
         continue;
       }
       if (!isHodorGeneratedNote(body)) {
