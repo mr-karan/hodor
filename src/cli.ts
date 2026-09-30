@@ -125,7 +125,7 @@ program
   )
   .option(
     "--codemode",
-    "Experimental: let the agent batch its read-only tool calls in Pi's codemode sandbox",
+    "Let the agent batch its read-only tool calls in Pi's codemode sandbox (cheaper on large reviews)",
     false,
   )
   .action(async (prUrl: string | undefined, cmdOpts: Record<string, unknown>) => {

@@ -37,6 +37,7 @@ import {
   createModelRuntime,
   loadModelsJsonConfig,
 } from "./models-json.js";
+import { createCodemodeLimitsExtension, type CodemodeLimits } from "./codemode-limits.js";
 import { formatMetricsMarkdown, printMetrics } from "./metrics.js";
 import { SUBMIT_REVIEW_SCHEMA, validateReviewOutput } from "./review.js";
 import { resolveReviewLocations } from "./resolve-location.js";
@@ -173,6 +174,8 @@ export async function createReviewResourceLoader(opts: {
   systemPrompt?: string;
   skillPaths?: string[];
   codemode?: boolean;
+  /** Overrides the enforced codemode script limits (tests use a short timeout). */
+  codemodeLimits?: CodemodeLimits;
 }): Promise<DefaultResourceLoader> {
   const resourceLoader = new DefaultResourceLoader({
     cwd: opts.cwd,
@@ -189,11 +192,15 @@ export async function createReviewResourceLoader(opts: {
     agentsFilesOverride: () => ({ agentsFiles: [] }),
     ...(opts.codemode
       ? {
-        extensionFactories: [{
-          name: "codemode",
-          builtin: true,
-          factory: createCodemodeExtension({ models: false, mode: "on" }),
-        }],
+        extensionFactories: [
+          {
+            name: "codemode",
+            builtin: true,
+            factory: createCodemodeExtension({ models: false, mode: "on" }),
+          },
+          // Codemode sets no script timeout by default; enforce one.
+          { name: "hodor-codemode-limits", factory: createCodemodeLimitsExtension(opts.codemodeLimits) },
+        ],
         additionalExtensionPaths: ["builtin:codemode"],
       }
       : {}),
@@ -222,7 +229,7 @@ export async function reviewPr(opts: {
   full?: boolean;
   targetBranchOverride?: string;
   tinyDiffFastPath?: boolean;
-  /** Experimental: let the model batch tool calls through Pi's codemode sandbox. */
+  /** Let the model batch tool calls through Pi's codemode sandbox. */
   codemode?: boolean;
 }): Promise<{
   review: ReviewOutput;
@@ -669,7 +676,7 @@ export async function reviewPr(opts: {
     // Codemode scripts run in a QuickJS sandbox that can only call the
     // session's tools, which are Hodor's confined ones.
     const useCodemode = codemode && !singleTurn;
-    if (useCodemode) logger.info("Codemode enabled (experimental)");
+    if (useCodemode) logger.info("Codemode enabled");
     const resourceLoader = await createReviewResourceLoader({
       cwd: workspacePath,
       agentDir: getAgentDir(),

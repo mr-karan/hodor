@@ -65,11 +65,15 @@ const submitReviewTool: ToolDefinition = {
   execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
 };
 
-async function createSession(singleTurn: boolean, codemode = false): Promise<AgentSession> {
+async function createSession(
+  singleTurn: boolean,
+  codemode = false,
+  codemodeLimits?: { timeoutMs: number; maxOutputTokens: number },
+): Promise<AgentSession> {
   const agentDir = join(base, "pi-agent");
   mkdirSync(agentDir, { recursive: true });
   const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, cacheWarming: "off" });
-  const resourceLoader = await createReviewResourceLoader({ cwd: repo, agentDir, settingsManager, codemode });
+  const resourceLoader = await createReviewResourceLoader({ cwd: repo, agentDir, settingsManager, codemode, codemodeLimits });
   const modelRuntime = await createModelRuntime(null);
   const { session: created } = await createAgentSession({
     cwd: repo,
@@ -186,10 +190,13 @@ describe("codemode (experimental)", () => {
    * the codemode call, then submit_review to end the run. Nested tool calls
    * need a real assistant turn, so the tool cannot be executed directly.
    */
-  async function runScript(code: string): Promise<string> {
+  async function runScript(
+    code: string,
+    limits?: { timeoutMs: number; maxOutputTokens: number },
+  ): Promise<string> {
     // The scripted stream never sends a request, but prompt() requires a key.
     vi.stubEnv("ANTHROPIC_API_KEY", "offline-test-key");
-    const cm = await createSession(false, true);
+    const cm = await createSession(false, true, limits);
     try {
       const model = cm.model;
       if (!model) throw new Error("session has no model");
@@ -256,6 +263,21 @@ describe("codemode (experimental)", () => {
       tools: ["find", "git_diff", "grep", "ls", "read"],
       submit: "undefined",
     });
+  });
+
+  it("stops a script that runs past the enforced timeout", async () => {
+    const started = Date.now();
+    const out = await runScript("while (true) {}", { timeoutMs: 500, maxOutputTokens: 10_000 });
+    expect(out).toMatch(/Script failed/);
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
+  it("caps a timeout the script asks for", async () => {
+    const out = await runScript('// @options: {"timeout_ms": 999999999}\nwhile (true) {}', {
+      timeoutMs: 500,
+      maxOutputTokens: 10_000,
+    });
+    expect(out).toMatch(/Script failed/);
   });
 
   it("keeps confinement for reads made from a script", async () => {
