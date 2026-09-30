@@ -7,6 +7,7 @@ import {
   HODOR_SUMMARY_MARKER,
   renderSupersededSummary,
 } from "./render.js";
+import { getDiscussionFingerprint, getFixedMarker } from "./review-state.js";
 
 export { HODOR_REVIEW_MARKER, HODOR_SUMMARY_MARKER };
 
@@ -23,6 +24,22 @@ export interface HodorDiscussion {
   resolved: boolean;
   filePath?: string;
   line?: number;
+  /** Head SHA from the publisher's latest fixed-reply for this finding, if any. */
+  fixedAtSha?: string;
+  /** Username GitLab reports as having resolved the thread. */
+  resolvedBy?: string;
+  /** Latest created, updated, or resolved time across the thread's notes. */
+  updatedAt?: string;
+  /**
+   * Replies in the thread from other accounts, oldest first. Untrusted text:
+   * never read as Hodor state, even when it copies a Hodor marker.
+   */
+  humanReplies: ThreadReply[];
+}
+
+export interface ThreadReply {
+  author: string;
+  body: string;
 }
 
 const DEFAULT_GITLAB_HOST = "gitlab.com";
@@ -318,7 +335,11 @@ export function summarizeHodorNotes(
   return summarizeNotes(
     notes,
     maxEntries,
-    (note) => note.provenance === "hodor" && !isSupersededSummary(note.body ?? ""),
+    // Fixed-replies are thread state, shown with their finding in the prompt.
+    (note) =>
+      note.provenance === "hodor" &&
+      !isSupersededSummary(note.body ?? "") &&
+      getFixedMarker(note.body ?? "") === null,
   );
 }
 
@@ -588,7 +609,8 @@ export async function postGitlabCommitStatus(
 /**
  * List resolvable Hodor discussions written by the publishing identity. Notes
  * from other authors are dropped before fingerprinting, deduplication, merge,
- * status, code quality, and resolution, even if they copy a Hodor marker.
+ * status, and code quality, even if they copy a Hodor marker. A fixed-reply
+ * counts only when the publishing identity wrote it in the same discussion.
  */
 export async function listHodorDiscussions(
   owner: string,
@@ -630,18 +652,33 @@ export async function listHodorDiscussions(
       continue;
     }
 
+    const entries: Array<Omit<HodorDiscussion, "humanReplies" | "updatedAt">> = [];
+    const humanReplies: ThreadReply[] = [];
+    let updatedAt: string | undefined;
+    // Notes arrive oldest first, so the latest fixed-reply wins.
+    const fixedAtShaByFingerprint = new Map<string, string>();
     for (const noteObj of notes) {
       if (!isRecord(noteObj)) {
         continue;
       }
+      updatedAt = latestTimestamp(updatedAt, noteObj.created_at, noteObj.updated_at, noteObj.resolved_at);
       const noteId = noteObj.id;
       const body = noteObj.body;
-      if (
-        typeof noteId !== "number" ||
-        typeof body !== "string" ||
-        !isHodorGeneratedNote(body) ||
-        !isPublisherNote(noteObj, identity)
-      ) {
+      if (typeof noteId !== "number" || typeof body !== "string" || noteObj.system === true) {
+        continue;
+      }
+      if (!isPublisherNote(noteObj, identity)) {
+        const author = parseGitlabAuthor(noteObj.author);
+        humanReplies.push({ author: author?.username ?? author?.name ?? "unknown", body });
+        continue;
+      }
+      if (!isHodorGeneratedNote(body)) {
+        continue;
+      }
+
+      const fixed = getFixedMarker(body);
+      if (fixed) {
+        fixedAtShaByFingerprint.set(fixed.fingerprint, fixed.sha);
         continue;
       }
 
@@ -661,20 +698,32 @@ export async function listHodorDiscussions(
             : undefined;
 
       // Skip non-resolvable threads. GitLab wraps the summary-comment note in a
-      // discussion envelope with `resolvable: false`; PUT resolved=true on those
-      // returns 403, independent of the caller's project role. Only diff/review
-      // threads (resolvable: true) belong in the resolver's queue.
+      // discussion envelope with `resolvable: false`. Only diff/review threads
+      // (resolvable: true) hold findings.
       if (noteObj.resolvable !== true) {
         continue;
       }
 
-      results.push({
+      const resolvedBy = parseGitlabAuthor(noteObj.resolved_by)?.username;
+      entries.push({
         discussionId,
         noteId,
         body,
         resolved: Boolean(noteObj.resolved),
         filePath,
         line,
+        ...(resolvedBy ? { resolvedBy } : {}),
+      });
+    }
+
+    for (const entry of entries) {
+      const fingerprint = getDiscussionFingerprint(entry.body);
+      const fixedAtSha = fingerprint ? fixedAtShaByFingerprint.get(fingerprint) : undefined;
+      results.push({
+        ...entry,
+        ...(fixedAtSha ? { fixedAtSha } : {}),
+        ...(updatedAt ? { updatedAt } : {}),
+        humanReplies,
       });
     }
   }
@@ -682,43 +731,44 @@ export async function listHodorDiscussions(
   return results;
 }
 
-export async function resolveGitlabDiscussions(
+function latestTimestamp(current: string | undefined, ...values: unknown[]): string | undefined {
+  let latest = current;
+  for (const value of values) {
+    if (typeof value !== "string" || Number.isNaN(Date.parse(value))) continue;
+    if (latest === undefined || Date.parse(value) > Date.parse(latest)) latest = value;
+  }
+  return latest;
+}
+
+/** Add a reply note to an existing MR discussion. Reporter access is enough. */
+export async function replyToGitlabDiscussion(
   owner: string,
   repo: string,
   mrNumber: number | string,
-  discussionIds: string[],
+  discussionId: string,
+  body: string,
   host?: string | null,
-): Promise<number> {
+): Promise<void> {
   const encoded = encodedProjectPath(owner, repo);
   const env = glabEnv(host);
 
-  let resolvedCount = 0;
-
-  for (const discussionId of discussionIds) {
-    try {
-      await exec(
-        "glab",
-        [
-          "api",
-          `projects/${encoded}/merge_requests/${mrNumber}/discussions/${discussionId}`,
-          "--method",
-          "PUT",
-          "-H",
-          "Content-Type: application/json",
-          "--input",
-          "-",
-        ],
-        {
-          env,
-          input: JSON.stringify({ resolved: true }),
-        },
-      );
-      resolvedCount += 1;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn(`Failed to resolve discussion ${discussionId} on MR !${mrNumber}: ${msg}`);
-    }
+  try {
+    await exec(
+      "glab",
+      [
+        "api",
+        `projects/${encoded}/merge_requests/${mrNumber}/discussions/${encodeURIComponent(discussionId)}/notes`,
+        "--method",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--input",
+        "-",
+      ],
+      { env, input: JSON.stringify({ body }) },
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new GitLabAPIError(`Failed to reply to discussion ${discussionId} on MR !${mrNumber}: ${msg}`);
   }
-
-  return resolvedCount;
 }

@@ -2,13 +2,14 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { reviewPr, type AgentProgressEvent } from "../src/agent.js";
 import { logger } from "../src/utils/logger.js";
 
 const mocks = vi.hoisted(() => ({
   createAgentSession: vi.fn(),
   exec: vi.fn(),
+  execJson: vi.fn(),
   prompts: [] as string[],
   hiddenUsage: 0,
   settingsOptions: [] as unknown[],
@@ -19,7 +20,7 @@ const mocks = vi.hoisted(() => ({
   }>,
   promptResponses: [] as Array<
     | { kind: "text"; text: string }
-    | { kind: "tool" }
+    | { kind: "tool"; args?: Record<string, unknown> }
   >,
 }));
 
@@ -48,7 +49,7 @@ const INVALID_REVIEW_TEXT = JSON.stringify({
 vi.mock("../src/utils/exec.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/utils/exec.js")>()),
   exec: mocks.exec,
-  execJson: vi.fn(async () => ({})),
+  execJson: mocks.execJson,
 }));
 
 // The confined review tools are built from Pi's real tool factories; only the
@@ -133,6 +134,8 @@ describe("reviewPr submit_review recovery", () => {
       { kind: "tool" },
     ];
     mocks.exec.mockReset();
+    mocks.execJson.mockReset();
+    mocks.execJson.mockResolvedValue({});
     mocks.createAgentSession.mockReset();
 
     mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
@@ -249,7 +252,7 @@ describe("reviewPr submit_review recovery", () => {
               if (!submitReview) {
                 throw new Error("submit_review tool was not registered");
               }
-              const result = await submitReview.execute("tool-1", {
+              const result = await submitReview.execute("tool-1", response.args ?? {
                 findings: [],
                 overall_correctness: "patch is correct",
                 overall_explanation: "No production issues were found.",
@@ -450,5 +453,136 @@ describe("reviewPr submit_review recovery", () => {
     expect(lines).toContain("Retrying LLM request (attempt 1/3) in 2000ms: 429 overloaded");
     expect(lines).toContain("Compacting context (reason: threshold)");
     infoSpy.mockRestore();
+  });
+
+  describe("verified fixes on GitLab", () => {
+    const HEAD = "0123456789abcdef0123456789abcdef01234567";
+    const ENV_KEYS = ["GITLAB_CI", "CI_PROJECT_DIR", "CI_PROJECT_PATH", "CI_MERGE_REQUEST_TARGET_BRANCH_NAME"];
+    const savedEnv: Record<string, string | undefined> = {};
+    const inDiff = `57a2a375${"1".repeat(56)}`;
+    const outsideDiff = `9f00aa11${"2".repeat(56)}`;
+
+    function thread(id: string, fingerprint: string, title: string, path: string, extraNotes: unknown[] = []) {
+      return {
+        id,
+        notes: [
+          {
+            id: 1,
+            body: `<!-- hodor-review -->\n<!-- hodor:finding:${fingerprint} -->\n**${title}**\n\nBody.`,
+            resolvable: true,
+            resolved: false,
+            author: { id: 7, username: "hodor-bot" },
+            position: { new_path: path, new_line: 1 },
+          },
+          ...extraNotes,
+        ],
+      };
+    }
+
+    beforeEach(() => {
+      for (const key of ENV_KEYS) savedEnv[key] = process.env[key];
+      process.env.GITLAB_CI = "true";
+      process.env.CI_PROJECT_DIR = workspaceDir;
+      process.env.CI_PROJECT_PATH = "acme/app";
+      process.env.CI_MERGE_REQUEST_TARGET_BRANCH_NAME = "main";
+
+      mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) =>
+        args.includes("user") ? { id: 7, username: "hodor-bot" } : { title: "Fix archive" },
+      );
+      const fallback = mocks.exec.getMockImplementation();
+      mocks.exec.mockImplementation(async (cmd: string, args: string[], opts?: unknown) => {
+        if (args.includes("get-url")) return { stdout: "https://gitlab.example.com/acme/app.git\n", stderr: "" };
+        if (args.includes("merge-base")) return { stdout: `${"a".repeat(40)}\n`, stderr: "" };
+        if (args.includes("rev-parse") && args.includes("HEAD")) return { stdout: `${HEAD}\n`, stderr: "" };
+        if (args.some((arg) => arg.includes("/discussions?"))) {
+          return {
+            stdout: JSON.stringify([
+              thread("in-diff", inDiff, "[P2] Keep the value in range", "src/example.ts", [
+                { id: 2, body: "not a bug", author: { id: 8, username: "alice" } },
+              ]),
+              thread("outside", outsideDiff, "[P3] Rename the helper", "src/other.ts"),
+            ]),
+            stderr: "",
+          };
+        }
+        if (args.some((arg) => arg.includes("/notes"))) return { stdout: "[]", stderr: "" };
+        if (!fallback) throw new Error("exec fallback missing");
+        return fallback(cmd, args, opts);
+      });
+    });
+
+    afterEach(() => {
+      for (const key of ENV_KEYS) {
+        const value = savedEnv[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    });
+
+    it("shows open threads with ids and keeps only verified resolved_findings", async () => {
+      mocks.promptResponses = [{
+        kind: "tool",
+        args: {
+          findings: [],
+          overall_correctness: "patch is correct",
+          overall_explanation: "The earlier range issue is fixed.",
+          resolved_findings: ["57a2a375", "9f00aa11", "deadbeef"],
+        },
+      }];
+
+      const result = await reviewPr({
+        prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42",
+        cleanup: false,
+        model: "anthropic/test-model",
+      });
+
+      expect(mocks.prompts[0]).toContain("## Hodor Finding Threads");
+      expect(mocks.prompts[0]).toContain("- 57a2a375 [P2] Keep the value in range (src/example.ts): open\n  - @alice: not a bug");
+      // Its file is not in the diff, so the model gets no id for it.
+      expect(mocks.prompts[0]).toContain("- [P3] Rename the helper (src/other.ts): open");
+      expect(result.review.resolved_findings).toEqual(["57a2a375"]);
+      expect(result.cacheMarker).not.toBeNull();
+    });
+
+    it("drops an id whose finding the review reports again", async () => {
+      const { getFindingFingerprint } = await import("../src/review-state.js");
+      const finding = {
+        title: "[P2] Keep the value in range",
+        body: "Still out of range.",
+        priority: 2,
+        code_location: { absolute_file_path: join(workspaceDir, "src", "example.ts"), line_range: { start: 1, end: 1 } },
+      };
+      const fingerprint = getFindingFingerprint(finding, workspaceDir);
+      const fallback = mocks.exec.getMockImplementation();
+      mocks.exec.mockImplementation(async (cmd: string, args: string[], opts?: unknown) => {
+        if (args.some((arg) => arg.includes("/discussions?"))) {
+          return {
+            stdout: JSON.stringify([thread("same", fingerprint, finding.title, "src/example.ts")]),
+            stderr: "",
+          };
+        }
+        if (!fallback) throw new Error("exec fallback missing");
+        return fallback(cmd, args, opts);
+      });
+      mocks.promptResponses = [{
+        kind: "tool",
+        args: {
+          findings: [finding],
+          overall_correctness: "patch is incorrect",
+          overall_explanation: "The range issue remains.",
+          resolved_findings: [fingerprint.slice(0, 8)],
+        },
+      }];
+
+      const result = await reviewPr({
+        prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42",
+        cleanup: false,
+        model: "anthropic/test-model",
+      });
+
+      expect(mocks.prompts[0]).toContain(`- ${fingerprint.slice(0, 8)} [P2] Keep the value in range`);
+      expect(result.review.findings).toHaveLength(1);
+      expect(result.review).not.toHaveProperty("resolved_findings");
+    });
   });
 });

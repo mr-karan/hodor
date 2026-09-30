@@ -385,8 +385,7 @@ program
         review.findings,
         [],
         process.env.CI_PROJECT_DIR ?? workspacePath,
-        { includeExisting: false },
-      );
+      ).open;
       let gitlabReviewStateLoaded = false;
       let codeQualityWritten = false;
 
@@ -407,7 +406,6 @@ program
             commitStatus,
             headSha,
             workspacePath,
-            reconcileDiscussions: full,
             cacheMarker,
             skipSummary: reusedReview,
             skipInline: reusedReview,
@@ -470,10 +468,10 @@ program
               discussions,
               process.env.CI_PROJECT_DIR ?? workspacePath,
               {
-                includeExisting: !full,
                 suppressResolvedCurrent: reusedReview,
+                resolvedFindingIds: review.resolved_findings,
               },
-            );
+            ).open;
           }
 
           writeFileSync(codeQuality, formatCodeQualityReport(reviewFindings), "utf-8");

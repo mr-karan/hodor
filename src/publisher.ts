@@ -12,16 +12,19 @@ import {
   postGitlabCommitStatus,
   publishGitlabMrSummary,
   publishGitlabDraftNote,
-  resolveGitlabDiscussions,
+  replyToGitlabDiscussion,
   type DiffRefs,
   type HodorDiscussion,
 } from "./gitlab.js";
 import { detectPlatform, parsePrUrl } from "./platform.js";
 import { HODOR_SUMMARY_MARKER, renderMarkdown, renderSummaryMarkdown } from "./render.js";
 import {
+  buildFixedReplyBody,
   getDiscussionFingerprint,
   getFindingFingerprint,
+  isCommitSha,
   mergeReviewStateFindings,
+  resolveFixedThreads,
 } from "./review-state.js";
 import type {
   GitlabPublisherIdentity,
@@ -59,7 +62,7 @@ export async function postGitlabReviewCommitStatus(
 }
 
 /**
- * GitLab publication edits Hodor's own notes and resolves Hodor's own
+ * GitLab publication edits Hodor's own notes and reads Hodor's own
  * discussions, so it needs the publishing identity. Without one, Hodor posts
  * nothing: it cannot tell its notes from forged ones.
  */
@@ -192,7 +195,6 @@ export async function postReviewStructured(opts: {
   commitStatus?: boolean;
   headSha?: string | null;
   workspacePath?: string | null;
-  reconcileDiscussions?: boolean;
   cacheMarker?: string | null;
   skipSummary?: boolean;
   skipInline?: boolean;
@@ -207,7 +209,6 @@ export async function postReviewStructured(opts: {
     commitStatus = false,
     headSha,
     workspacePath,
-    reconcileDiscussions = false,
     cacheMarker,
     skipSummary = false,
     skipInline = false,
@@ -282,20 +283,23 @@ export async function postReviewStructured(opts: {
   } catch (error) {
     discussionListingFailed = true;
     const message = error instanceof Error ? error.message : String(error);
-    if (reconcileDiscussions || commitStatus) {
+    if (commitStatus) {
       errors.push(`discussion listing: ${message}`);
     }
     logger.warn(`Failed to list open Hodor discussions for review state: ${message}`);
   }
 
-  const reviewFindings = mergeReviewStateFindings(
+  const { open: reviewFindings, fixedAwaiting } = mergeReviewStateFindings(
     review.findings,
     discussions,
     workspacePath,
     {
-      includeExisting: !reconcileDiscussions,
       suppressResolvedCurrent: skipInline,
+      resolvedFindingIds: review.resolved_findings,
     },
+  );
+  const currentFingerprints = new Set(
+    review.findings.map((finding) => getFindingFingerprint(finding, workspacePath)),
   );
 
   let inlineCreated = 0;
@@ -412,9 +416,6 @@ export async function postReviewStructured(opts: {
     )
   ) {
     const summaryFindings = review.findings;
-    const currentFingerprints = new Set(
-      review.findings.map((finding) => getFindingFingerprint(finding, workspacePath)),
-    );
     let summaryBody = renderSummaryMarkdown(review, {
       openFindings: reviewFindings,
       fallbackFindings: summaryFindings,
@@ -426,6 +427,7 @@ export async function postReviewStructured(opts: {
       reviewMode,
       reviewedSha: headSha,
       carriedOver: reviewFindings.filter((finding) => !currentFingerprints.has(finding.fingerprint)).length,
+      fixedAwaiting,
       asOf: new Date(),
     });
     if (headSha) summaryBody = `<!-- hodor:sha:${headSha} -->\n${summaryBody}`;
@@ -442,7 +444,7 @@ export async function postReviewStructured(opts: {
   }
 
   let commitStatusPosted = false;
-  if (commitStatus && (!discussionListingFailed || reconcileDiscussions)) {
+  if (commitStatus && !discussionListingFailed) {
     try {
       await postGitlabReviewCommitStatus(parsed, reviewFindings, diffRefs);
       commitStatusPosted = true;
@@ -453,7 +455,13 @@ export async function postReviewStructured(opts: {
     }
   }
 
-  let reconciledDiscussions = 0;
+  await replyToFixedThreads({
+    parsed,
+    fixedThreads: resolveFixedThreads(review.resolved_findings ?? [], discussions),
+    currentFingerprints,
+    headSha,
+  });
+
   const baseDeliveryComplete =
     reviewStyle === "summary"
       ? summaryPosted || skipSummary
@@ -463,33 +471,7 @@ export async function postReviewStructured(opts: {
         : (inlineFailed === 0 || summaryPosted) &&
           (inlineCreated === 0 || draftsPublished) &&
           (review.findings.length > 0 || summaryPosted);
-  if (reconcileDiscussions && baseDeliveryComplete) {
-    const currentFingerprints = new Set(
-      review.findings.map((finding) => getFindingFingerprint(finding, workspacePath)),
-    );
-    const staleDiscussionIds = [...existingByFingerprint.entries()]
-      .filter(([fingerprint]) => !currentFingerprints.has(fingerprint))
-      .flatMap(([, ids]) => [...ids]);
-    if (staleDiscussionIds.length > 0) {
-      reconciledDiscussions = await resolveGitlabDiscussions(
-        parsed.owner,
-        parsed.repo,
-        parsed.prNumber,
-        staleDiscussionIds,
-        parsed.host,
-      );
-      if (reconciledDiscussions !== staleDiscussionIds.length) {
-        errors.push(
-          `discussion reconciliation: resolved ${reconciledDiscussions}/${staleDiscussionIds.length}`,
-        );
-      }
-    }
-  }
-
-  const success =
-    baseDeliveryComplete &&
-    (!commitStatus || commitStatusPosted) &&
-    (!reconcileDiscussions || !errors.some((error) => error.startsWith("discussion ")));
+  const success = baseDeliveryComplete && (!commitStatus || commitStatusPosted);
 
   return {
     success,
@@ -502,8 +484,45 @@ export async function postReviewStructured(opts: {
     inlineFailed,
     draftsPublished,
     commitStatusPosted,
-    reconciledDiscussions,
-    reviewStateComplete: !discussionListingFailed || reconcileDiscussions,
+    reviewStateComplete: !discussionListingFailed,
     reviewFindings,
   };
+}
+
+/**
+ * Reply on each thread this review verified fixed. Hodor cannot resolve
+ * threads at Reporter access, so a human resolves them. A thread that already
+ * has a fixed-reply gets no second one. Failures are warnings only.
+ */
+async function replyToFixedThreads(opts: {
+  parsed: ParsedPrUrl;
+  fixedThreads: ReadonlyMap<string, HodorDiscussion>;
+  currentFingerprints: ReadonlySet<string>;
+  headSha?: string | null;
+}): Promise<void> {
+  const { parsed, fixedThreads, currentFingerprints, headSha } = opts;
+  if (fixedThreads.size === 0) return;
+  if (!headSha || !isCommitSha(headSha)) {
+    logger.warn("Skipping fixed-thread replies: no 40-character head SHA for the fixed marker");
+    return;
+  }
+  let posted = 0;
+  for (const [fingerprint, thread] of fixedThreads) {
+    if (thread.fixedAtSha || currentFingerprints.has(fingerprint)) continue;
+    try {
+      await replyToGitlabDiscussion(
+        parsed.owner,
+        parsed.repo,
+        parsed.prNumber,
+        thread.discussionId,
+        buildFixedReplyBody(fingerprint, headSha),
+        parsed.host,
+      );
+      posted++;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn(`Failed to reply on fixed thread ${thread.discussionId}: ${message}`);
+    }
+  }
+  if (posted > 0) logger.info(`Replied on ${posted} thread(s) verified fixed`);
 }

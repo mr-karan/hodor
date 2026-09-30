@@ -4,8 +4,8 @@ import { validateReviewOutput } from "./review.js";
 import { relativizeWorkspacePath } from "./utils/path.js";
 import type { Platform, ReviewOutput, TrustedHodorNote } from "./types.js";
 
-// Bumped when the cache key gained the review scope, so older markers never match.
-export const REVIEW_PROMPT_VERSION = "2026-09-29.1";
+// Bumped when the review prompt or cache key changes, so older markers never match.
+export const REVIEW_PROMPT_VERSION = "2026-09-30.1";
 
 const CACHE_MARKER_RE = /<!--\s*hodor:cache:v1:([A-Za-z0-9_-]+)\s*-->/;
 

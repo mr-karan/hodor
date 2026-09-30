@@ -252,7 +252,9 @@ hodor-review:
 
 This posts actionable findings inline, posts a new summary note with collapsed run metrics (older Hodor summaries collapse to a link to it), sets a commit status from all unresolved Hodor findings, and exposes the cumulative Code Quality report from the MR.
 
-The summary's count table lists **unresolved Hodor threads at the time of the review**. It includes threads from earlier reviews that are still open on GitLab, and says so when this review did not re-check them. The count does not update when someone resolves a thread later; the next review's summary shows the new state.
+The summary's count table lists **unresolved Hodor threads at the time of the review**. It includes threads from earlier reviews that are still open on GitLab, and says so when this review did not confirm them fixed. The count does not update when someone resolves a thread later; the next review's summary shows the new state.
+
+**Verified fixes:** each GitLab review shows the model Hodor's earlier finding threads, with the latest human replies. When the model confirms from the code it inspected that an open finding on a changed file is fixed, Hodor replies on that thread ("Fixed in `<sha>`. Resolve this thread if you agree.") and counts it as "Fixed, waiting to be resolved" instead of open, so it no longer fails the commit status. Hodor never resolves threads itself (the bot often has Reporter access only); a human resolves them. If a later review reports the same finding again, it counts as open again.
 
 See [AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md) for advanced workflows.
 
@@ -261,7 +263,7 @@ See [AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md) for advanced workflows.
 Hodor automatically optimizes token usage:
 
 - **Diff embedding**: For PRs under 200KB, the diff is embedded directly in the prompt, cutting agent turns from ~60 to ~5.
-- **Incremental reviews**: On re-runs, only reviews changes since the last hodor comment. After a force-push or rebase, Hodor compares the last reviewed snapshot directly with the current HEAD instead of reviewing the whole MR again.
+- **Incremental reviews**: On re-runs, only reviews changes since the last hodor comment. After a force-push or rebase on GitLab, Hodor reviews the whole MR diff again against the recalculated merge base. A diff from the old snapshot would also include target-branch commits that the rebase brought in. On GitHub and Gitea, it compares the last reviewed snapshot directly with the current HEAD.
 - **Identical-HEAD reuse**: Successful summaries include a versioned, compressed review payload. Pipeline retries with the same MR/PR, target branch and base commit, HEAD, model, reasoning request, review profile, and additional instructions reuse that result while still regenerating artifacts and retrying delivery.
 - **Adaptive reasoning**: Models that default to `xhigh` (Opus 4.7 and later) use `high` for incremental reviews and small diffs (10 files or fewer, 500 changed lines or fewer). High-risk, large, and `--full` reviews keep `xhigh`. An explicit `--reasoning-effort` always wins.
 - **Focused exploration**: Embedded diffs include a changed-file manifest and direct the agent toward bounded context reads without limiting how far it may investigate.
@@ -358,11 +360,11 @@ flowchart LR
 | `src/review.ts` | `submit_review` schema and semantic validation |
 | `src/review-recovery.ts` | Recovery when a model skips `submit_review` |
 | `src/resolve-location.ts` | Snippet-based line resolution ([details](./docs/SNIPPET_LINE_RESOLUTION.md)) |
-| `src/review-state.ts` | Finding fingerprints and dedupe against open discussions |
+| `src/review-state.ts` | Finding fingerprints, dedupe against open discussions, verified fixes |
 | `src/review-cache.ts` | Identical-HEAD review reuse |
 | `src/provenance.ts` | Publishing identity and trusted Hodor note partitioning |
 | `src/review-policy.ts` | `--fail-on-priority` evaluation |
-| `src/publisher.ts` | Inline notes, per-review summary note (older ones collapsed), commit status, discussion reconciliation |
+| `src/publisher.ts` | Inline notes, per-review summary note (older ones collapsed), commit status, fixed-thread replies |
 | `src/gitlab.ts`, `src/github.ts`, `src/gitea.ts` | Platform APIs via `glab`, `gh`, and the Gitea REST API |
 | `src/render.ts`, `src/codequality.ts` | Markdown rendering and GitLab Code Quality reports |
 | `src/metrics.ts` | Token, cost, and duration metrics; Prometheus push |

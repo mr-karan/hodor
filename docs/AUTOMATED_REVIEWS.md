@@ -127,15 +127,18 @@ Example:
 hodor "$MR_URL" --post --review-style inline
 ```
 
-Hodor updates its summary note in place on later pushes. The note shows cumulative
-open-finding counts, the latest review explanation, any finding that GitLab could
-not anchor inline, and collapsed model and run metrics. Successful inline findings
-are not repeated in the summary.
+Hodor posts a new summary note on each review and collapses older ones to a link.
+The note shows cumulative open-finding counts, the latest review explanation, any
+finding that GitLab could not anchor inline, and collapsed model and run metrics.
+Successful inline findings are not repeated in the summary.
 
-On incremental reviews, the Code Quality report and commit status combine new
-findings with unresolved Hodor discussions from earlier pushes. Resolving a Hodor
-thread removes it from those cumulative outputs. A full review replaces that state
-and may reconcile old discussions.
+The Code Quality report and commit status combine new findings with unresolved
+Hodor discussions from earlier pushes, in every review mode including `--full`.
+Resolving a Hodor thread removes it from those cumulative outputs. When a review
+confirms that an open finding on a changed file is fixed, Hodor replies on the
+thread and counts it as "Fixed, waiting to be resolved" instead of open. Hodor
+does not resolve threads itself; a human resolves them. A finding that a later
+review reports again counts as open again.
 
 GitHub posting currently uses a summary PR comment.
 

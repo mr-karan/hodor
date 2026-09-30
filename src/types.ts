@@ -136,6 +136,11 @@ export interface ReviewOutput {
   findings: ReviewFinding[];
   overall_correctness: ReviewCorrectness;
   overall_explanation: string;
+  /**
+   * Short ids of earlier Hodor findings the review confirmed fixed. After
+   * reviewPr returns, only ids that passed trusted validation remain.
+   */
+  resolved_findings?: string[];
 }
 
 export interface PostCommentResult {
@@ -150,7 +155,6 @@ export interface PostCommentResult {
   inlineFailed?: number;
   draftsPublished?: boolean;
   commitStatusPosted?: boolean;
-  reconciledDiscussions?: number;
   reviewFindings?: ReviewStateFinding[];
   reviewStateComplete?: boolean;
 }

@@ -29,6 +29,12 @@ describe("SUBMIT_REVIEW_SCHEMA", () => {
     expect(Value.Check(SUBMIT_REVIEW_SCHEMA, review)).toBe(true);
   });
 
+  test("accepts an optional resolved_findings list of non-empty ids", () => {
+    expect(Value.Check(SUBMIT_REVIEW_SCHEMA, makeReview({ resolved_findings: ["57a2a375"] }))).toBe(true);
+    expect(Value.Check(SUBMIT_REVIEW_SCHEMA, makeReview({ resolved_findings: [] }))).toBe(true);
+    expect(Value.Check(SUBMIT_REVIEW_SCHEMA, makeReview({ resolved_findings: [""] }))).toBe(false);
+  });
+
   test("accepts findings without existing_code (backward compatible)", () => {
     expect(Value.Check(SUBMIT_REVIEW_SCHEMA, makeReview())).toBe(true);
   });

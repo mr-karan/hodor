@@ -15,6 +15,7 @@ import { exec } from "./utils/exec.js";
 import { fetchGithubPrMetadata } from "./github.js";
 import {
   fetchGitlabMrInfo,
+  listHodorDiscussions,
 } from "./gitlab.js";
 import {
   fetchGiteaPrInfo,
@@ -59,6 +60,14 @@ import {
   type ReviewDiffMode,
 } from "./review-diff.js";
 import { partitionNotesByProvenance, resolvePublisherIdentity } from "./provenance.js";
+import {
+  buildFixCandidates,
+  getFindingFingerprint,
+  selectFindingThreads,
+  selectVerifiedFixes,
+  type FindingThread,
+  type FixCandidate,
+} from "./review-state.js";
 import {
   buildReviewCacheMarker,
   findCachedReview,
@@ -618,6 +627,25 @@ export async function reviewPr(opts: {
       throw new Error(`Failed to compute the review diff: ${err instanceof Error ? err.message : err}`);
     }
 
+    // Earlier Hodor finding threads give the model human replies as context
+    // and name the open ones it may confirm fixed.
+    let fixCandidates: FixCandidate[] = [];
+    let findingThreads: FindingThread[] = [];
+    if (!localMode && platform === "gitlab" && publisherIdentity?.platform === "gitlab") {
+      try {
+        const discussions = await listHodorDiscussions(owner, repo, prNumber, host, publisherIdentity);
+        const candidates = buildFixCandidates(discussions);
+        findingThreads = selectFindingThreads(discussions, candidates, changedFiles);
+        const presentedIds = new Set(findingThreads.flatMap((thread) => thread.fixId ? [thread.fixId] : []));
+        fixCandidates = candidates.filter((candidate) => presentedIds.has(candidate.id));
+        logger.info(
+          `Showing ${findingThreads.length} Hodor finding thread(s); ${fixCandidates.length} may be confirmed fixed`,
+        );
+      } catch (err) {
+        logger.warn(`Failed to list Hodor finding threads for the prompt: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
     const thinkingLevel = selectReasoningEffort({
       requested: reasoningEffort,
       modelDefault: modelDefaultThinkingLevel,
@@ -660,6 +688,7 @@ export async function reviewPr(opts: {
       changedFiles,
       localMode,
       singleTurn,
+      findingThreads,
     });
 
     const startTime = Date.now();
@@ -965,7 +994,7 @@ export async function reviewPr(opts: {
 
     // Resolve each finding's line_range from its quoted snippet against the
     // checked-out file, correcting model line-number errors before posting.
-    const { review, stats: locationStats } = resolveReviewLocations(rawReview, {
+    const { review: locatedReview, stats: locationStats } = resolveReviewLocations(rawReview, {
       trackedTree: reviewToolset.tree,
       diffText: embeddedDiff,
     });
@@ -976,8 +1005,30 @@ export async function reviewPr(opts: {
       );
     }
 
+    // The model's resolved_findings is a claim. Keep only ids shown in this
+    // prompt, on files in the reviewed diff, and not reported again now.
+    const { accepted: verifiedFixes, rejected: rejectedFixes } = selectVerifiedFixes(
+      locatedReview.resolved_findings ?? [],
+      fixCandidates,
+      {
+        changedFiles,
+        currentFingerprints: new Set(
+          locatedReview.findings.map((finding) => getFindingFingerprint(finding, workspacePath)),
+        ),
+      },
+    );
+    for (const { id, reason } of rejectedFixes) {
+      logger.info(`Ignoring resolved_findings id ${JSON.stringify(id.slice(0, 80))}: ${reason}`);
+    }
+    const review: ReviewOutput = {
+      findings: locatedReview.findings,
+      overall_correctness: locatedReview.overall_correctness,
+      overall_explanation: locatedReview.overall_explanation,
+      ...(verifiedFixes.length > 0 ? { resolved_findings: verifiedFixes } : {}),
+    };
+
     logger.info(
-      `Captured ${review.findings.length} finding(s), verdict: ${review.overall_correctness}`,
+      `Captured ${review.findings.length} finding(s), ${verifiedFixes.length} verified fix(es), verdict: ${review.overall_correctness}`,
     );
 
     const durationSeconds = (Date.now() - startTime) / 1000;

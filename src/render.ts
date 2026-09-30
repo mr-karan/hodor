@@ -91,9 +91,11 @@ export function renderSummaryMarkdown(
     reviewedSha?: string | null;
     /**
      * Open threads from earlier reviews that this review did not report
-     * again. They count as unresolved until someone resolves them on GitLab.
+     * again and that no review confirmed fixed.
      */
     carriedOver?: number;
+    /** Open threads confirmed fixed, waiting for a human to resolve them. Not in openFindings. */
+    fixedAwaiting?: number;
     /** When the counts were taken; they do not update when threads are resolved later. */
     asOf?: Date;
   } = {},
@@ -121,6 +123,16 @@ export function renderSummaryMarkdown(
     `| Minor (P3) | ${counts.minor} |`,
     "",
   );
+  const fixedAwaiting = options.fixedAwaiting ?? 0;
+  if (fixedAwaiting > 0) {
+    lines.push(
+      `**Fixed, waiting to be resolved:** ${fixedAwaiting}. ` +
+        (fixedAwaiting === 1
+          ? "Hodor replied on the thread; resolve it on GitLab if you agree."
+          : "Hodor replied on each thread; resolve them on GitLab if you agree."),
+      "",
+    );
+  }
 
   const verdict =
     totalOpen === 0
@@ -135,8 +147,8 @@ export function renderSummaryMarkdown(
     const threads = carriedOver === 1 ? "1 earlier thread is" : `${carriedOver} earlier threads are`;
     lines.push(
       "",
-      `**Earlier threads:** ${threads} still unresolved on GitLab. This review did not re-check them ` +
-        "against the new code. If the review below says they are fixed, resolve the threads to clear them.",
+      `**Earlier threads:** ${threads} still unresolved on GitLab and not confirmed fixed. ` +
+        "This review did not find evidence that they are fixed. If they are, resolve the threads to clear them.",
     );
   }
   if (options.reviewedSha) {
