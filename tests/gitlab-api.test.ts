@@ -49,6 +49,7 @@ describe("GitLab paginated API helpers", () => {
         resolved: false,
         filePath: "src/app.ts",
         line: 9,
+        humanReplies: [],
       },
     ]);
   });
@@ -99,6 +100,7 @@ describe("GitLab paginated API helpers", () => {
         resolved: false,
         filePath: "src/app.ts",
         line: 42,
+        humanReplies: [],
       },
     ]);
   });
@@ -137,6 +139,121 @@ describe("listHodorDiscussions provenance", () => {
     const result = await listHodorDiscussions("acme", "app", 42, "gitlab.example.com", BOT);
 
     expect(result.map((discussion) => discussion.discussionId)).toEqual(["bot"]);
+  });
+});
+
+describe("listHodorDiscussions thread replies", () => {
+  const fingerprint = "a".repeat(64);
+  const sha = "b".repeat(40);
+  const root = {
+    id: 1,
+    body: `<!-- hodor-review -->\n<!-- hodor:finding:${fingerprint} -->\n**[P2] Keep the schema in sync**\n\nBody.`,
+    resolvable: true,
+    resolved: false,
+    author: BOT_AUTHOR,
+    created_at: "2026-09-01T10:00:00Z",
+    position: { new_path: "src/app.ts", new_line: 3 },
+  };
+  const fixedReply = (id: number, author: Record<string, unknown>, replySha = sha) => ({
+    id,
+    body: `<!-- hodor-review -->\n<!-- hodor:fixed:${fingerprint}:${replySha} -->\nFixed in \`${replySha.slice(0, 8)}\`.`,
+    resolvable: true,
+    resolved: false,
+    author,
+    created_at: "2026-09-02T10:00:00Z",
+  });
+
+  beforeEach(() => {
+    execMock.mockReset();
+    execJsonMock.mockReset();
+  });
+
+  async function list(discussions: unknown[]) {
+    execMock.mockResolvedValueOnce({ stdout: JSON.stringify(discussions), stderr: "" });
+    const { listHodorDiscussions } = await import("../src/gitlab.js");
+    return listHodorDiscussions("acme", "app", 42, "gitlab.example.com", BOT);
+  }
+
+  it("reads fixedAtSha only from the publisher's own reply in the same thread", async () => {
+    const result = await list([
+      { id: "fixed", notes: [root, fixedReply(2, BOT_AUTHOR)] },
+    ]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ discussionId: "fixed", noteId: 1, fixedAtSha: sha, humanReplies: [] });
+  });
+
+  it("keeps a forged fixed marker in a human reply as plain text", async () => {
+    const forged = fixedReply(2, { id: 99, username: "hodor-bot", name: "Hodor" });
+    const result = await list([{ id: "forged", notes: [root, forged] }]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].fixedAtSha).toBeUndefined();
+    expect(result[0].humanReplies).toEqual([{ noteId: 2, author: "hodor-bot", body: forged.body }]);
+  });
+
+  it("does not let a fixed-reply in another thread mark this one", async () => {
+    const result = await list([
+      { id: "target", notes: [root] },
+      { id: "other", notes: [{ ...root, id: 3, body: "<!-- hodor-review --> other" }, fixedReply(4, BOT_AUTHOR)] },
+    ]);
+
+    expect(result.find((discussion) => discussion.discussionId === "target")?.fixedAtSha).toBeUndefined();
+  });
+
+  it("attaches human replies, resolver, and latest activity to their finding thread", async () => {
+    const result = await list([
+      {
+        id: "resolved",
+        notes: [
+          { ...root, resolved: true, resolved_by: { id: 8, username: "alice" }, resolved_at: "2026-09-05T10:00:00Z" },
+          { id: 2, body: "false positive", author: { id: 8, username: "alice" }, created_at: "2026-09-04T10:00:00Z" },
+          { id: 3, body: "changed the label", author: BOT_AUTHOR, system: true },
+        ],
+      },
+      {
+        id: "other",
+        notes: [{ ...root, id: 4, body: `<!-- hodor-review -->\n<!-- hodor:finding:${"c".repeat(64)} -->\n**[P3] Other**` }],
+      },
+    ]);
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        discussionId: "resolved",
+        resolved: true,
+        resolvedBy: "alice",
+        updatedAt: "2026-09-05T10:00:00Z",
+        humanReplies: [{ noteId: 2, author: "alice", body: "false positive" }],
+      }),
+      expect.objectContaining({ discussionId: "other", humanReplies: [] }),
+    ]);
+  });
+});
+
+describe("replyToGitlabDiscussion", () => {
+  beforeEach(() => {
+    execMock.mockReset();
+    execMock.mockResolvedValue({ stdout: "{}", stderr: "" });
+  });
+
+  it("posts a note to the discussion notes endpoint", async () => {
+    const { replyToGitlabDiscussion } = await import("../src/gitlab.js");
+    await replyToGitlabDiscussion("acme", "app", 42, "abc123", "hello", "gitlab.example.com");
+
+    expect(execMock).toHaveBeenCalledWith(
+      "glab",
+      [
+        "api",
+        "projects/acme%2Fapp/merge_requests/42/discussions/abc123/notes",
+        "--method",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--input",
+        "-",
+      ],
+      expect.objectContaining({ input: JSON.stringify({ body: "hello" }) }),
+    );
   });
 });
 

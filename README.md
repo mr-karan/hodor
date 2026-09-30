@@ -141,7 +141,7 @@ Local mode:
 | `--prometheus-push` | None | Push review metrics to a Prometheus Pushgateway or VictoriaMetrics import endpoint |
 | `--tiny-diff-fast-path` | Off | For tiny, low-risk, fully embedded diffs, decide in one turn with no repository exploration (cheaper) |
 | `--codemode` | Off | Let the agent batch its read-only tool calls in Pi's codemode sandbox (see [Codemode](#codemode)) |
-| `-v, --verbose` | Off | Stream agent reasoning and tool calls |
+| `-v, --verbose` | Off | Print all log lines live, with tool result previews and agent reasoning |
 
 ## Environment Variables
 
@@ -252,7 +252,22 @@ hodor-review:
 
 This posts actionable findings inline, posts a new summary note with collapsed run metrics (older Hodor summaries collapse to a link to it), sets a commit status from all unresolved Hodor findings, and exposes the cumulative Code Quality report from the MR.
 
-The summary's count table lists **unresolved Hodor threads at the time of the review**. It includes threads from earlier reviews that are still open on GitLab, and says so when this review did not re-check them. The count does not update when someone resolves a thread later; the next review's summary shows the new state.
+The summary's count table lists **unresolved Hodor threads at the time of the review**. It includes threads from earlier reviews that are still open on GitLab, and says so when this review did not confirm them fixed. The count does not update when someone resolves a thread later; the next review's summary shows the new state.
+
+**Verified fixes:** each GitLab review shows the model Hodor's earlier finding threads, with the latest human replies. When the model confirms from the code it inspected that an open finding on a changed file is fixed, Hodor replies on that thread ("Fixed in `<sha>`. Resolve this thread if you agree.") and counts it as "Fixed, waiting to be resolved" instead of open, so it no longer fails the commit status. Hodor never resolves threads itself (the bot often has Reporter access only); a human resolves them. If a later review reports the same finding again, it counts as open again.
+
+**Human comments:** the prompt carries every non-trivial human MR comment (bare reactions such as "+1" or "lgtm" are skipped), newest first, each capped at 2,000 characters, up to 30,000 characters in total. Replies inside Hodor finding threads appear only with their thread.
+
+### CI job log
+
+The default job log is short:
+
+- **Start line:** `Hodor <version> · <project> !<mr> · <model> (<reasoning>)`, with `· codemode` when codemode is on. Local runs show `local diff vs <ref>`.
+- **Agent trace:** one line per tool call (`turn 12  read   src/foo.py`). Calls that a codemode script makes are indented under the script line with `↳`. A failed call prints one red line with the first line of its error. Retries and compaction print one line each. In GitLab CI this is a collapsed section; elsewhere it has a plain header.
+- **Diagnostics:** info lines, including the `Review telemetry: {...}` JSON line, are held back and printed at the end in a second collapsed section. Warnings and errors always print when they happen.
+- **Summary block:** the reviewed range, diff size, the context the prompt carried (Hodor threads by status, human comments included and dropped by the budget), the new findings with their locations, what was posted (summary note URL, inline notes, fixed replies), cost and token use, and the warning count.
+
+Without `--post`, the review markdown goes to stdout after the summary. `-v` prints everything live instead: tool result previews, reasoning, and model text.
 
 See [AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md) for advanced workflows.
 
@@ -261,7 +276,7 @@ See [AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md) for advanced workflows.
 Hodor automatically optimizes token usage:
 
 - **Diff embedding**: For PRs under 200KB, the diff is embedded directly in the prompt, cutting agent turns from ~60 to ~5.
-- **Incremental reviews**: On re-runs, only reviews changes since the last hodor comment. After a force-push or rebase, Hodor compares the last reviewed snapshot directly with the current HEAD instead of reviewing the whole MR again.
+- **Incremental reviews**: On re-runs, only reviews changes since the last hodor comment. After a force-push or rebase on GitLab, Hodor reviews the whole MR diff again against the recalculated merge base. A diff from the old snapshot would also include target-branch commits that the rebase brought in. On GitHub and Gitea, it compares the last reviewed snapshot directly with the current HEAD.
 - **Identical-HEAD reuse**: Successful summaries include a versioned, compressed review payload. Pipeline retries with the same MR/PR, target branch and base commit, HEAD, model, reasoning request, review profile, and additional instructions reuse that result while still regenerating artifacts and retrying delivery.
 - **Adaptive reasoning**: Models that default to `xhigh` (Opus 4.7 and later) use `high` for incremental reviews and small diffs (10 files or fewer, 500 changed lines or fewer). High-risk, large, and `--full` reviews keep `xhigh`. An explicit `--reasoning-effort` always wins.
 - **Focused exploration**: Embedded diffs include a changed-file manifest and direct the agent toward bounded context reads without limiting how far it may investigate.
@@ -346,7 +361,8 @@ flowchart LR
 
 | Module | Purpose |
 |--------|---------|
-| `src/cli.ts` | Commander CLI, verbose progress rendering, exit policy |
+| `src/cli.ts` | Commander CLI, exit policy |
+| `src/cli-output.ts` | Job log formatting: start line, agent trace, Diagnostics section, summary block |
 | `src/agent.ts` | Review orchestration: preflight, workspace, Pi session, `submit_review`, recovery, metrics |
 | `src/model.ts` | Model strings, Bedrock ARN models, adaptive reasoning, API keys |
 | `src/models-json.ts` | `HODOR_MODELS_JSON` loading and fail-closed validation |
@@ -358,11 +374,11 @@ flowchart LR
 | `src/review.ts` | `submit_review` schema and semantic validation |
 | `src/review-recovery.ts` | Recovery when a model skips `submit_review` |
 | `src/resolve-location.ts` | Snippet-based line resolution ([details](./docs/SNIPPET_LINE_RESOLUTION.md)) |
-| `src/review-state.ts` | Finding fingerprints and dedupe against open discussions |
+| `src/review-state.ts` | Finding fingerprints, dedupe against open discussions, verified fixes |
 | `src/review-cache.ts` | Identical-HEAD review reuse |
 | `src/provenance.ts` | Publishing identity and trusted Hodor note partitioning |
 | `src/review-policy.ts` | `--fail-on-priority` evaluation |
-| `src/publisher.ts` | Inline notes, per-review summary note (older ones collapsed), commit status, discussion reconciliation |
+| `src/publisher.ts` | Inline notes, per-review summary note (older ones collapsed), commit status, fixed-thread replies |
 | `src/gitlab.ts`, `src/github.ts`, `src/gitea.ts` | Platform APIs via `glab`, `gh`, and the Gitea REST API |
 | `src/render.ts`, `src/codequality.ts` | Markdown rendering and GitLab Code Quality reports |
 | `src/metrics.ts` | Token, cost, and duration metrics; Prometheus push |

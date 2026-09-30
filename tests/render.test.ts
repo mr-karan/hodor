@@ -215,7 +215,20 @@ describe("renderSummaryMarkdown thread labels", () => {
   it("explains earlier threads the review did not re-check", () => {
     const md = renderSummaryMarkdown(clean, { openFindings: [open], carriedOver: 1 });
     expect(md).toContain("**Overall verdict:** No new findings; earlier threads are still unresolved");
-    expect(md).toContain("**Earlier threads:** 1 earlier thread is still unresolved on GitLab.");
+    expect(md).toContain("**Earlier threads:** 1 earlier thread is still unresolved on GitLab and not confirmed fixed.");
+  });
+
+  it("counts fixed threads separately and keeps them out of the verdict", () => {
+    const md = renderSummaryMarkdown(clean, { openFindings: [], fixedAwaiting: 2 });
+    expect(md).toContain("| Important (P2) | 0 |");
+    expect(md).toContain("**Fixed, waiting to be resolved:** 2. Hodor replied on each thread; resolve them on GitLab if you agree.");
+    expect(md).toContain("**Overall verdict:** No open findings");
+    expect(md).not.toContain("Earlier threads");
+  });
+
+  it("omits the fixed line when nothing is waiting", () => {
+    const md = renderSummaryMarkdown(clean, { openFindings: [], fixedAwaiting: 0 });
+    expect(md).not.toContain("Fixed, waiting to be resolved");
   });
 
   it("keeps the normal verdict when the review has its own findings", () => {

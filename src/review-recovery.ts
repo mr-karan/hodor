@@ -1,6 +1,6 @@
 import { Value } from "typebox/value";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import { SUBMIT_REVIEW_SCHEMA, dropNullOptionalFields, validateReviewOutput } from "./review.js";
+import { SUBMIT_REVIEW_SCHEMA, normalizeOptionalFields, validateReviewOutput } from "./review.js";
 import type { ReviewOutput } from "./types.js";
 
 export const SUBMIT_REVIEW_RECOVERY_ATTEMPTS = 2;
@@ -24,7 +24,7 @@ export function buildSubmitReviewRecoveryPrompt(attempt: number, maxAttempts: nu
 export function parseReviewFromAssistantText(text: string): ReviewOutput | null {
   for (const candidate of getJsonCandidates(text)) {
     try {
-      const parsed = dropNullOptionalFields(JSON.parse(candidate));
+      const parsed = normalizeOptionalFields(JSON.parse(candidate));
       if (!Value.Check(SUBMIT_REVIEW_SCHEMA, parsed)) continue;
       return validateReviewOutput(parsed as ReviewOutput);
     } catch {

@@ -7,6 +7,7 @@ import {
   HODOR_SUMMARY_MARKER,
   renderSupersededSummary,
 } from "./render.js";
+import { getDiscussionFingerprint, getFixedMarker } from "./review-state.js";
 
 export { HODOR_REVIEW_MARKER, HODOR_SUMMARY_MARKER };
 
@@ -23,6 +24,23 @@ export interface HodorDiscussion {
   resolved: boolean;
   filePath?: string;
   line?: number;
+  /** Head SHA from the publisher's latest fixed-reply for this finding, if any. */
+  fixedAtSha?: string;
+  /** Username GitLab reports as having resolved the thread. */
+  resolvedBy?: string;
+  /** Latest created, updated, or resolved time across the thread's notes. */
+  updatedAt?: string;
+  /**
+   * Replies in the thread from other accounts, oldest first. Untrusted text:
+   * never read as Hodor state, even when it copies a Hodor marker.
+   */
+  humanReplies: ThreadReply[];
+}
+
+export interface ThreadReply {
+  noteId: number;
+  author: string;
+  body: string;
 }
 
 const DEFAULT_GITLAB_HOST = "gitlab.com";
@@ -153,6 +171,7 @@ export async function fetchGitlabMrInfo(
       );
       const notes = parsePaginatedJsonArrays(rawNotes);
       metadata.Notes = notes.map((n) => ({
+        ...(typeof n.id === "number" && Number.isSafeInteger(n.id) ? { id: n.id } : {}),
         body: typeof n.body === "string" ? n.body : "",
         author: parseGitlabAuthor(n.author),
         created_at: typeof n.created_at === "string" ? n.created_at : undefined,
@@ -245,9 +264,7 @@ export async function publishGitlabMrSummary(
     return { noteId, collapsed: 0 };
   }
 
-  const collapsedBody = renderSupersededSummary(
-    `${normalizeBaseUrl(host)}/${projectPath(owner, repo)}/-/merge_requests/${mrNumber}#note_${noteId}`,
-  );
+  const collapsedBody = renderSupersededSummary(gitlabNoteUrl(owner, repo, mrNumber, noteId, host));
   let collapsed = 0;
   for (const priorId of priorSummaryIds) {
     try {
@@ -263,6 +280,17 @@ export async function publishGitlabMrSummary(
     }
   }
   return { noteId, collapsed };
+}
+
+/** Web URL of one note on a merge request. */
+export function gitlabNoteUrl(
+  owner: string,
+  repo: string,
+  mrNumber: number | string,
+  noteId: number,
+  host?: string | null,
+): string {
+  return `${normalizeBaseUrl(host)}/${projectPath(owner, repo)}/-/merge_requests/${mrNumber}#note_${noteId}`;
 }
 
 function parseCreatedNoteId(stdout: string): number | null {
@@ -299,37 +327,85 @@ function isSupersededSummary(body: string): boolean {
   return HODOR_SUPERSEDED_PREFIX_RE.test(body);
 }
 
+/** Per-note cap for prompt context. */
+const MAX_NOTE_CHARS = 2_000;
+/** Total characters of human notes, rendered, that one prompt may carry. */
+const HUMAN_NOTES_BUDGET_CHARS = 30_000;
+
+/** Whole-note reactions with no review content. */
+const NOISE_NOTES = new Set([
+  "lgtm",
+  "+1",
+  "-1",
+  "thanks",
+  "thank you",
+  "ty",
+  "looks good",
+  "looks good to me",
+  "approved",
+  "ship it",
+  "nice",
+]);
+
+export interface NotesSummary {
+  /** Bullet list, oldest first. Empty when no note qualifies. */
+  text: string;
+  included: number;
+}
+
+export interface HumanNotesSummary extends NotesSummary {
+  /** Qualifying notes left out because the character budget was spent. */
+  droppedByBudget: number;
+}
+
+interface SummarizedNote {
+  username: string;
+  body: string;
+  createdAt: string;
+}
+
 /**
- * Summarize notes that are not authenticated Hodor state into a bullet list.
- * A participant note that copies a Hodor marker stays here, as human context.
+ * Summarize every non-trivial note that is not authenticated Hodor state,
+ * newest first, until the character budget is spent. A participant note that
+ * copies a Hodor marker stays here, as human context. Notes whose id is in
+ * `excludeNoteIds` (replies shown with their Hodor finding thread) are skipped.
  */
 export function summarizeGitlabNotes(
   notes: readonly NoteEntry[] | undefined | null,
-  maxEntries = 5,
-): string {
-  return summarizeNotes(notes, maxEntries, (note) => note.provenance !== "hodor");
+  options: { excludeNoteIds?: ReadonlySet<number>; budgetChars?: number } = {},
+): HumanNotesSummary {
+  const { excludeNoteIds, budgetChars = HUMAN_NOTES_BUDGET_CHARS } = options;
+  const candidates: SummarizedNote[] = [];
+  for (const note of notes ?? []) {
+    if (note.provenance === "hodor" || note.system) continue;
+    if (note.id !== undefined && excludeNoteIds?.has(note.id)) continue;
+    const body = cleanNoteBody(note);
+    if (!body || isNoiseNote(body)) continue;
+    candidates.push(toSummarizedNote(note, body));
+  }
+
+  const newestFirst = sortOldestFirst(candidates).reverse();
+  const selected: string[] = [];
+  let used = 0;
+  for (const note of newestFirst) {
+    const entry = renderNoteEntry(note);
+    if (used + entry.length > budgetChars) break;
+    selected.push(entry);
+    used += entry.length;
+  }
+  return {
+    text: selected.reverse().join("\n"),
+    included: selected.length,
+    droppedByBudget: newestFirst.length - selected.length,
+  };
 }
 
 /** Summarize only notes that partitionNotesByProvenance authenticated. */
 export function summarizeHodorNotes(
   notes: readonly NoteEntry[] | undefined | null,
   maxEntries = 5,
-): string {
-  return summarizeNotes(
-    notes,
-    maxEntries,
-    (note) => note.provenance === "hodor" && !isSupersededSummary(note.body ?? ""),
-  );
-}
-
-function summarizeNotes(
-  notes: readonly NoteEntry[] | undefined | null,
-  maxEntries: number,
-  include: (note: NoteEntry) => boolean,
-): string {
-  if (!notes || notes.length === 0) return "";
-
-  const trivialPatterns = new Set([
+): NotesSummary {
+  const trivialPatterns = [
     "lgtm",
     "+1",
     "-1",
@@ -342,60 +418,62 @@ function summarizeNotes(
     "🚀",
     "✅",
     "❌",
-  ]);
+  ];
 
-  const filtered: Array<{ username: string; body: string; createdAt: string }> = [];
-  for (const note of notes) {
-    if (!include(note)) continue;
-    // Cache payloads are machine-only and can be large. Never feed their
-    // compressed representation back into reviewer context.
-    const body = (note.body ?? "").replace(HODOR_CACHE_MARKER_RE, "").trim();
-    if (!body) continue;
-    if (note.system) continue;
+  const candidates: SummarizedNote[] = [];
+  for (const note of notes ?? []) {
+    // Fixed-replies are thread state, shown with their finding in the prompt.
+    if (
+      note.provenance !== "hodor" ||
+      note.system ||
+      isSupersededSummary(note.body ?? "") ||
+      getFixedMarker(note.body ?? "") !== null
+    ) {
+      continue;
+    }
+    const body = cleanNoteBody(note);
     if (body.length < 20) continue;
-
     const bodyLower = body.toLowerCase();
-    let isTrivial = false;
-    for (const pattern of trivialPatterns) {
-      if (bodyLower.includes(pattern) && body.length < 50) {
-        isTrivial = true;
-        break;
-      }
-    }
-    if (isTrivial) continue;
-
-    const username =
-      note.author?.username ?? note.author?.name ?? "unknown";
-    filtered.push({ username, body, createdAt: note.created_at ?? "" });
+    if (body.length < 50 && trivialPatterns.some((pattern) => bodyLower.includes(pattern))) continue;
+    candidates.push(toSummarizedNote(note, body));
   }
 
-  // Sort oldest first
-  filtered.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const recent = sortOldestFirst(candidates).slice(-maxEntries);
+  return { text: recent.map(renderNoteEntry).join("\n"), included: recent.length };
+}
 
-  // Take most recent
-  const recent = filtered.slice(-maxEntries);
+/** Body without machine cache payloads, which are large and never context. */
+function cleanNoteBody(note: NoteEntry): string {
+  return (note.body ?? "").replace(HODOR_CACHE_MARKER_RE, "").trim();
+}
 
-  const lines: string[] = [];
-  for (const { username, body, createdAt } of recent) {
-    let timestampStr = "";
-    if (createdAt) {
-      try {
-        const dt = new Date(createdAt);
-        timestampStr = dt.toISOString().replace("T", " ").slice(0, 16);
-      } catch {
-        timestampStr = createdAt.slice(0, 10);
-      }
-    }
+/** A bare reaction: emoji or punctuation only, or a stock phrase like "lgtm". */
+function isNoiseNote(body: string): boolean {
+  if (!/[\p{L}\p{N}]/u.test(body)) return true;
+  const words = body.toLowerCase().replace(/[^\p{L}\p{N}+\- ]/gu, " ").replace(/\s+/g, " ").trim();
+  return NOISE_NOTES.has(words);
+}
 
-    const header = timestampStr
-      ? `- ${timestampStr} @${username}:`
-      : `- @${username}:`;
-    const boundedBody = body.length > 2_000 ? `${body.slice(0, 1_999).trimEnd()}…` : body;
-    const indentedBody = boundedBody.split("\n").join("\n  ");
-    lines.push(`${header}\n  ${indentedBody}`);
-  }
+function toSummarizedNote(note: NoteEntry, body: string): SummarizedNote {
+  return {
+    username: note.author?.username ?? note.author?.name ?? "unknown",
+    body,
+    createdAt: note.created_at ?? "",
+  };
+}
 
-  return lines.join("\n");
+function sortOldestFirst(notes: SummarizedNote[]): SummarizedNote[] {
+  return [...notes].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+function renderNoteEntry({ username, body, createdAt }: SummarizedNote): string {
+  const parsed = Date.parse(createdAt);
+  const timestamp = Number.isNaN(parsed)
+    ? createdAt.slice(0, 10)
+    : new Date(parsed).toISOString().replace("T", " ").slice(0, 16);
+  const header = timestamp ? `- ${timestamp} @${username}:` : `- @${username}:`;
+  const bounded = body.length > MAX_NOTE_CHARS ? `${body.slice(0, MAX_NOTE_CHARS - 1).trimEnd()}…` : body;
+  return `${header}\n  ${bounded.split("\n").join("\n  ")}`;
 }
 
 export async function getGitlabMrDiffRefs(
@@ -588,7 +666,8 @@ export async function postGitlabCommitStatus(
 /**
  * List resolvable Hodor discussions written by the publishing identity. Notes
  * from other authors are dropped before fingerprinting, deduplication, merge,
- * status, code quality, and resolution, even if they copy a Hodor marker.
+ * status, and code quality, even if they copy a Hodor marker. A fixed-reply
+ * counts only when the publishing identity wrote it in the same discussion.
  */
 export async function listHodorDiscussions(
   owner: string,
@@ -630,18 +709,33 @@ export async function listHodorDiscussions(
       continue;
     }
 
+    const entries: Array<Omit<HodorDiscussion, "humanReplies" | "updatedAt">> = [];
+    const humanReplies: ThreadReply[] = [];
+    let updatedAt: string | undefined;
+    // Notes arrive oldest first, so the latest fixed-reply wins.
+    const fixedAtShaByFingerprint = new Map<string, string>();
     for (const noteObj of notes) {
       if (!isRecord(noteObj)) {
         continue;
       }
+      updatedAt = latestTimestamp(updatedAt, noteObj.created_at, noteObj.updated_at, noteObj.resolved_at);
       const noteId = noteObj.id;
       const body = noteObj.body;
-      if (
-        typeof noteId !== "number" ||
-        typeof body !== "string" ||
-        !isHodorGeneratedNote(body) ||
-        !isPublisherNote(noteObj, identity)
-      ) {
+      if (typeof noteId !== "number" || typeof body !== "string" || noteObj.system === true) {
+        continue;
+      }
+      if (!isPublisherNote(noteObj, identity)) {
+        const author = parseGitlabAuthor(noteObj.author);
+        humanReplies.push({ noteId, author: author?.username ?? author?.name ?? "unknown", body });
+        continue;
+      }
+      if (!isHodorGeneratedNote(body)) {
+        continue;
+      }
+
+      const fixed = getFixedMarker(body);
+      if (fixed) {
+        fixedAtShaByFingerprint.set(fixed.fingerprint, fixed.sha);
         continue;
       }
 
@@ -661,20 +755,32 @@ export async function listHodorDiscussions(
             : undefined;
 
       // Skip non-resolvable threads. GitLab wraps the summary-comment note in a
-      // discussion envelope with `resolvable: false`; PUT resolved=true on those
-      // returns 403, independent of the caller's project role. Only diff/review
-      // threads (resolvable: true) belong in the resolver's queue.
+      // discussion envelope with `resolvable: false`. Only diff/review threads
+      // (resolvable: true) hold findings.
       if (noteObj.resolvable !== true) {
         continue;
       }
 
-      results.push({
+      const resolvedBy = parseGitlabAuthor(noteObj.resolved_by)?.username;
+      entries.push({
         discussionId,
         noteId,
         body,
         resolved: Boolean(noteObj.resolved),
         filePath,
         line,
+        ...(resolvedBy ? { resolvedBy } : {}),
+      });
+    }
+
+    for (const entry of entries) {
+      const fingerprint = getDiscussionFingerprint(entry.body);
+      const fixedAtSha = fingerprint ? fixedAtShaByFingerprint.get(fingerprint) : undefined;
+      results.push({
+        ...entry,
+        ...(fixedAtSha ? { fixedAtSha } : {}),
+        ...(updatedAt ? { updatedAt } : {}),
+        humanReplies,
       });
     }
   }
@@ -682,43 +788,44 @@ export async function listHodorDiscussions(
   return results;
 }
 
-export async function resolveGitlabDiscussions(
+function latestTimestamp(current: string | undefined, ...values: unknown[]): string | undefined {
+  let latest = current;
+  for (const value of values) {
+    if (typeof value !== "string" || Number.isNaN(Date.parse(value))) continue;
+    if (latest === undefined || Date.parse(value) > Date.parse(latest)) latest = value;
+  }
+  return latest;
+}
+
+/** Add a reply note to an existing MR discussion. Reporter access is enough. */
+export async function replyToGitlabDiscussion(
   owner: string,
   repo: string,
   mrNumber: number | string,
-  discussionIds: string[],
+  discussionId: string,
+  body: string,
   host?: string | null,
-): Promise<number> {
+): Promise<void> {
   const encoded = encodedProjectPath(owner, repo);
   const env = glabEnv(host);
 
-  let resolvedCount = 0;
-
-  for (const discussionId of discussionIds) {
-    try {
-      await exec(
-        "glab",
-        [
-          "api",
-          `projects/${encoded}/merge_requests/${mrNumber}/discussions/${discussionId}`,
-          "--method",
-          "PUT",
-          "-H",
-          "Content-Type: application/json",
-          "--input",
-          "-",
-        ],
-        {
-          env,
-          input: JSON.stringify({ resolved: true }),
-        },
-      );
-      resolvedCount += 1;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn(`Failed to resolve discussion ${discussionId} on MR !${mrNumber}: ${msg}`);
-    }
+  try {
+    await exec(
+      "glab",
+      [
+        "api",
+        `projects/${encoded}/merge_requests/${mrNumber}/discussions/${encodeURIComponent(discussionId)}/notes`,
+        "--method",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--input",
+        "-",
+      ],
+      { env, input: JSON.stringify({ body }) },
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new GitLabAPIError(`Failed to reply to discussion ${discussionId} on MR !${mrNumber}: ${msg}`);
   }
-
-  return resolvedCount;
 }

@@ -4,13 +4,13 @@ import type { ReviewMetrics } from "./types.js";
 
 type FindingPriority = { priority: number };
 
-function tok(value: number): string {
+export function formatTokenCount(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
   return String(value);
 }
 
-function formatDuration(seconds: number): string {
+export function formatDuration(seconds: number): string {
   if (seconds >= 60) {
     const m = Math.floor(seconds / 60);
     const s = seconds % 60;
@@ -23,14 +23,14 @@ export function formatMetricsMarkdown(metrics: ReviewMetrics): string {
   const totalInput = metrics.inputTokens + metrics.cacheReadTokens;
   const work = `${metrics.turns} turns · ${metrics.toolCalls} tool calls · ${formatDuration(metrics.durationSeconds)}`;
   const cost = metrics.cost > 0 ? ` · \`$${metrics.cost.toFixed(4)}\`` : "";
-  const tokens = [`\`${tok(totalInput)}\` input`];
+  const tokens = [`\`${formatTokenCount(totalInput)}\` input`];
   if (metrics.cacheReadTokens > 0) {
     const hitPct = ((metrics.cacheReadTokens / totalInput) * 100).toFixed(0);
-    tokens.push(`\`${tok(metrics.cacheReadTokens)}\` cached (${hitPct}%)`);
+    tokens.push(`\`${formatTokenCount(metrics.cacheReadTokens)}\` cached (${hitPct}%)`);
   }
-  tokens.push(`\`${tok(metrics.outputTokens)}\` output`);
+  tokens.push(`\`${formatTokenCount(metrics.outputTokens)}\` output`);
   if (metrics.cacheWriteTokens > 0) {
-    tokens.push(`\`${tok(metrics.cacheWriteTokens)}\` cache write`);
+    tokens.push(`\`${formatTokenCount(metrics.cacheWriteTokens)}\` cache write`);
   }
 
   return `**Review metrics:** ${work}${cost}\n- Tokens: ${tokens.join(" · ")}`;
@@ -48,16 +48,16 @@ export function printMetrics(metrics: ReviewMetrics, stream: NodeJS.WritableStre
 
   // Tokens — inputTokens may be only fresh tokens (SDK reports cache hits separately)
   const totalInput = metrics.inputTokens + metrics.cacheReadTokens;
-  let tokenLine = `${dim("Tokens:")}  ${bold(tok(totalInput))} in`;
+  let tokenLine = `${dim("Tokens:")}  ${bold(formatTokenCount(totalInput))} in`;
   if (metrics.cacheReadTokens > 0) {
     const hitPct = ((metrics.cacheReadTokens / totalInput) * 100).toFixed(0);
-    tokenLine += dim(` (${tok(metrics.cacheReadTokens)} cached ${hitPct}% · ${tok(metrics.inputTokens)} fresh)`);
+    tokenLine += dim(` (${formatTokenCount(metrics.cacheReadTokens)} cached ${hitPct}% · ${formatTokenCount(metrics.inputTokens)} fresh)`);
   }
   if (metrics.cacheWriteTokens > 0) {
-    tokenLine += dim(` · ${tok(metrics.cacheWriteTokens)} cache write`);
+    tokenLine += dim(` · ${formatTokenCount(metrics.cacheWriteTokens)} cache write`);
   }
-  tokenLine += `  ${bold(tok(metrics.outputTokens))} out`;
-  tokenLine += dim(`  (${tok(metrics.totalTokens)} total)`);
+  tokenLine += `  ${bold(formatTokenCount(metrics.outputTokens))} out`;
+  tokenLine += dim(`  (${formatTokenCount(metrics.totalTokens)} total)`);
   write(tokenLine);
 
   // Agent work

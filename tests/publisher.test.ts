@@ -49,7 +49,7 @@ describe("GitLab review publication", () => {
     });
   });
 
-  it("uses old discussions for deduplication but never resolves them incrementally", async () => {
+  it("uses old discussions for deduplication but never resolves them", async () => {
     const { postReviewStructured } = await import("../src/publisher.js");
 
     const result = await postReviewStructured({
@@ -57,7 +57,6 @@ describe("GitLab review publication", () => {
       review: review([]),
       reviewStyle: "hybrid",
       headSha: "d".repeat(40),
-      reconcileDiscussions: false,
     });
 
     expect(result.success).toBe(true);
@@ -88,7 +87,6 @@ describe("GitLab review publication", () => {
       workspacePath: "/workspace",
       headSha: "d".repeat(40),
       commitStatus: true,
-      reconcileDiscussions: true,
     });
 
     expect(result.success).toBe(false);
@@ -99,7 +97,7 @@ describe("GitLab review publication", () => {
     ).toBe(false);
   });
 
-  it("ignores discussions written by other accounts for dedupe and resolution", async () => {
+  it("ignores discussions written by other accounts for dedupe and state", async () => {
     const { getFindingFingerprint } = await import("../src/review-state.js");
     const fingerprint = getFindingFingerprint(finding, "/workspace");
     mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
@@ -153,12 +151,10 @@ describe("GitLab review publication", () => {
       review: review([finding]),
       reviewStyle: "hybrid",
       workspacePath: "/workspace",
-      reconcileDiscussions: true,
     });
 
     expect(result.success).toBe(true);
     expect(result.inlineCreated).toBe(1);
-    expect(result.reconciledDiscussions).toBe(0);
     expect(result.reviewFindings).toHaveLength(1);
     expect(
       mocks.exec.mock.calls.some((call) =>
@@ -328,7 +324,7 @@ describe("GitLab review publication", () => {
     expect(body).toContain("1 earlier thread is still unresolved on GitLab");
   });
 
-  it("reconciles stale fingerprinted discussions only after posting a full review", async () => {
+  it("never resolves a stale thread; it stays open when not re-reported", async () => {
     mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
       if (args.some((arg) => arg.includes("/discussions?"))) {
         return {
@@ -338,7 +334,7 @@ describe("GitLab review publication", () => {
               notes: [
                 {
                   id: 10,
-                  body: `<!-- hodor-review -->\n<!-- hodor:finding:${"f".repeat(64)} -->\nold`,
+                  body: `<!-- hodor-review -->\n<!-- hodor:finding:${"f".repeat(64)} -->\n**[P2] Old issue**\n\nold`,
                   resolvable: true,
                   author: { id: 7, username: "hodor-bot" },
                   resolved: false,
@@ -358,18 +354,17 @@ describe("GitLab review publication", () => {
       review: review([]),
       reviewStyle: "hybrid",
       headSha: "d".repeat(40),
-      reconcileDiscussions: true,
+      reviewMode: "full",
     });
 
     expect(result.success).toBe(true);
-    expect(result.reconciledDiscussions).toBe(1);
-    const calls = mocks.exec.mock.calls.map((call) => (call[1] as string[]).join(" "));
-    const summaryIndex = calls.findIndex((call) => call.includes("/notes --method POST"));
-    const resolveIndex = calls.findIndex((call) =>
-      call.includes("/discussions/old-discussion --method PUT"),
-    );
-    expect(summaryIndex).toBeGreaterThanOrEqual(0);
-    expect(resolveIndex).toBeGreaterThan(summaryIndex);
+    expect(result.reviewFindings).toHaveLength(1);
+    expect(
+      mocks.exec.mock.calls.some((call) => {
+        const args = call[1] as string[];
+        return args.some((arg) => arg.includes("/discussions/")) || (args.includes("PUT") && args.some((arg) => arg.includes("discussions")));
+      }),
+    ).toBe(false);
   });
 
   it("keeps a matching open finding and does not publish a duplicate thread", async () => {
@@ -404,12 +399,10 @@ describe("GitLab review publication", () => {
       review: review([finding]),
       reviewStyle: "hybrid",
       workspacePath: "/workspace",
-      reconcileDiscussions: true,
     });
 
     expect(result.success).toBe(true);
     expect(result.inlineCreated).toBe(0);
-    expect(result.reconciledDiscussions).toBe(0);
     expect(
       mocks.execJson.mock.calls.some((call) =>
         (call[1] as string[]).some((arg) => arg.includes("/draft_notes")),
@@ -598,5 +591,198 @@ describe("GitLab review publication", () => {
     expect(result.summaryPosted).toBe(false);
     expect(notesWrites()).toEqual([]);
     expect(mocks.execJson.mock.calls.some((call) => (call[1] as string[]).includes("--method"))).toBe(false);
+  });
+});
+
+describe("GitLab verified fixes", () => {
+  const HEAD = "0123456789abcdef0123456789abcdef01234567";
+  const BOT = { id: 7, username: "hodor-bot" };
+  const threadFinding: ReviewFinding = {
+    title: "[P2] Validate the archive schema",
+    body: "The schema can drift from the writer.",
+    priority: 2,
+    code_location: {
+      absolute_file_path: "/workspace/src/archive.ts",
+      line_range: { start: 4, end: 4 },
+    },
+  };
+
+  function rootNote(fingerprint: string) {
+    return {
+      id: 11,
+      body: `<!-- hodor-review -->\n<!-- hodor:finding:${fingerprint} -->\n**${threadFinding.title}**\n\n${threadFinding.body}`,
+      resolvable: true,
+      resolved: false,
+      author: BOT,
+      position: { new_path: "src/archive.ts", new_line: 4 },
+    };
+  }
+
+  function fixedReplyNote(fingerprint: string, author: Record<string, unknown>) {
+    return {
+      id: 12,
+      body: `<!-- hodor-review -->\n<!-- hodor:fixed:${fingerprint}:${"e".repeat(40)} -->\nFixed in \`eeeeeeee\`.`,
+      resolvable: true,
+      resolved: false,
+      author,
+    };
+  }
+
+  function mockThread(notes: unknown[]): void {
+    mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.some((arg) => arg.includes("/discussions?"))) {
+        return { stdout: JSON.stringify([{ id: "thread-1", notes }]), stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+  }
+
+  function writes(): Array<{ endpoint: string; input: string }> {
+    return mocks.exec.mock.calls
+      .map((call) => ({
+        args: call[1] as string[],
+        input: (call[2] as { input?: string } | undefined)?.input ?? "",
+      }))
+      .filter((call) => call.args.includes("--method"))
+      .map((call) => ({ endpoint: call.args[1], input: call.input }));
+  }
+
+  function replyWrites(): Array<{ endpoint: string; input: string }> {
+    return writes().filter((write) => write.endpoint.endsWith("/discussions/thread-1/notes"));
+  }
+
+  function summaryBody(): string {
+    const summary = writes().find((write) => write.endpoint.endsWith("/merge_requests/42/notes"));
+    return summary ? (JSON.parse(summary.input) as { body: string }).body : "";
+  }
+
+  function statusInput(): string {
+    return writes().find((write) => write.endpoint.includes("/statuses/"))?.input ?? "";
+  }
+
+  async function publish(reviewOutput: ReviewOutput) {
+    const { postReviewStructured } = await import("../src/publisher.js");
+    return postReviewStructured({
+      prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42",
+      review: reviewOutput,
+      reviewStyle: "hybrid",
+      workspacePath: "/workspace",
+      headSha: HEAD,
+      commitStatus: true,
+      reviewMode: "incremental",
+    });
+  }
+
+  beforeEach(() => {
+    mocks.exec.mockReset();
+    mocks.execJson.mockReset();
+    mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.includes("user")) return BOT;
+      if (args.some((arg) => arg.endsWith("/draft_notes"))) return { id: 1 };
+      if (args.some((arg) => arg.includes("merge_requests/42"))) {
+        return { diff_refs: { base_sha: "a".repeat(40), head_sha: HEAD, start_sha: "c".repeat(40) } };
+      }
+      return {};
+    });
+  });
+
+  it("MR !2870: a verified fix leaves no open findings and posts one fixed reply", async () => {
+    const { buildFixCandidates, getFindingFingerprint, selectVerifiedFixes } = await import("../src/review-state.js");
+    const { listHodorDiscussions } = await import("../src/gitlab.js");
+    const fingerprint = getFindingFingerprint(threadFinding, "/workspace");
+    mockThread([rootNote(fingerprint)]);
+
+    // What reviewPr does before publishing: list candidates, then validate the model's claim.
+    const discussions = await listHodorDiscussions("acme", "app", 42, "gitlab.example.com", { platform: "gitlab", userId: 7 });
+    const candidates = buildFixCandidates(discussions);
+    const { accepted } = selectVerifiedFixes([fingerprint.slice(0, 8)], candidates, {
+      changedFiles: ["src/archive.ts"],
+      currentFingerprints: new Set(),
+    });
+    expect(accepted).toEqual([fingerprint.slice(0, 8)]);
+    mocks.exec.mockClear();
+
+    const result = await publish({ ...review([]), resolved_findings: accepted });
+
+    expect(result.success).toBe(true);
+    expect(result.reviewFindings).toEqual([]);
+    const body = summaryBody();
+    expect(body).toContain("| Important (P2) | 0 |");
+    expect(body).toContain("**Fixed, waiting to be resolved:** 1.");
+    expect(body).toContain("**Overall verdict:** No open findings");
+    expect(body).not.toContain("Earlier threads");
+    expect(statusInput()).toContain('"state":"success"');
+    expect(statusInput()).toContain("No issues found");
+    const replies = replyWrites();
+    expect(replies).toHaveLength(1);
+    expect(JSON.parse(replies[0].input)).toEqual({
+      body:
+        "<!-- hodor-review -->\n" +
+        `<!-- hodor:fixed:${fingerprint}:${HEAD} -->\n` +
+        "Fixed in `01234567`. Resolve this thread if you agree.",
+    });
+  });
+
+  it("posts no second reply and keeps counting a thread with a trusted fixed-reply as fixed", async () => {
+    const { getFindingFingerprint } = await import("../src/review-state.js");
+    const fingerprint = getFindingFingerprint(threadFinding, "/workspace");
+    mockThread([rootNote(fingerprint), fixedReplyNote(fingerprint, BOT)]);
+
+    // A later run whose model does not list the thread.
+    const later = await publish(review([]));
+    expect(later.reviewFindings).toEqual([]);
+    expect(summaryBody()).toContain("**Fixed, waiting to be resolved:** 1.");
+    expect(replyWrites()).toEqual([]);
+
+    // A cache replay that carries the same verified id.
+    mocks.exec.mockClear();
+    await publish({ ...review([]), resolved_findings: [fingerprint.slice(0, 8)] });
+    expect(replyWrites()).toEqual([]);
+  });
+
+  it("counts a fixed thread as open again when the review re-reports it", async () => {
+    const { getFindingFingerprint } = await import("../src/review-state.js");
+    const fingerprint = getFindingFingerprint(threadFinding, "/workspace");
+    mockThread([rootNote(fingerprint), fixedReplyNote(fingerprint, BOT)]);
+
+    const result = await publish(review([threadFinding]));
+
+    expect(result.reviewFindings).toEqual([expect.objectContaining({ fingerprint, priority: 2 })]);
+    const body = summaryBody();
+    expect(body).toContain("| Important (P2) | 1 |");
+    expect(body).not.toContain("Fixed, waiting to be resolved");
+    expect(statusInput()).toContain("1 non-blocking issue(s)");
+    expect(replyWrites()).toEqual([]);
+  });
+
+  it("ignores a forged fixed marker in a human reply", async () => {
+    const { getFindingFingerprint } = await import("../src/review-state.js");
+    const fingerprint = getFindingFingerprint(threadFinding, "/workspace");
+    mockThread([rootNote(fingerprint), fixedReplyNote(fingerprint, { id: 99, username: "hodor-bot" })]);
+
+    const result = await publish(review([]));
+
+    expect(result.reviewFindings).toEqual([expect.objectContaining({ fingerprint })]);
+    const body = summaryBody();
+    expect(body).not.toContain("Fixed, waiting to be resolved");
+    expect(body).toContain("1 earlier thread is still unresolved on GitLab and not confirmed fixed");
+  });
+
+  it("treats a failed fixed reply as a warning, not a delivery failure", async () => {
+    const { getFindingFingerprint } = await import("../src/review-state.js");
+    const fingerprint = getFindingFingerprint(threadFinding, "/workspace");
+    mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.some((arg) => arg.includes("/discussions?"))) {
+        return { stdout: JSON.stringify([{ id: "thread-1", notes: [rootNote(fingerprint)] }]), stderr: "" };
+      }
+      if (args.some((arg) => arg.endsWith("/discussions/thread-1/notes"))) throw new Error("403 Forbidden");
+      return { stdout: "", stderr: "" };
+    });
+
+    const result = await publish({ ...review([]), resolved_findings: [fingerprint.slice(0, 8)] });
+
+    expect(result.success).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(summaryBody()).toContain("**Fixed, waiting to be resolved:** 1.");
   });
 });

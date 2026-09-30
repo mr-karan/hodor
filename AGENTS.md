@@ -9,7 +9,7 @@ The full module table is in `README.md` under Architecture. The paths you touch 
 - `src/agent.ts`: review orchestration. Preflight, workspace, Pi session, the `submit_review` tool, recovery, metrics.
 - `src/model.ts`, `src/models-json.ts`: model strings, Bedrock ARN models, adaptive reasoning, `HODOR_MODELS_JSON`.
 - `src/review-diff.ts`: full, incremental, and snapshot diff bases.
-- `src/publisher.ts`, `src/gitlab.ts`: GitLab inline notes, a new summary note per review (older summaries collapsed to a link), discussion reconciliation.
+- `src/publisher.ts`, `src/gitlab.ts`: GitLab inline notes, a new summary note per review (older summaries collapsed to a link), and verified-fix replies on finding threads.
 - `src/resolve-location.ts`: snippet-based line resolution.
 - `templates/`: default review profile and review task prompt.
 - `tests/`: vitest, `*.test.ts`.
@@ -30,7 +30,8 @@ When you upgrade Pi, read the release notes for every version in between, then c
 
 - Hodor embeds diffs under 200KB in the prompt. Otherwise the agent runs `git --no-pager diff` with a three-dot range (`origin/<target>...HEAD`).
 - Only changed code is in scope. Pre-existing issues count only when the change breaks them.
-- Re-runs are incremental from the last `<!-- hodor:sha:... -->` marker. After a force-push or rebase, the review compares the last reviewed snapshot with the current HEAD. `--full` disables both.
+- Re-runs are incremental from the last `<!-- hodor:sha:... -->` marker. After a force-push or rebase, GitLab reviews the whole MR diff against the recalculated base (`rebasedGitlabReview` in `src/review-diff.ts`); GitHub and Gitea compare the last reviewed snapshot with the current HEAD. `--full` disables both.
+- Hodor never resolves threads (hodor-bot is a Reporter). When a review confirms an earlier finding fixed, Hodor replies `Fixed in <sha>` with a `hodor:fixed` marker and counts the thread as fixed, waiting to be resolved.
 - In GitLab CI, compute the merge base from the target branch. Use `CI_MERGE_REQUEST_DIFF_BASE_SHA` only as a fallback.
 - CI runs (`$GITLAB_CI`, `$GITHUB_ACTIONS`) reuse the existing checkout. Local runs clone with `gh` or `glab`, and `--workspace` reuses a clone.
 

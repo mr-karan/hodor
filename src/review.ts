@@ -44,6 +44,7 @@ export const SUBMIT_REVIEW_SCHEMA = Type.Object(
       Type.Literal("patch is incorrect"),
     ]),
     overall_explanation: Type.String({ minLength: 1 }),
+    resolved_findings: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
   },
   { additionalProperties: false },
 );
@@ -51,11 +52,12 @@ export const SUBMIT_REVIEW_SCHEMA = Type.Object(
 const NULLABLE_FINDING_FIELDS = ["existing_code", "suggestion"];
 
 /**
- * Models often send `null` for optional finding fields. The schema rejects null. Pi's
- * validateToolArguments drops such fields on the tool path; Pi does not export that helper,
+ * Models often send `null` for optional fields, or one id where the schema
+ * wants a list. Pi's validateToolArguments drops null fields and converts a
+ * lone string to an array on the tool path; Pi does not export that helper,
  * so the text-fallback path applies the same normalization here.
  */
-export function dropNullOptionalFields(value: unknown): unknown {
+export function normalizeOptionalFields(value: unknown): unknown {
   if (!isRecord(value) || !Array.isArray(value.findings)) return value;
   const findings: unknown[] = value.findings.map((finding: unknown) => {
     if (!isRecord(finding)) return finding;
@@ -65,6 +67,9 @@ export function dropNullOptionalFields(value: unknown): unknown {
       ),
     );
   });
+  const { resolved_findings: resolvedFindings, ...rest } = value;
+  if (resolvedFindings === null) return { ...rest, findings };
+  if (typeof resolvedFindings === "string") return { ...rest, findings, resolved_findings: [resolvedFindings] };
   return { ...value, findings };
 }
 

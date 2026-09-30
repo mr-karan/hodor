@@ -48,6 +48,9 @@ describe("submit_review text fallback agrees with the tool path", () => {
     ["optional fields set", payload({ existing_code: "a()", suggestion: "b()" })],
     ["optional fields null", payload({ existing_code: null, suggestion: null })],
     ["only suggestion null", payload({ suggestion: null })],
+    ["resolved_findings set", { ...payload(), resolved_findings: ["57a2a375"] }],
+    ["resolved_findings null", { ...payload(), resolved_findings: null }],
+    ["resolved_findings as one string", { ...payload(), resolved_findings: "57a2a375" }],
   ];
   const rejected: Array<[string, unknown]> = [
     ["missing required title", payload({ title: undefined })],
@@ -60,6 +63,8 @@ describe("submit_review text fallback agrees with the tool path", () => {
     ["findings is not an array", { ...payload(), findings: "none" }],
     ["unknown finding property", payload({ extra: true })],
     ["empty suggestion", payload({ suggestion: "" })],
+    ["empty resolved_findings id", { ...payload(), resolved_findings: [""] }],
+    ["resolved_findings is an object", { ...payload(), resolved_findings: { id: "57a2a375" } }],
     ["relative path", payload({
       code_location: { absolute_file_path: "src/api.ts", line_range: { start: 1, end: 2 } },
     })],
@@ -80,5 +85,10 @@ describe("submit_review text fallback agrees with the tool path", () => {
     const review = viaText(payload({ existing_code: null, suggestion: null }));
     expect(review?.findings[0]).not.toHaveProperty("suggestion");
     expect(review?.findings[0]).not.toHaveProperty("existing_code");
+  });
+
+  it("keeps resolved_findings ids from assistant text", () => {
+    expect(viaText({ ...payload(), resolved_findings: ["57a2a375"] })?.resolved_findings).toEqual(["57a2a375"]);
+    expect(viaText({ ...payload(), resolved_findings: null })).not.toHaveProperty("resolved_findings");
   });
 });
