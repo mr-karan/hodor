@@ -123,6 +123,11 @@ program
     "For tiny, low-risk, fully embedded diffs, expose only submit_review so the review completes in one turn (cheaper; no repository exploration)",
     false,
   )
+  .option(
+    "--codemode",
+    "Let the agent batch its read-only tool calls in Pi's codemode sandbox (cheaper on large reviews)",
+    false,
+  )
   .action(async (prUrl: string | undefined, cmdOpts: Record<string, unknown>) => {
     const verbose = cmdOpts.verbose as boolean;
     const post = cmdOpts.post as boolean;
@@ -144,6 +149,7 @@ program
     const full = cmdOpts.full as boolean;
     const targetBranchOverride = cmdOpts.targetBranch as string | undefined;
     const tinyDiffFastPath = cmdOpts.tinyDiffFastPath as boolean;
+    const codemode = cmdOpts.codemode as boolean;
 
     if (!localMode && !prUrl) {
       console.error(chalk.red("Error: pr-url is required unless --local is specified"));
@@ -366,6 +372,7 @@ program
         full,
         targetBranchOverride,
         tinyDiffFastPath,
+        codemode,
       });
       const reviewText = renderMarkdown(review);
 

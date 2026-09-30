@@ -195,3 +195,36 @@ describe("renderSupersededSummary", () => {
     expect(note).not.toMatch(/hodor:(sha|cache|summary)/);
   });
 });
+
+describe("renderSummaryMarkdown thread labels", () => {
+  const clean: ReviewOutput = { findings: [], overall_correctness: "patch is correct", overall_explanation: "Fixed." };
+  const open = {
+    fingerprint: "f".repeat(64),
+    title: "[P2] Earlier issue",
+    body: "Body",
+    priority: 2 as const,
+  };
+
+  it("names the table as a snapshot of unresolved threads", () => {
+    const md = renderSummaryMarkdown(clean, { asOf: new Date("2026-09-30T09:02:40Z") });
+    expect(md).toContain("| Unresolved Hodor threads (as of 2026-09-30 09:02 UTC) | Count |");
+    expect(md).toContain("**Overall verdict:** No open findings");
+    expect(md).not.toContain("Earlier threads");
+  });
+
+  it("explains earlier threads the review did not re-check", () => {
+    const md = renderSummaryMarkdown(clean, { openFindings: [open], carriedOver: 1 });
+    expect(md).toContain("**Overall verdict:** No new findings; earlier threads are still unresolved");
+    expect(md).toContain("**Earlier threads:** 1 earlier thread is still unresolved on GitLab.");
+  });
+
+  it("keeps the normal verdict when the review has its own findings", () => {
+    const md = renderSummaryMarkdown(
+      { ...clean, findings: [makeFinding("[P1] New bug", 1)], overall_correctness: "patch is incorrect" },
+      { openFindings: [open, { ...open, fingerprint: "e".repeat(64), priority: 1 }], carriedOver: 1 },
+    );
+    expect(md).toContain("**Overall verdict:** Blocking findings remain");
+    expect(md).toContain("1 earlier thread is still unresolved");
+  });
+});
+

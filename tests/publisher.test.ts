@@ -283,6 +283,51 @@ describe("GitLab review publication", () => {
     );
   });
 
+  it("labels an earlier open thread as not re-checked when the review finds nothing new", async () => {
+    const { postReviewStructured } = await import("../src/publisher.js");
+    const { getFindingFingerprint } = await import("../src/review-state.js");
+    const fingerprint = getFindingFingerprint(finding, "/workspace");
+    mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.some((arg) => arg.includes("/discussions?"))) {
+        return {
+          stdout: JSON.stringify([
+            {
+              id: "earlier-discussion",
+              notes: [
+                {
+                  id: 11,
+                  body: `<!-- hodor-review -->\n<!-- hodor:finding:${fingerprint} -->\n**${finding.title}**\n\n${finding.body}`,
+                  resolvable: true,
+                  author: { id: 7, username: "hodor-bot" },
+                  resolved: false,
+                  position: { new_path: "src/app.ts", new_line: 12 },
+                },
+              ],
+            },
+          ]),
+          stderr: "",
+        };
+      }
+      return { stdout: "", stderr: "" };
+    });
+
+    await postReviewStructured({
+      prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42",
+      review: review([]),
+      reviewStyle: "hybrid",
+      workspacePath: "/workspace",
+    });
+
+    const summary = mocks.exec.mock.calls.find((call) => {
+      const args = call[1] as string[];
+      return args.some((arg) => arg.endsWith("/notes")) && args.includes("POST");
+    });
+    const body = (summary?.[2] as { input?: string } | undefined)?.input ?? "";
+    expect(body).toMatch(/Unresolved Hodor threads \(as of \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\)/);
+    expect(body).toContain("No new findings; earlier threads are still unresolved");
+    expect(body).toContain("1 earlier thread is still unresolved on GitLab");
+  });
+
   it("reconciles stale fingerprinted discussions only after posting a full review", async () => {
     mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
       if (args.some((arg) => arg.includes("/discussions?"))) {

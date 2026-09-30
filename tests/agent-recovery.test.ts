@@ -63,6 +63,9 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
     }
 
     async reload(): Promise<void> {}
+    getExtensions(): { extensions: unknown[]; errors: unknown[] } {
+      return { extensions: [], errors: [] };
+    }
     getSkills(): { skills: unknown[]; diagnostics: unknown[] } {
       return { skills: [], diagnostics: [] };
     }

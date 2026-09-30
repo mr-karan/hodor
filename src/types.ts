@@ -87,6 +87,10 @@ export interface ReviewMetrics {
   cost: number;
   turns: number;
   toolCalls: number;
+  /** Tool calls made from inside codemode scripts (included in toolCalls). */
+  nestedToolCalls?: number;
+  /** Codemode script executions (included in toolCalls). */
+  codemodeCalls?: number;
   durationSeconds: number;
   reviewMode?: "full" | "incremental" | "snapshot" | "local" | "reused";
   reasoningEffort?: string;
