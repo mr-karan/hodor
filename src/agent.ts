@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   createAgentSession,
+  createCodemodeExtension,
   DefaultResourceLoader,
   getAgentDir,
   SessionManager,
@@ -148,14 +149,61 @@ export function getReviewSessionTools(opts: {
   singleTurn: boolean;
   reviewTools: ToolDefinition[];
   submitReviewTool: ToolDefinition;
+  codemode?: boolean;
 }): { tools: string[]; customTools: ToolDefinition[] } {
   if (opts.singleTurn) {
     return { tools: ["submit_review"], customTools: [opts.submitReviewTool] };
   }
   return {
-    tools: [...REVIEW_TOOL_NAMES, "submit_review"],
+    tools: [...REVIEW_TOOL_NAMES, "submit_review", ...(opts.codemode ? ["codemode"] : [])],
     customTools: [...opts.reviewTools, opts.submitReviewTool],
   };
+}
+
+/**
+ * Build the session's resource loader. Disk and project extensions, prompt
+ * templates, themes, and context files stay off. With `codemode`, only Pi's
+ * codemode built-in loads, with its `models` API disabled so scripts cannot
+ * call classifiers with the session's credentials.
+ */
+export async function createReviewResourceLoader(opts: {
+  cwd: string;
+  agentDir: string;
+  settingsManager: SettingsManager;
+  systemPrompt?: string;
+  skillPaths?: string[];
+  codemode?: boolean;
+}): Promise<DefaultResourceLoader> {
+  const resourceLoader = new DefaultResourceLoader({
+    cwd: opts.cwd,
+    agentDir: opts.agentDir,
+    settingsManager: opts.settingsManager,
+    ...(opts.systemPrompt !== undefined
+      ? { systemPromptOverride: () => opts.systemPrompt, appendSystemPromptOverride: () => [] }
+      : {}),
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    additionalSkillPaths: opts.skillPaths ?? [],
+    agentsFilesOverride: () => ({ agentsFiles: [] }),
+    ...(opts.codemode
+      ? {
+        extensionFactories: [{
+          name: "codemode",
+          builtin: true,
+          factory: createCodemodeExtension({ models: false, mode: "on" }),
+        }],
+        additionalExtensionPaths: ["builtin:codemode"],
+      }
+      : {}),
+  });
+  await resourceLoader.reload();
+  const extensionErrors = resourceLoader.getExtensions().errors;
+  if (extensionErrors.length > 0) {
+    throw new Error(`Failed to load review extensions: ${extensionErrors.map((e) => e.error).join("; ")}`);
+  }
+  return resourceLoader;
 }
 
 export async function reviewPr(opts: {
@@ -174,6 +222,8 @@ export async function reviewPr(opts: {
   full?: boolean;
   targetBranchOverride?: string;
   tinyDiffFastPath?: boolean;
+  /** Experimental: let the model batch tool calls through Pi's codemode sandbox. */
+  codemode?: boolean;
 }): Promise<{
   review: ReviewOutput;
   metricsFooter: string | null;
@@ -199,6 +249,7 @@ export async function reviewPr(opts: {
     full = false,
     targetBranchOverride,
     tinyDiffFastPath = false,
+    codemode = false,
   } = opts;
 
   const effectiveReviewInstructions = reviewInstructions == null
@@ -615,20 +666,18 @@ export async function reviewPr(opts: {
     });
     const skillPaths = [join(workspacePath, ".agents", "skills")]
       .filter((p) => existsSync(p));
-    const resourceLoader = new DefaultResourceLoader({
+    // Codemode scripts run in a QuickJS sandbox that can only call the
+    // session's tools, which are Hodor's confined ones.
+    const useCodemode = codemode && !singleTurn;
+    if (useCodemode) logger.info("Codemode enabled (experimental)");
+    const resourceLoader = await createReviewResourceLoader({
       cwd: workspacePath,
       agentDir: getAgentDir(),
       settingsManager,
-      systemPromptOverride: () => composedSystemPrompt,
-      appendSystemPromptOverride: () => [],
-      noExtensions: true,
-      noSkills: true,
-      noPromptTemplates: true,
-      noThemes: true,
-      additionalSkillPaths: skillPaths,
-      agentsFilesOverride: () => ({ agentsFiles: [] }),
+      systemPrompt: composedSystemPrompt,
+      skillPaths,
+      codemode: useCodemode,
     });
-    await resourceLoader.reload();
     const { skills, diagnostics: skillDiagnostics } = resourceLoader.getSkills();
     if (skills.length > 0) {
       logger.info(`Discovered ${skills.length} repository skill(s)`);
@@ -650,6 +699,8 @@ export async function reviewPr(opts: {
       promptSnippet: "Submit the final structured review (call exactly once when done)",
       parameters: SUBMIT_REVIEW_SCHEMA,
       constrainedSampling: { type: "json_schema", strict: "prefer" },
+      // Codemode scripts must not submit: a nested call would lose `terminate`.
+      exposure: "model-only",
       execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
         submitReviewCalls++;
         if (submittedReview) {
@@ -691,6 +742,7 @@ export async function reviewPr(opts: {
         singleTurn,
         reviewTools: reviewToolset.definitions,
         submitReviewTool,
+        codemode: useCodemode,
       }),
       modelRuntime,
       sessionManager: SessionManager.inMemory(),
@@ -716,6 +768,8 @@ export async function reviewPr(opts: {
     // Subscribe to agent events for progress + metrics tracking
     let turnCount = 0;
     let toolCallCount = 0;
+    let nestedToolCallCount = 0;
+    let codemodeCallCount = 0;
 
     /** Extract human-readable summary from tool args */
     function formatToolArgs(_toolName: string, args: unknown): string {
@@ -765,6 +819,8 @@ export async function reviewPr(opts: {
           break;
         case "tool_execution_start":
           toolCallCount++;
+          if (event.parentToolCallId) nestedToolCallCount++;
+          if (event.toolName === "codemode") codemodeCallCount++;
           onEvent?.({
             type: "tool_start",
             toolName: event.toolName,
@@ -933,6 +989,7 @@ export async function reviewPr(opts: {
       cost,
       turns: turnCount,
       toolCalls: toolCallCount,
+      ...(useCodemode ? { nestedToolCalls: nestedToolCallCount, codemodeCalls: codemodeCallCount } : {}),
       durationSeconds: Math.round(durationSeconds),
       reviewMode,
       reasoningEffort: thinkingLevel ?? "none",

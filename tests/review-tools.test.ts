@@ -12,8 +12,9 @@ import {
   type AgentSession,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { createAssistantMessageEventStream, type AssistantMessage, type ToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { getReviewSessionTools } from "../src/agent.js";
+import { createReviewResourceLoader, getReviewSessionTools } from "../src/agent.js";
 import { createModelRuntime } from "../src/models-json.js";
 import { createReviewToolset, globToRegExp, REVIEW_TOOL_NAMES, type ReviewToolset } from "../src/review-tools.js";
 
@@ -57,34 +58,25 @@ function write(path: string, content: string): void {
 
 const submitReviewTool: ToolDefinition = {
   name: "submit_review",
+  exposure: "model-only",
   label: "Submit Review",
   description: "Submit the review.",
   parameters: Type.Object({}),
   execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
 };
 
-async function createSession(singleTurn: boolean): Promise<AgentSession> {
+async function createSession(singleTurn: boolean, codemode = false): Promise<AgentSession> {
   const agentDir = join(base, "pi-agent");
   mkdirSync(agentDir, { recursive: true });
   const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, cacheWarming: "off" });
-  const resourceLoader = new DefaultResourceLoader({
-    cwd: repo,
-    agentDir,
-    settingsManager,
-    noExtensions: true,
-    noSkills: true,
-    noPromptTemplates: true,
-    noThemes: true,
-    agentsFilesOverride: () => ({ agentsFiles: [] }),
-  });
-  await resourceLoader.reload();
+  const resourceLoader = await createReviewResourceLoader({ cwd: repo, agentDir, settingsManager, codemode });
   const modelRuntime = await createModelRuntime(null);
   const { session: created } = await createAgentSession({
     cwd: repo,
     agentDir,
     model: modelRuntime.getModel("anthropic", "claude-opus-5-5"),
     modelRuntime,
-    ...getReviewSessionTools({ singleTurn, reviewTools: toolset.definitions, submitReviewTool }),
+    ...getReviewSessionTools({ singleTurn, reviewTools: toolset.definitions, submitReviewTool, codemode }),
     sessionManager: SessionManager.inMemory(),
     settingsManager,
     resourceLoader,
@@ -185,6 +177,97 @@ describe("review session tools", () => {
     } finally {
       fastSession.dispose();
     }
+  });
+});
+
+describe("codemode (experimental)", () => {
+  /**
+   * Run one codemode script through a real agent turn: a scripted model issues
+   * the codemode call, then submit_review to end the run. Nested tool calls
+   * need a real assistant turn, so the tool cannot be executed directly.
+   */
+  async function runScript(code: string): Promise<string> {
+    // The scripted stream never sends a request, but prompt() requires a key.
+    vi.stubEnv("ANTHROPIC_API_KEY", "offline-test-key");
+    const cm = await createSession(false, true);
+    try {
+      const model = cm.model;
+      if (!model) throw new Error("session has no model");
+      const calls: ToolCall[] = [
+        { type: "toolCall", id: "script", name: "codemode", arguments: { code } },
+        { type: "toolCall", id: "submit", name: "submit_review", arguments: {} },
+      ];
+      let turn = 0;
+      cm.agent.streamFunction = () => {
+        const call = calls[turn++];
+        if (!call) throw new Error("unexpected extra turn");
+        const message: AssistantMessage = {
+          role: "assistant",
+          content: [call],
+          api: model.api,
+          provider: model.provider,
+          model: model.id,
+          usage: {
+            input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          },
+          stopReason: "toolUse",
+          timestamp: Date.now(),
+        };
+        const stream = createAssistantMessageEventStream();
+        stream.push({ type: "start", partial: message });
+        stream.push({ type: "done", reason: "toolUse", message });
+        return stream;
+      };
+      await cm.prompt("offline codemode test");
+      const result = cm.messages.find(
+        (message) => message.role === "toolResult" && message.toolName === "codemode",
+      );
+      if (!result || result.role !== "toolResult") throw new Error("no codemode result");
+      return result.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+    } finally {
+      cm.dispose();
+      vi.unstubAllEnvs();
+    }
+  }
+
+  it("adds only codemode to the confined tools", async () => {
+    const cm = await createSession(false, true);
+    try {
+      expect([...cm.getActiveToolNames()].sort()).toEqual(
+        ["codemode", "find", "git_diff", "grep", "ls", "read", "submit_review"],
+      );
+      for (const forbidden of ["bash", "tool_search", "write", "edit"]) {
+        expect(cm.getToolDefinition(forbidden)).toBeUndefined();
+      }
+    } finally {
+      cm.dispose();
+    }
+  });
+
+  it("gives scripts the confined tools and no host globals, model API, or submit_review", async () => {
+    const out = await runScript(
+      "text(JSON.stringify({ globals: [typeof process, typeof require, typeof fetch, typeof setTimeout, typeof models], " +
+        "tools: ALL_TOOLS.map((t) => t.name).sort(), submit: typeof tools.submit_review }));",
+    );
+    const parsed: unknown = JSON.parse(out.slice(out.indexOf("{"), out.lastIndexOf("}") + 1));
+    expect(parsed).toEqual({
+      globals: ["undefined", "undefined", "undefined", "undefined", "undefined"],
+      tools: ["find", "git_diff", "grep", "ls", "read"],
+      submit: "undefined",
+    });
+  });
+
+  it("keeps confinement for reads made from a script", async () => {
+    const script = [
+      "const r = await Promise.allSettled([",
+      "  tools.read({ path: '/etc/passwd' }),",
+      "  tools.read({ path: '.git/config' }),",
+      "  tools.read({ path: 'src/app.ts' }),",
+      "]);",
+      "text(JSON.stringify(r.map((x) => x.status)));",
+    ].join("\n");
+    expect(await runScript(script)).toContain('["rejected","rejected","fulfilled"]');
   });
 });
 
