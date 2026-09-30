@@ -287,9 +287,13 @@ Pass `--full` to bypass incremental mode and identical-HEAD reuse. Pass `--reaso
 
 ### Codemode
 
-`--codemode` adds Pi's `codemode` tool. The agent can write a short JavaScript script that calls its read-only tools (`git_diff`, `read`, `grep`, `find`, `ls`) in parallel and returns only the relevant output, instead of spending a model turn on each call. The direct tools stay available.
+`--codemode` adds Pi's `codemode` tool, so the agent can explore the repository with a short JavaScript script that calls its read-only tools (`git_diff`, `read`, `grep`, `find`, `ls`). The direct tools stay available, and the model uses them when a script does not help. Recommended for CI.
 
-In a paired evaluation on five real merge requests (15 cold-cache runs per arm, same pinned diffs, same model and reasoning), codemode cut review cost by 21% overall and 36% on the largest review, used about 40% fewer turns, and finished about a third faster. It found the same issues as the default toolset.
+Why it is cheaper and faster:
+
+- **Dependent steps in one turn.** Without codemode, the model can batch independent calls, but a step that depends on an earlier result ("grep for callers, then read each caller") costs another model round trip. A script chains those steps inside one tool call.
+- **Less new context.** A normal tool result enters the conversation whole and stays there for the rest of the review. A script filters results before returning them, so only the relevant lines are added. Prompt caching makes re-reading earlier context cheap; writing new context into the cache and generating output are the expensive parts, and both shrink.
+- **Savings grow with the review.** Small diffs need little exploration and change little. Large diffs, where the agent follows many callers and definitions, save the most turns and tokens.
 
 Codemode scripts run in a QuickJS sandbox that can only call the review tools above. It has no filesystem, network, environment, or module access, and no access to model APIs. Hodor enforces a 120-second timeout and a 10,000-token output cap on every script, whatever the script requests. The tiny-diff fast path never uses codemode.
 
