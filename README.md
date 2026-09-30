@@ -140,6 +140,7 @@ Local mode:
 | `--bedrock-tags` | None | JSON `requestMetadata` for filtering Bedrock invocation logs. Not billing tags; see [Bedrock cost attribution](./docs/MODELS.md#application-inference-profiles-cost-attribution). |
 | `--prometheus-push` | None | Push review metrics to a Prometheus Pushgateway or VictoriaMetrics import endpoint |
 | `--tiny-diff-fast-path` | Off | For tiny, low-risk, fully embedded diffs, decide in one turn with no repository exploration (cheaper) |
+| `--codemode` | Off | Let the agent batch its read-only tool calls in Pi's codemode sandbox (see [Codemode](#codemode)) |
 | `-v, --verbose` | Off | Stream agent reasoning and tool calls |
 
 ## Environment Variables
@@ -251,6 +252,8 @@ hodor-review:
 
 This posts actionable findings inline, posts a new summary note with collapsed run metrics (older Hodor summaries collapse to a link to it), sets a commit status from all unresolved Hodor findings, and exposes the cumulative Code Quality report from the MR.
 
+The summary's count table lists **unresolved Hodor threads at the time of the review**. It includes threads from earlier reviews that are still open on GitLab, and says so when this review did not re-check them. The count does not update when someone resolves a thread later; the next review's summary shows the new state.
+
 See [AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md) for advanced workflows.
 
 ## Token optimization
@@ -266,6 +269,14 @@ Hodor automatically optimizes token usage:
 - **Prompt caching**: Supported models (Claude on Anthropic and Bedrock, and others that Pi marks as cacheable) reuse the cached prompt prefix across turns. Cache reads usually make up most of a review's input tokens.
 
 Pass `--full` to bypass incremental mode and identical-HEAD reuse. Pass `--reasoning-effort` to override adaptive reasoning.
+
+### Codemode
+
+`--codemode` adds Pi's `codemode` tool. The agent can write a short JavaScript script that calls its read-only tools (`git_diff`, `read`, `grep`, `find`, `ls`) in parallel and returns only the relevant output, instead of spending a model turn on each call. The direct tools stay available.
+
+In a paired evaluation on five real merge requests (15 cold-cache runs per arm, same pinned diffs, same model and reasoning), codemode cut review cost by 21% overall and 36% on the largest review, used about 40% fewer turns, and finished about a third faster. It found the same issues as the default toolset.
+
+Codemode scripts run in a QuickJS sandbox that can only call the review tools above. It has no filesystem, network, environment, or module access, and no access to model APIs. Hodor enforces a 120-second timeout and a 10,000-token output cap on every script, whatever the script requests. The tiny-diff fast path never uses codemode.
 
 ## Skills
 
@@ -294,6 +305,7 @@ Skills are loaded automatically during reviews. See [SKILLS.md](./docs/SKILLS.md
 Hodor reviews untrusted code, so plan CI permissions around these facts:
 
 - **The agent has no shell.** Its tools are `git_diff` (the review diff Hodor already computed), and `read`, `grep`, `find`, and `ls` confined to files tracked by git in the checkout. Every path and its symlink target must be tracked and inside the repository, and `.git` is refused, so untracked files such as `.env`, restored caches, and CI credential files are unreachable. Git subprocesses run with a minimal environment, timeouts, and output caps.
+- **Codemode scripts are sandboxed.** With `--codemode`, model-written JavaScript runs in a QuickJS sandbox that can only call the confined tools. `submit_review` is not callable from scripts, the `models` API is disabled, and Hodor caps each script at 120 seconds and 10,000 output tokens.
 - **The Hodor process still holds credentials.** It needs the model and platform credentials to do its job. Keep the checkout free of secrets, and do not add tools that run commands.
 - **Give Hodor least-privilege credentials.** Use a token scoped to comments and statuses, a dedicated bot account, and short-lived cloud credentials. Restrict network egress from the runner where you can. Rotate keys and keep audit logging on.
 - **Diffs and repository text are untrusted input.** Treat a review as advice. Keep `allow_failure` and human approval in the merge path.

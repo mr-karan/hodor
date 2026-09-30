@@ -412,6 +412,9 @@ export async function postReviewStructured(opts: {
     )
   ) {
     const summaryFindings = review.findings;
+    const currentFingerprints = new Set(
+      review.findings.map((finding) => getFindingFingerprint(finding, workspacePath)),
+    );
     let summaryBody = renderSummaryMarkdown(review, {
       openFindings: reviewFindings,
       fallbackFindings: summaryFindings,
@@ -422,6 +425,8 @@ export async function postReviewStructured(opts: {
         reviewStyle === "summary" ? undefined : inlineDeduplicated,
       reviewMode,
       reviewedSha: headSha,
+      carriedOver: reviewFindings.filter((finding) => !currentFingerprints.has(finding.fingerprint)).length,
+      asOf: new Date(),
     });
     if (headSha) summaryBody = `<!-- hodor:sha:${headSha} -->\n${summaryBody}`;
     if (cacheMarker) summaryBody = summaryBody.replace("\n", `\n${cacheMarker}\n`);

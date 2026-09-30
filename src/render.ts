@@ -89,6 +89,13 @@ export function renderSummaryMarkdown(
     inlineDeduplicated?: number;
     reviewMode?: string;
     reviewedSha?: string | null;
+    /**
+     * Open threads from earlier reviews that this review did not report
+     * again. They count as unresolved until someone resolves them on GitLab.
+     */
+    carriedOver?: number;
+    /** When the counts were taken; they do not update when threads are resolved later. */
+    asOf?: Date;
   } = {},
 ): string {
   const lines: string[] = [HODOR_REVIEW_MARKER, HODOR_SUMMARY_MARKER];
@@ -103,9 +110,11 @@ export function renderSummaryMarkdown(
   }
 
   const totalOpen = counts.blocking + counts.important + counts.minor;
+  const carriedOver = Math.min(options.carriedOver ?? 0, totalOpen);
+  const asOf = options.asOf ? ` (as of ${options.asOf.toISOString().slice(0, 16).replace("T", " ")} UTC)` : "";
   lines.push(
     "",
-    "| Open findings | Count |",
+    `| Unresolved Hodor threads${asOf} | Count |`,
     "| --- | ---: |",
     `| Critical (P0/P1) | ${counts.blocking} |`,
     `| Important (P2) | ${counts.important} |`,
@@ -116,10 +125,20 @@ export function renderSummaryMarkdown(
   const verdict =
     totalOpen === 0
       ? "No open findings"
-      : counts.blocking > 0
-        ? "Blocking findings remain"
-        : "Non-blocking findings remain";
+      : carriedOver === totalOpen
+        ? "No new findings; earlier threads are still unresolved"
+        : counts.blocking > 0
+          ? "Blocking findings remain"
+          : "Non-blocking findings remain";
   lines.push(`**Overall verdict:** ${verdict}`);
+  if (carriedOver > 0) {
+    const threads = carriedOver === 1 ? "1 earlier thread is" : `${carriedOver} earlier threads are`;
+    lines.push(
+      "",
+      `**Earlier threads:** ${threads} still unresolved on GitLab. This review did not re-check them ` +
+        "against the new code. If the review below says they are fixed, resolve the threads to clear them.",
+    );
+  }
   if (options.reviewedSha) {
     lines.push("", `**Reviewed commit:** \`${options.reviewedSha.slice(0, 8)}\``);
   }
