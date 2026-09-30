@@ -263,7 +263,7 @@ The summary's count table lists **unresolved Hodor threads at the time of the re
 The default job log is short:
 
 - **Start line:** `Hodor <version> · <project> !<mr> · <model> (<reasoning>)`, with `· codemode` when codemode is on. Local runs show `local diff vs <ref>`.
-- **Agent trace:** one line per tool call (`turn 12  read   crux/foo.py`). Calls that a codemode script makes are indented under the script line with `↳`. A failed call prints one red line with the first line of its error. Retries and compaction print one line each. In GitLab CI this is a collapsed section; elsewhere it has a plain header.
+- **Agent trace:** one line per tool call (`turn 12  read   src/foo.py`). Calls that a codemode script makes are indented under the script line with `↳`. A failed call prints one red line with the first line of its error. Retries and compaction print one line each. In GitLab CI this is a collapsed section; elsewhere it has a plain header.
 - **Diagnostics:** info lines, including the `Review telemetry: {...}` JSON line, are held back and printed at the end in a second collapsed section. Warnings and errors always print when they happen.
 - **Summary block:** the reviewed range, diff size, the context the prompt carried (Hodor threads by status, human comments included and dropped by the budget), the new findings with their locations, what was posted (summary note URL, inline notes, fixed replies), cost and token use, and the warning count.
 

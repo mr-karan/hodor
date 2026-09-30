@@ -459,7 +459,7 @@ describe("reviewPr submit_review recovery", () => {
     mocks.promptResponses = [{ kind: "tool" }];
     mocks.extraEvents = [
       { type: "tool_execution_start", toolCallId: "c1", toolName: "codemode", args: { code: "a();\nb();\n" } },
-      { type: "tool_execution_start", toolCallId: "c2", parentToolCallId: "c1", toolName: "grep", args: { pattern: "has_role\\(", path: "crux" } },
+      { type: "tool_execution_start", toolCallId: "c2", parentToolCallId: "c1", toolName: "grep", args: { pattern: "has_role\\(", path: "src" } },
       { type: "tool_execution_end", toolCallId: "c2", parentToolCallId: "c1", toolName: "grep", result: { content: [] }, isError: false },
     ];
     const events: AgentProgressEvent[] = [];
@@ -474,7 +474,7 @@ describe("reviewPr submit_review recovery", () => {
 
     expect(events.filter((e) => e.type === "tool_start" || e.type === "tool_end")).toEqual([
       { type: "tool_start", toolName: "codemode", toolArgs: "2-line script", toolCallId: "c1" },
-      { type: "tool_start", toolName: "grep", toolArgs: '"has_role\\(" in crux', toolCallId: "c2", parentToolCallId: "c1" },
+      { type: "tool_start", toolName: "grep", toolArgs: '"has_role\\(" in src', toolCallId: "c2", parentToolCallId: "c1" },
       { type: "tool_end", toolName: "grep", isError: false, result: "", toolCallId: "c2", parentToolCallId: "c1" },
     ]);
     expect(result.context).toBeNull();
