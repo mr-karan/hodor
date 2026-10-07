@@ -16,6 +16,7 @@ import { fetchGithubPrMetadata } from "./github.js";
 import {
   fetchGitlabMrInfo,
   listHodorDiscussions,
+  type HodorDiscussion,
 } from "./gitlab.js";
 import {
   fetchGiteaPrInfo,
@@ -508,6 +509,19 @@ export async function reviewPr(opts: {
     const notes = partitionNotesByProvenance(mrMetadata?.Notes, publisherIdentity);
     if (mrMetadata) mrMetadata.Notes = [...notes.others, ...notes.hodor];
 
+    // Load finding state before cache lookup and fast-path selection. Missing
+    // state must not bypass verification through either shortcut.
+    let discussions: HodorDiscussion[] = [];
+    let findingStateLoaded = platform !== "gitlab" || localMode;
+    if (!localMode && platform === "gitlab" && publisherIdentity?.platform === "gitlab") {
+      try {
+        discussions = await listHodorDiscussions(owner, repo, prNumber, host, publisherIdentity);
+        findingStateLoaded = true;
+      } catch (err) {
+        logger.warn(`Failed to list Hodor finding threads for the prompt: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
     // A successful Hodor summary contains a compressed, validated copy of the
     // structured result. Reuse it for an identical review identity so pipeline
     // retries can regenerate artifacts and retry delivery without another LLM
@@ -516,7 +530,7 @@ export async function reviewPr(opts: {
     const reviewBaseSha = !localMode && headSha
       ? await resolveReviewBaseSha(workspacePath, targetBranch, diffBaseSha)
       : null;
-    if (!full && headSha && reviewBaseSha) {
+    if (!full && headSha && reviewBaseSha && findingStateLoaded && (localMode || mrMetadata?.Notes)) {
       reviewCacheKey = getReviewCacheKey({
         scope: {
           platform,
@@ -532,6 +546,7 @@ export async function reviewPr(opts: {
         instructions,
         focus,
         guidanceSnapshotSha,
+        humanNotes: notes.others,
       });
       const cachedReview = findCachedReview(notes.hodor, reviewCacheKey);
       if (cachedReview) {
@@ -573,7 +588,7 @@ export async function reviewPr(opts: {
           headSha,
           metrics,
           workspacePath,
-          cacheMarker: null,
+          cacheMarker: buildReviewCacheMarker(reviewCacheKey, cachedReview),
           reusedReview: true,
           range: { headSha, targetBranch, baseSha: reviewBaseSha },
           context: null,
@@ -659,24 +674,17 @@ export async function reviewPr(opts: {
     // Human replies in Hodor finding threads are shown with their thread, so
     // the top-level human notes leave them out.
     const findingThreadNoteIds = new Set<number>();
-    if (!localMode && platform === "gitlab" && publisherIdentity?.platform === "gitlab") {
-      try {
-        const discussions = await listHodorDiscussions(owner, repo, prNumber, host, publisherIdentity);
-        for (const discussion of discussions) {
-          for (const reply of discussion.humanReplies) findingThreadNoteIds.add(reply.noteId);
-        }
-        const candidates = buildFixCandidates(discussions);
-        const allThreads = selectFindingThreads(discussions, candidates, changedFiles, Number.POSITIVE_INFINITY);
-        findingThreads = allThreads.slice(0, MAX_PROMPT_FINDING_THREADS);
-        droppedFindingThreads = allThreads.length - findingThreads.length;
-        const presentedIds = new Set(findingThreads.flatMap((thread) => thread.fixId ? [thread.fixId] : []));
-        fixCandidates = candidates.filter((candidate) => presentedIds.has(candidate.id));
-        logger.info(
-          `Showing ${findingThreads.length} Hodor finding thread(s); ${fixCandidates.length} may be confirmed fixed`,
-        );
-      } catch (err) {
-        logger.warn(`Failed to list Hodor finding threads for the prompt: ${err instanceof Error ? err.message : err}`);
-      }
+    for (const discussion of discussions) {
+      for (const reply of discussion.humanReplies) findingThreadNoteIds.add(reply.noteId);
+    }
+    const candidates = buildFixCandidates(discussions);
+    const allThreads = selectFindingThreads(discussions, candidates, Number.POSITIVE_INFINITY);
+    findingThreads = allThreads.slice(0, MAX_PROMPT_FINDING_THREADS);
+    droppedFindingThreads = allThreads.length - findingThreads.length;
+    const presentedIds = new Set(findingThreads.flatMap((thread) => thread.fixId ? [thread.fixId] : []));
+    fixCandidates = candidates.filter((candidate) => presentedIds.has(candidate.id));
+    if (discussions.length > 0) {
+      logger.info(`Showing ${findingThreads.length} Hodor finding thread(s); ${fixCandidates.length} may be confirmed fixed`);
     }
 
     const thinkingLevel = selectReasoningEffort({
@@ -691,7 +699,8 @@ export async function reviewPr(opts: {
       logger.info(`Reasoning effort for ${piModel.name}: ${thinkingLevel}${reasoningEffort ? " (explicit)" : " (adaptive)"}`);
     }
 
-    const singleTurn = tinyDiffFastPath && qualifiesForSingleTurnReview({
+    const needsFindingInspection = !findingStateLoaded || discussions.some((thread) => !thread.resolved && !thread.fixedAtSha);
+    const singleTurn = tinyDiffFastPath && !needsFindingInspection && qualifiesForSingleTurnReview({
       diff: reviewDiff,
       stats: diffStats,
       embedded: embeddedDiff != null,
@@ -1068,13 +1077,14 @@ export async function reviewPr(opts: {
       );
     }
 
-    // The model's resolved_findings is a claim. Keep only ids shown in this
-    // prompt, on files in the reviewed diff, and not reported again now.
+    // Fix claims must name presented candidates with code supplied in the diff
+    // or read through the model tools. Re-reported findings remain open.
     const { accepted: verifiedFixes, rejected: rejectedFixes } = selectVerifiedFixes(
       locatedReview.resolved_findings ?? [],
       fixCandidates,
       {
-        changedFiles,
+        changedFiles: embeddedDiff != null ? changedFiles : [],
+        inspectedFiles: reviewToolset.inspectedFiles,
         currentFingerprints: new Set(
           locatedReview.findings.map((finding) => getFindingFingerprint(finding, workspacePath)),
         ),

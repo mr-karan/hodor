@@ -52,7 +52,7 @@ const DEFAULT_GITLAB_HOST = "gitlab.com";
  * human notes that quote the marker incidentally (e.g., a code block discussing hodor).
  */
 const HODOR_NOTE_PREFIX_RE = /^\s*<!--\s*hodor[-:]/;
-const HODOR_CACHE_MARKER_RE = /<!--\s*hodor:cache:v1:[A-Za-z0-9_-]+\s*-->\s*/g;
+const HODOR_CONTEXT_MARKER_RE = /<!--\s*hodor(?:[-:][\s\S]*?)?\s*-->\s*/g;
 const HODOR_SHA_PREFIX_RE = /^\s*<!--\s*hodor:sha:[a-f0-9]{40}\s*-->/i;
 const HODOR_SUPERSEDED_PREFIX_RE = /^\s*<!--\s*hodor-review\s*-->\s*<!--\s*hodor:superseded\s*-->/;
 
@@ -427,7 +427,8 @@ export function summarizeHodorNotes(
       note.provenance !== "hodor" ||
       note.system ||
       isSupersededSummary(note.body ?? "") ||
-      getFixedMarker(note.body ?? "") !== null
+      getFixedMarker(note.body ?? "") !== null ||
+      getDiscussionFingerprint(note.body ?? "") !== null
     ) {
       continue;
     }
@@ -442,9 +443,9 @@ export function summarizeHodorNotes(
   return { text: recent.map(renderNoteEntry).join("\n"), included: recent.length };
 }
 
-/** Body without machine cache payloads, which are large and never context. */
+/** Remove machine markers from text displayed to the reviewer. */
 function cleanNoteBody(note: NoteEntry): string {
-  return (note.body ?? "").replace(HODOR_CACHE_MARKER_RE, "").trim();
+  return (note.body ?? "").replace(HODOR_CONTEXT_MARKER_RE, "").trim();
 }
 
 /** A bare reaction: emoji or punctuation only, or a stock phrase like "lgtm". */

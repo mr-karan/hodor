@@ -170,6 +170,25 @@ describe("review cache", () => {
     expect(getReviewCacheKey({ ...opts, scope: { ...scope } })).toBe(getReviewCacheKey(opts));
   });
 
+  it("invalidates same-commit reviews for new or edited participant evidence", () => {
+    const opts = { scope, headSha: "a".repeat(40), model: "test", guidanceSnapshotSha: "b".repeat(40) };
+    const note = { id: 42, body: "Fixed by the new helper", author: { id: 8 } };
+    const original = getReviewCacheKey({ ...opts, humanNotes: [note] });
+    expect(getReviewCacheKey({ ...opts, humanNotes: [{ ...note, body: "Only partly fixed" }] })).not.toBe(original);
+    expect(getReviewCacheKey({ ...opts, humanNotes: [note, { id: 43, body: "See the revocation caller" }] })).not.toBe(original);
+    expect(getReviewCacheKey({ ...opts, humanNotes: [note, { id: 43, body: "resolved thread", system: true }] })).toBe(original);
+    expect(getReviewCacheKey({ ...opts, humanNotes: [{ ...note, updated_at: "2026-10-07" }] })).toBe(original);
+  });
+
+  it("preserves canonical fix confirmations in cached reviews", () => {
+    const fingerprint = "f".repeat(64);
+    const cached = findCachedReview([{
+      provenance: "hodor",
+      body: buildReviewCacheMarker("key", { ...review, resolved_findings: [fingerprint] }),
+    }], "key");
+    expect(cached?.resolved_findings).toEqual([fingerprint]);
+  });
+
   it("ignores malformed cache markers", () => {
     expect(findCachedReview([{
       body: "<!-- hodor:cache:v1:not-valid-gzip -->\n<!-- hodor-review -->",

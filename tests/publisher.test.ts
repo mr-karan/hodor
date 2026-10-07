@@ -273,7 +273,7 @@ describe("GitLab review publication", () => {
     expect(statusCall?.[2]).toEqual(
       expect.objectContaining({
         input: expect.stringContaining(
-          '"state":"failed","name":"hodor","description":"1 blocking issue(s) found"',
+          '"state":"failed","name":"hodor","description":"1 blocking Hodor finding(s) unresolved"',
         ),
       }),
     );
@@ -660,7 +660,7 @@ describe("GitLab verified fixes", () => {
     return writes().find((write) => write.endpoint.includes("/statuses/"))?.input ?? "";
   }
 
-  async function publish(reviewOutput: ReviewOutput) {
+  async function publish(reviewOutput: ReviewOutput, options: { skipSummary?: boolean; skipInline?: boolean; cacheMarker?: string } = {}) {
     const { postReviewStructured } = await import("../src/publisher.js");
     return postReviewStructured({
       prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42",
@@ -670,6 +670,7 @@ describe("GitLab verified fixes", () => {
       headSha: HEAD,
       commitStatus: true,
       reviewMode: "incremental",
+      ...options,
     });
   }
 
@@ -699,7 +700,7 @@ describe("GitLab verified fixes", () => {
       changedFiles: ["src/archive.ts"],
       currentFingerprints: new Set(),
     });
-    expect(accepted).toEqual([fingerprint.slice(0, 8)]);
+    expect(accepted).toEqual([fingerprint]);
     mocks.exec.mockClear();
 
     const result = await publish({ ...review([]), resolved_findings: accepted });
@@ -715,6 +716,8 @@ describe("GitLab verified fixes", () => {
     expect(statusInput()).toContain("No issues found");
     const replies = replyWrites();
     expect(replies).toHaveLength(1);
+    const endpoints = writes().map((write) => write.endpoint);
+    expect(endpoints.indexOf(replies[0].endpoint)).toBeLessThan(endpoints.findIndex((endpoint) => endpoint.endsWith("/merge_requests/42/notes")));
     expect(JSON.parse(replies[0].input)).toEqual({
       body:
         "<!-- hodor-review -->\n" +
@@ -736,7 +739,7 @@ describe("GitLab verified fixes", () => {
 
     // A cache replay that carries the same verified id.
     mocks.exec.mockClear();
-    await publish({ ...review([]), resolved_findings: [fingerprint.slice(0, 8)] });
+    await publish({ ...review([]), resolved_findings: [fingerprint] });
     expect(replyWrites()).toEqual([]);
   });
 
@@ -751,7 +754,7 @@ describe("GitLab verified fixes", () => {
     const body = summaryBody();
     expect(body).toContain("| Important (P2) | 1 |");
     expect(body).not.toContain("Fixed, waiting to be resolved");
-    expect(statusInput()).toContain("1 non-blocking issue(s)");
+    expect(statusInput()).toContain("1 non-blocking Hodor finding(s) unresolved");
     expect(replyWrites()).toEqual([]);
   });
 
@@ -768,7 +771,61 @@ describe("GitLab verified fixes", () => {
     expect(body).toContain("1 earlier thread is still unresolved on GitLab and not confirmed fixed");
   });
 
-  it("treats a failed fixed reply as a warning, not a delivery failure", async () => {
+  it("refreshes a cached summary after retrying a failed P1 fix reply", async () => {
+    const { getFindingFingerprint } = await import("../src/review-state.js");
+    const fingerprint = getFindingFingerprint(threadFinding, "/workspace");
+    const root = rootNote(fingerprint);
+    root.body = root.body.replace("[P2]", "[P1]");
+    mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.some((arg) => arg.includes("/discussions?"))) {
+        return { stdout: JSON.stringify([{ id: "thread-1", notes: [root] }]), stderr: "" };
+      }
+      if (args.some((arg) => arg.endsWith("/discussions/thread-1/notes"))) throw new Error("503 Service Unavailable");
+      return { stdout: "", stderr: "" };
+    });
+    const output = { ...review([]), resolved_findings: [fingerprint] };
+    const failed = await publish(output);
+    expect(failed.success).toBe(false);
+    expect(statusInput()).toContain('"state":"failed"');
+    expect(summaryBody()).toContain("| Critical (P0/P1) | 1 |");
+    expect(summaryBody()).toContain("Incomplete delivery");
+
+    mockThread([root]);
+    mocks.exec.mockClear();
+    const retried = await publish(output, {
+      skipSummary: true, skipInline: true, cacheMarker: "<!-- hodor:cache:v1:retry-payload -->",
+    });
+    expect(retried.success).toBe(true);
+    expect(retried.fixedReplies).toBe(1);
+    expect(retried.reviewFindings).toEqual([]);
+    expect(summaryBody()).toContain("| Critical (P0/P1) | 0 |");
+    expect(summaryBody()).toContain("Fixed, waiting to be resolved");
+    expect(summaryBody()).toContain("hodor:cache:v1:retry-payload");
+    expect(statusInput()).toContain('"state":"success"');
+  });
+
+  it("refreshes mutable thread state on a cache replay even when a fixed reply already exists", async () => {
+    const { getFindingFingerprint } = await import("../src/review-state.js");
+    const fingerprint = getFindingFingerprint(threadFinding, "/workspace");
+    mockThread([rootNote(fingerprint), fixedReplyNote(fingerprint, BOT)]);
+    const result = await publish({ ...review([]), resolved_findings: [fingerprint] }, { skipSummary: true, skipInline: true });
+    expect(result.summaryPosted).toBe(true);
+    expect(summaryBody()).toContain("| Important (P2) | 0 |");
+    expect(replyWrites()).toEqual([]);
+  });
+
+  it("refreshes the summary after a human resolves a carried thread at the same commit", async () => {
+    const { getFindingFingerprint } = await import("../src/review-state.js");
+    const root = rootNote(getFindingFingerprint(threadFinding, "/workspace"));
+    root.resolved = true;
+    mockThread([root]);
+    const result = await publish(review([]), { skipSummary: true, skipInline: true });
+    expect(result.summaryPosted).toBe(true);
+    expect(summaryBody()).toContain("**Overall verdict:** No open findings");
+    expect(replyWrites()).toEqual([]);
+  });
+
+  it("keeps a failed fixed reply unresolved and reports incomplete delivery", async () => {
     const { getFindingFingerprint } = await import("../src/review-state.js");
     const fingerprint = getFindingFingerprint(threadFinding, "/workspace");
     mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
@@ -779,10 +836,12 @@ describe("GitLab verified fixes", () => {
       return { stdout: "", stderr: "" };
     });
 
-    const result = await publish({ ...review([]), resolved_findings: [fingerprint.slice(0, 8)] });
+    const result = await publish({ ...review([]), resolved_findings: [fingerprint] });
 
-    expect(result.success).toBe(true);
-    expect(result.errors).toEqual([]);
-    expect(summaryBody()).toContain("**Fixed, waiting to be resolved:** 1.");
+    expect(result.success).toBe(false);
+    expect(result.errors).toEqual([expect.stringContaining("403 Forbidden")]);
+    expect(result.fixedAwaiting).toBe(0);
+    expect(summaryBody()).toContain("Incomplete delivery");
+    expect(summaryBody()).not.toContain("**Fixed, waiting to be resolved:** 1.");
   });
 });

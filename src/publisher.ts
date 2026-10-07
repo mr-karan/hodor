@@ -47,9 +47,9 @@ export async function postGitlabReviewCommitStatus(
   const state = blocking > 0 ? "failed" : "success";
   const description =
     blocking > 0
-      ? `${blocking} blocking issue(s) found`
+      ? `${blocking} blocking Hodor finding(s) unresolved`
       : findings.length > 0
-        ? `${findings.length} non-blocking issue(s)`
+        ? `${findings.length} non-blocking Hodor finding(s) unresolved`
         : "No issues found";
 
   await postGitlabCommitStatus(
@@ -296,18 +296,37 @@ export async function postReviewStructured(opts: {
     logger.warn(`Failed to list open Hodor discussions for review state: ${message}`);
   }
 
+  const currentFingerprints = new Set(
+    review.findings.map((finding) => getFindingFingerprint(finding, workspacePath)),
+  );
+  const fixedReplyResult = await replyToFixedThreads({
+    parsed,
+    fixedThreads: resolveFixedThreads(review.resolved_findings ?? [], discussions),
+    currentFingerprints,
+    headSha,
+  });
+  errors.push(...fixedReplyResult.errors);
   const { open: reviewFindings, fixedAwaiting } = mergeReviewStateFindings(
     review.findings,
     discussions,
     workspacePath,
     {
       suppressResolvedCurrent: skipInline,
-      resolvedFindingIds: review.resolved_findings,
+      resolvedFindingIds: [...fixedReplyResult.persisted],
     },
   );
-  const currentFingerprints = new Set(
-    review.findings.map((finding) => getFindingFingerprint(finding, workspacePath)),
-  );
+  // Cached reviews still refresh summaries when mutable thread state exists.
+  const shouldSkipSummary = skipSummary && discussions.length === 0 && !discussionListingFailed;
+  const carriedFindings = reviewFindings.filter((finding) => !currentFingerprints.has(finding.fingerprint));
+  const earlierThreads = carriedFindings.flatMap((finding) => {
+    const thread = discussions.find((discussion) =>
+      !discussion.resolved && getDiscussionFingerprint(discussion.body) === finding.fingerprint,
+    );
+    return thread ? [{
+      title: finding.title,
+      url: gitlabNoteUrl(parsed.owner, parsed.repo, parsed.prNumber, thread.noteId, parsed.host),
+    }] : [];
+  });
 
   let inlineCreated = 0;
   let inlineFailed = 0;
@@ -415,7 +434,7 @@ export async function postReviewStructured(opts: {
   let summaryPosted = false;
   let summaryUrl: string | null = null;
   if (
-    !skipSummary &&
+    !shouldSkipSummary &&
     (
       reviewStyle === "summary" ||
       reviewStyle === "hybrid" ||
@@ -434,7 +453,9 @@ export async function postReviewStructured(opts: {
         reviewStyle === "summary" ? undefined : inlineDeduplicated,
       reviewMode,
       reviewedSha: headSha,
-      carriedOver: reviewFindings.filter((finding) => !currentFingerprints.has(finding.fingerprint)).length,
+      carriedOver: carriedFindings.length,
+      earlierThreads,
+      fixedReplyFailures: fixedReplyResult.errors.length,
       fixedAwaiting,
       asOf: new Date(),
     });
@@ -463,23 +484,16 @@ export async function postReviewStructured(opts: {
     }
   }
 
-  const fixedReplies = await replyToFixedThreads({
-    parsed,
-    fixedThreads: resolveFixedThreads(review.resolved_findings ?? [], discussions),
-    currentFingerprints,
-    headSha,
-  });
-
   const baseDeliveryComplete =
     reviewStyle === "summary"
-      ? summaryPosted || skipSummary
+      ? summaryPosted || shouldSkipSummary
       : reviewStyle === "hybrid"
-        ? (summaryPosted || skipSummary) &&
+        ? (summaryPosted || shouldSkipSummary) &&
           (inlineCreated === 0 || draftsPublished)
         : (inlineFailed === 0 || summaryPosted) &&
           (inlineCreated === 0 || draftsPublished) &&
           (review.findings.length > 0 || summaryPosted);
-  const success = baseDeliveryComplete && (!commitStatus || commitStatusPosted);
+  const success = baseDeliveryComplete && (!commitStatus || commitStatusPosted) && fixedReplyResult.errors.length === 0;
 
   return {
     success,
@@ -493,7 +507,7 @@ export async function postReviewStructured(opts: {
     inlineFailed,
     draftsPublished,
     commitStatusPosted,
-    fixedReplies,
+    fixedReplies: fixedReplyResult.posted,
     fixedAwaiting,
     reviewStateComplete: !discussionListingFailed,
     reviewFindings,
@@ -502,25 +516,29 @@ export async function postReviewStructured(opts: {
 
 /**
  * Reply on each thread this review verified fixed. Hodor cannot resolve
- * threads at Reporter access, so a human resolves them. A thread that already
- * has a fixed-reply gets no second one. Failures are warnings only.
- * Returns the number of replies posted.
+ * threads at Reporter access, so a human resolves them. Return the fingerprints
+ * persisted in trusted replies and report incomplete delivery explicitly.
  */
 async function replyToFixedThreads(opts: {
   parsed: ParsedPrUrl;
   fixedThreads: ReadonlyMap<string, HodorDiscussion>;
   currentFingerprints: ReadonlySet<string>;
   headSha?: string | null;
-}): Promise<number> {
+}): Promise<{ posted: number; persisted: Set<string>; errors: string[] }> {
   const { parsed, fixedThreads, currentFingerprints, headSha } = opts;
-  if (fixedThreads.size === 0) return 0;
-  if (!headSha || !isCommitSha(headSha)) {
-    logger.warn("Skipping fixed-thread replies: no 40-character head SHA for the fixed marker");
-    return 0;
-  }
+  const persisted = new Set<string>();
+  const errors: string[] = [];
   let posted = 0;
   for (const [fingerprint, thread] of fixedThreads) {
-    if (thread.fixedAtSha || currentFingerprints.has(fingerprint)) continue;
+    if (currentFingerprints.has(fingerprint)) continue;
+    if (thread.fixedAtSha) {
+      persisted.add(fingerprint);
+      continue;
+    }
+    if (!headSha || !isCommitSha(headSha)) {
+      errors.push(`fixed reply for ${thread.discussionId}: no 40-character head SHA`);
+      continue;
+    }
     try {
       await replyToGitlabDiscussion(
         parsed.owner,
@@ -531,11 +549,13 @@ async function replyToFixedThreads(opts: {
         parsed.host,
       );
       posted++;
+      persisted.add(fingerprint);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      errors.push(`fixed reply for ${thread.discussionId}: ${message}`);
       logger.warn(`Failed to reply on fixed thread ${thread.discussionId}: ${message}`);
     }
   }
   if (posted > 0) logger.info(`Replied on ${posted} thread(s) verified fixed`);
-  return posted;
+  return { posted, persisted, errors };
 }

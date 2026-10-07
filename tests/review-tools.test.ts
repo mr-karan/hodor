@@ -310,10 +310,45 @@ describe("codemode (experimental)", () => {
       "text(JSON.stringify(r.map((x) => x.status)));",
     ].join("\n");
     expect(await runScript(script)).toContain('["rejected","rejected","fulfilled"]');
+    expect(toolset.inspectedFiles.has("src/app.ts")).toBe(true);
   });
 });
 
 describe("read", () => {
+  it("records successful model reads and excludes internal reads, searches, and failures", async () => {
+    const fresh = await createReviewToolset({ workspacePath: repo, reviewDiff });
+    try {
+      const read = fresh.definitions.find((tool) => tool.name === "read");
+      const grep = fresh.definitions.find((tool) => tool.name === "grep");
+      if (!read || !grep) throw new Error("confined tools missing");
+      fresh.tree.readFile(join(repo, "src", "app.ts"));
+      await grep.execute("search", { pattern: "needle", path: "src", context: 1 });
+      expect([...fresh.inspectedFiles]).toEqual([]);
+      await expect(read.execute("bad-offset", { path: "src/app.ts", offset: 5000 })).rejects.toThrow(/beyond end/);
+      await expect(read.execute("bad-path", { path: "/etc/passwd" })).rejects.toThrow();
+      expect([...fresh.inspectedFiles]).toEqual([]);
+      await read.execute("read-file", { path: join(repo, "src", "app.ts") });
+      expect([...fresh.inspectedFiles]).toEqual(["src/app.ts"]);
+    } finally {
+      fresh.dispose();
+    }
+  });
+  it("records code from a file diff but not the changed-file listing", async () => {
+    const fresh = await createReviewToolset({ workspacePath: repo, reviewDiff });
+    try {
+      const diff = fresh.definitions.find((tool) => tool.name === "git_diff");
+      if (!diff) throw new Error("git_diff missing");
+      await diff.execute("list", {});
+      expect([...fresh.inspectedFiles]).toEqual([]);
+      await expect(diff.execute("bad-offset", { path: "src/app.ts", offset: 5000 })).rejects.toThrow();
+      expect([...fresh.inspectedFiles]).toEqual([]);
+      await diff.execute("code", { path: "src/app.ts" });
+      expect([...fresh.inspectedFiles]).toEqual(["src/app.ts"]);
+    } finally {
+      fresh.dispose();
+    }
+  });
+
   it("reads tracked files, tracked dotfiles, and tracked symlinks to tracked files", async () => {
     expect(await call("read", { path: "src/app.ts" })).toContain("hello");
     expect(await call("read", { path: join(repo, "src", "util.ts") })).toContain("needle = 1");

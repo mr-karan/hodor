@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => ({
   }>,
   promptResponses: [] as Array<
     | { kind: "text"; text: string }
-    | { kind: "tool"; args?: Record<string, unknown> }
+    | { kind: "tool"; args?: Record<string, unknown>; readPaths?: string[] }
   >,
 }));
 
@@ -114,6 +114,7 @@ beforeAll(() => {
   workspaceDir = mkdtempSync(join(tmpdir(), "hodor-recovery-"));
   mkdirSync(join(workspaceDir, "src"));
   writeFileSync(join(workspaceDir, "src", "example.ts"), "const value = 2;\n");
+  writeFileSync(join(workspaceDir, "src", "other.ts"), "export const helper = true;\n");
   execFileSync("git", ["init", "-q"], { cwd: workspaceDir });
   execFileSync("git", ["add", "."], { cwd: workspaceDir });
 });
@@ -254,6 +255,11 @@ describe("reviewPr submit_review recovery", () => {
                 },
               });
             } else {
+              for (const path of response.readPaths ?? []) {
+                const read = customTools.find((tool) => tool.name === "read");
+                if (!read) throw new Error("read tool missing");
+                await read.execute("read-finding", { path });
+              }
               const submitReview = customTools.find((tool) => tool.name === "submit_review");
               if (!submitReview) {
                 throw new Error("submit_review tool was not registered");
@@ -618,11 +624,62 @@ describe("reviewPr submit_review recovery", () => {
       });
 
       expect(mocks.prompts[0]).toContain("## Hodor Finding Threads");
-      expect(mocks.prompts[0]).toContain("- 57a2a375 [P2] Keep the value in range (src/example.ts): open\n  - @alice: not a bug");
-      // Its file is not in the diff, so the model gets no id for it.
-      expect(mocks.prompts[0]).toContain("- [P3] Rename the helper (src/other.ts): open");
-      expect(result.review.resolved_findings).toEqual(["57a2a375"]);
+      expect(mocks.prompts[0]).toContain("- 57a2a375 [P2] Keep the value in range (src/example.ts:1): open\n  Finding: Body.\n  - @alice: not a bug");
+      // The model may inspect an out-of-diff thread, but an unread file cannot be confirmed fixed.
+      expect(mocks.prompts[0]).toContain("- 9f00aa11 [P3] Rename the helper (src/other.ts:1): open");
+      expect(result.review.resolved_findings).toEqual([inDiff]);
       expect(result.cacheMarker).not.toBeNull();
+    });
+
+    it("accepts a full fingerprint for an out-of-diff fix after reading its current code", async () => {
+      mocks.promptResponses = [{ kind: "tool", readPaths: ["src/other.ts"], args: {
+        findings: [], overall_correctness: "patch is correct", overall_explanation: "The helper is fixed.",
+        resolved_findings: [outsideDiff],
+      } }];
+      const result = await reviewPr({
+        prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42", cleanup: false, model: "anthropic/test-model",
+      });
+      expect(result.review.resolved_findings).toEqual([outsideDiff]);
+    });
+
+    it("disables the tools-free shortcut when earlier findings need inspection", async () => {
+      mocks.promptResponses = [{ kind: "tool" }];
+      const result = await reviewPr({
+        prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42", cleanup: false,
+        model: "anthropic/test-model", tinyDiffFastPath: true,
+      });
+      expect(result.metrics.fastPath).toBe(false);
+      expect(mocks.createAgentSession.mock.calls[0][0].tools).toContain("read");
+    });
+
+    it("reuses canonical confirmations at the same commit but rechecks new participant evidence", async () => {
+      let apiNotes: unknown[] = [];
+      const fallback = mocks.exec.getMockImplementation();
+      mocks.exec.mockImplementation(async (cmd: string, args: string[], opts?: unknown) => {
+        if (args.some((arg) => arg.endsWith("/notes"))) return { stdout: JSON.stringify(apiNotes), stderr: "" };
+        if (!fallback) throw new Error("exec fallback missing");
+        return fallback(cmd, args, opts);
+      });
+      mocks.promptResponses = [
+        { kind: "tool", args: {
+          findings: [], overall_correctness: "patch is correct", overall_explanation: "Fixed.", resolved_findings: [inDiff],
+        } },
+        { kind: "tool" },
+      ];
+      const opts = { prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42", cleanup: false, model: "anthropic/test-model" };
+      const first = await reviewPr(opts);
+      apiNotes = [{ id: 99, author: { id: 7, username: "hodor-bot" }, body: `${first.cacheMarker}\n<!-- hodor-review -->` }];
+      const replay = await reviewPr(opts);
+      expect(replay.reusedReview).toBe(true);
+      expect(replay.review.resolved_findings).toEqual([inDiff]);
+      expect(replay.cacheMarker).not.toBeNull();
+      expect(mocks.prompts).toHaveLength(1);
+
+      apiNotes.push({ id: 100, author: { id: 8, username: "alice" }, body: "The other caller still fails." });
+      const reconsidered = await reviewPr(opts);
+      expect(reconsidered.reusedReview).toBe(false);
+      expect(mocks.prompts).toHaveLength(2);
+      expect(reconsidered.review).not.toHaveProperty("resolved_findings");
     });
 
     it("records the context manifest and shows in-thread replies only with their thread", async () => {

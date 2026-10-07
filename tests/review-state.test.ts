@@ -119,7 +119,7 @@ describe("mergeReviewStateFindings", () => {
     const [candidate] = buildFixCandidates([thread]);
 
     const { open, fixedAwaiting } = mergeReviewStateFindings([], [thread], "/workspace", {
-      resolvedFindingIds: [candidate.id],
+      resolvedFindingIds: [candidate.fingerprint],
     });
 
     expect(open).toEqual([]);
@@ -231,10 +231,10 @@ describe("selectVerifiedFixes", () => {
         changedFiles: ["src/app.ts"],
         currentFingerprints: new Set(),
       }),
-    ).toEqual({ accepted: [inDiff.id], rejected: [] });
+    ).toEqual({ accepted: [inDiff.fingerprint], rejected: [] });
   });
 
-  it("drops unknown ids, full fingerprints that were not presented, files outside the diff, and duplicates", () => {
+  it("accepts full fingerprints and rejects unknown ids, uninspected files, and duplicate aliases", () => {
     const result = selectVerifiedFixes(
       ["deadbeef", inDiff.fingerprint, outsideDiff.id, inDiff.id, inDiff.id],
       candidates,
@@ -242,14 +242,30 @@ describe("selectVerifiedFixes", () => {
     );
 
     expect(result).toEqual({
-      accepted: [inDiff.id],
+      accepted: [inDiff.fingerprint],
       rejected: [
         { id: "deadbeef", reason: "unknown id" },
-        { id: inDiff.fingerprint, reason: "unknown id" },
-        { id: outsideDiff.id, reason: "file not in the reviewed diff" },
+        { id: outsideDiff.id, reason: "thread file not inspected" },
+        { id: inDiff.id, reason: "duplicate id" },
         { id: inDiff.id, reason: "duplicate id" },
       ],
     });
+  });
+
+  it("accepts an out-of-diff fix only after its code was read", () => {
+    const result = selectVerifiedFixes([` ${outsideDiff.fingerprint.toUpperCase()} `], candidates, {
+      changedFiles: [],
+      inspectedFiles: new Set(["src/other.ts"]),
+      currentFingerprints: new Set(),
+    });
+    expect(result).toEqual({ accepted: [outsideDiff.fingerprint], rejected: [] });
+  });
+
+  it("rejects a full fingerprint for a candidate omitted from the prompt", () => {
+    expect(selectVerifiedFixes([outsideDiff.fingerprint], [inDiff], {
+      changedFiles: ["src/other.ts"],
+      currentFingerprints: new Set(),
+    }).rejected).toEqual([{ id: outsideDiff.fingerprint, reason: "unknown id" }]);
   });
 
   it("drops an id whose finding this review reported again", () => {
@@ -307,13 +323,15 @@ describe("selectFindingThreads", () => {
     });
     const threads = [olderResolved, newerResolved, open];
 
-    const selected = selectFindingThreads(threads, buildFixCandidates(threads), ["src/app.ts"]);
+    const selected = selectFindingThreads(threads, buildFixCandidates(threads));
 
     expect(selected).toEqual([
       {
         fixId: getFindingFingerprint(oldFinding, "/workspace").slice(0, 8),
         title: oldFinding.title,
         filePath: "src/app.ts",
+        body: "Body.",
+        line: 12,
         status: "open",
         replies: [{ author: "bob", body: "working on it" }],
       },
@@ -337,19 +355,19 @@ describe("selectFindingThreads", () => {
     ]);
   });
 
-  it("gives no fix id to open threads on files outside the reviewed diff", () => {
+  it("gives fix ids to open candidates outside the incremental diff", () => {
     const thread = discussion(oldFinding, { filePath: "src/other.ts" });
 
-    const [selected] = selectFindingThreads([thread], buildFixCandidates([thread]), ["src/app.ts"]);
+    const [selected] = selectFindingThreads([thread], buildFixCandidates([thread]));
 
     expect(selected.status).toBe("open");
-    expect(selected.fixId).toBeUndefined();
+    expect(selected.fixId).toBe(getFindingFingerprint(oldFinding, "/workspace").slice(0, 8));
   });
 
   it("marks threads with a trusted fixed-reply as fixed without an id", () => {
     const thread = discussion(oldFinding, { fixedAtSha: "d".repeat(40) });
 
-    const [selected] = selectFindingThreads([thread], buildFixCandidates([thread]), ["src/app.ts"]);
+    const [selected] = selectFindingThreads([thread], buildFixCandidates([thread]));
 
     expect(selected).toMatchObject({ status: "fixed" });
     expect(selected.fixId).toBeUndefined();
@@ -365,7 +383,7 @@ describe("selectFindingThreads", () => {
     const open = fingerprintDiscussion("f".repeat(64), "[P1] Still open");
     const threads = [...resolved, open];
 
-    const selected = selectFindingThreads(threads, buildFixCandidates(threads), ["src/app.ts"]);
+    const selected = selectFindingThreads(threads, buildFixCandidates(threads));
 
     expect(MAX_PROMPT_FINDING_THREADS).toBe(15);
     expect(selected).toHaveLength(15);

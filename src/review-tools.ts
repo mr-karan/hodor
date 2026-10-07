@@ -500,7 +500,7 @@ const gitDiffSchema = Type.Object({
   })),
 });
 
-function createGitDiffTool(tree: TrackedTree, reviewDiff: string): ToolDefinition {
+function createGitDiffTool(tree: TrackedTree, reviewDiff: string, inspectedFiles: Set<string>): ToolDefinition {
   const { files, byPath } = splitReviewDiff(reviewDiff);
   return defineTool({
     name: "git_diff",
@@ -541,6 +541,7 @@ function createGitDiffTool(tree: TrackedTree, reviewDiff: string): ToolDefinitio
         const end = start + truncation.outputLines;
         text += `\n\n[Showing diff lines ${start + 1}-${end} of ${lines.length}. Use offset=${end + 1} to continue.]`;
       }
+      if (!truncation.firstLineExceedsLimit) inspectedFiles.add(key);
       return { content: [{ type: "text", text }], details: undefined };
     },
   });
@@ -702,7 +703,7 @@ function createGrepTool(tree: TrackedTree, git: GitSandbox): ToolDefinition {
 // read / ls / find on Pi's factories with confined operations
 // ---------------------------------------------------------------------------
 
-function createConfinedReadTool(tree: TrackedTree): ToolDefinition {
+function createConfinedReadTool(tree: TrackedTree, inspectedFiles: Set<string>): ToolDefinition {
   const definition = createReadToolDefinition(tree.root, {
     operations: {
       access: async (absolutePath) => {
@@ -713,10 +714,16 @@ function createConfinedReadTool(tree: TrackedTree): ToolDefinition {
         detectSupportedImageMimeTypeFromFile(tree.resolve(absolutePath, "file").absolutePath),
     },
   });
+  const execute: typeof definition.execute = async (...args) => {
+    const result = await definition.execute(...args);
+    inspectedFiles.add(tree.resolve(args[1].path, "file").relativePath);
+    return result;
+  };
   // Pi's TUI renderers are typed for the concrete schema and do not fit
   // ToolDefinition[]; Hodor has no TUI, so drop them.
   return {
     ...definition,
+    execute,
     description: definition.description + TRACKED_SCOPE_NOTE,
     renderCall: undefined,
     renderResult: undefined,
@@ -777,6 +784,8 @@ function createConfinedFindTool(tree: TrackedTree): ToolDefinition {
 
 export interface ReviewToolset {
   tree: TrackedTree;
+  /** Paths whose code was served by read or git_diff, excluding internal reads. */
+  inspectedFiles: ReadonlySet<string>;
   /** Definitions for REVIEW_TOOL_NAMES; same names replace Pi's built-ins. */
   definitions: ToolDefinition[];
   dispose(): void;
@@ -795,11 +804,13 @@ export async function createReviewToolset(opts: {
   const git = GitSandbox.create();
   try {
     const tree = await TrackedTree.load(opts.workspacePath, git);
+    const inspectedFiles = new Set<string>();
     return {
       tree,
+      inspectedFiles,
       definitions: [
-        createGitDiffTool(tree, opts.reviewDiff),
-        createConfinedReadTool(tree),
+        createGitDiffTool(tree, opts.reviewDiff, inspectedFiles),
+        createConfinedReadTool(tree, inspectedFiles),
         createGrepTool(tree, git),
         createConfinedFindTool(tree),
         createConfinedLsTool(tree),

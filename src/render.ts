@@ -94,6 +94,8 @@ export function renderSummaryMarkdown(
      * again and that no review confirmed fixed.
      */
     carriedOver?: number;
+    earlierThreads?: readonly { title: string; url: string }[];
+    fixedReplyFailures?: number;
     /** Open threads confirmed fixed, waiting for a human to resolve them. Not in openFindings. */
     fixedAwaiting?: number;
     /** When the counts were taken; they do not update when threads are resolved later. */
@@ -115,6 +117,8 @@ export function renderSummaryMarkdown(
   const carriedOver = Math.min(options.carriedOver ?? 0, totalOpen);
   const asOf = options.asOf ? ` (as of ${options.asOf.toISOString().slice(0, 16).replace("T", " ")} UTC)` : "";
   lines.push(
+    "",
+    `**${options.reviewMode === "reused" ? "Cached" : "New"} findings:** ${review.findings.length}.`,
     "",
     `| Unresolved Hodor threads${asOf} | Count |`,
     "| --- | ---: |",
@@ -148,8 +152,16 @@ export function renderSummaryMarkdown(
     lines.push(
       "",
       `**Earlier threads:** ${threads} still unresolved on GitLab and not confirmed fixed. ` +
-        "This review did not find evidence that they are fixed. If they are, resolve the threads to clear them.",
+        "These are carried from earlier reviews, not new findings. An omitted fix confirmation does not prove the issue remains.",
     );
+  }
+  if (options.earlierThreads?.length) lines.push("");
+  for (const thread of options.earlierThreads ?? []) {
+    const title = thread.title.replace(/[\[\]\\]/g, "\\$&").replace(/[\r\n]+/g, " ");
+    lines.push(`- [${title}](${thread.url})`);
+  }
+  if ((options.fixedReplyFailures ?? 0) > 0) {
+    lines.push("", "**Incomplete delivery:** Hodor could not post all fixed-thread replies. Those threads remain in the unresolved count until delivery succeeds.");
   }
   if (options.reviewedSha) {
     lines.push("", `**Reviewed commit:** \`${options.reviewedSha.slice(0, 8)}\``);

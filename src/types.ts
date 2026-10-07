@@ -141,8 +141,8 @@ export interface ReviewOutput {
   overall_correctness: ReviewCorrectness;
   overall_explanation: string;
   /**
-   * Short ids of earlier Hodor findings the review confirmed fixed. After
-   * reviewPr returns, only ids that passed trusted validation remain.
+   * Ids of earlier Hodor findings the review confirmed fixed. After reviewPr
+   * returns, only full fingerprints that passed trusted validation remain.
    */
   resolved_findings?: string[];
 }

@@ -218,6 +218,17 @@ describe("renderSummaryMarkdown thread labels", () => {
     expect(md).toContain("**Earlier threads:** 1 earlier thread is still unresolved on GitLab and not confirmed fixed.");
   });
 
+  it("links carried findings and does not treat omitted verification as proof", () => {
+    const url = "https://gitlab.example.com/acme/app/-/merge_requests/42#note_11";
+    const md = renderSummaryMarkdown(clean, {
+      openFindings: [open], carriedOver: 1, earlierThreads: [{ title: open.title, url }],
+    });
+    expect(md).toContain(`- [\\[P2\\] Earlier issue](${url})`);
+    expect(md).toContain("**New findings:** 0.");
+    expect(md).toContain("An omitted fix confirmation does not prove the issue remains.");
+    expect(md).not.toContain("This review did not find evidence");
+  });
+
   it("counts fixed threads separately and keeps them out of the verdict", () => {
     const md = renderSummaryMarkdown(clean, { openFindings: [], fixedAwaiting: 2 });
     expect(md).toContain("| Important (P2) | 0 |");

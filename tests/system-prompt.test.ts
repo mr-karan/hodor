@@ -37,6 +37,14 @@ describe("review system prompt", () => {
     expect(prompt).toContain("exact contiguous current-source text");
   });
 
+  it("permits checking earlier findings without expanding new-finding scope", () => {
+    const prompt = buildReviewSystemPrompt();
+    expect(prompt).toContain("Report new findings only from the changed delta, at changed-line locations.");
+    expect(prompt).toContain("You may inspect current code outside the delta to verify earlier Hodor findings supplied by the runtime task.");
+    expect(prompt).toContain("including its affected caller paths");
+    expect(prompt).toContain("verify runtime-supplied earlier Hodor findings");
+  });
+
   it("does not emit optional sections when none are supplied", () => {
     const prompt = buildReviewSystemPrompt();
     expect(prompt).not.toContain("<EXPLICIT_INSTRUCTIONS>");

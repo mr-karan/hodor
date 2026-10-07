@@ -219,8 +219,21 @@ describe("summarizeGitlabNotes", () => {
     }]);
 
     expect(summary).toContain("Preserve the authorization check");
-    expect(summary).not.toContain("hodor:cache");
+    expect(summary).not.toContain("<!-- hodor");
     expect(summary).not.toContain("A".repeat(100));
+  });
+
+  it("shows finding state only in the dedicated thread context", () => {
+    const fingerprint = "f".repeat(64);
+    const finding: NoteEntry = {
+      body: `<!-- hodor-review -->\n<!-- hodor:finding:${fingerprint} -->\n**[P3] Drop undeclared dependencies**\n\nThe imports fail.`,
+      provenance: "hodor",
+    };
+    const fixed: NoteEntry = {
+      body: `<!-- hodor-review -->\n<!-- hodor:fixed:${fingerprint}:${"a".repeat(40)} -->\nFixed in aaaaaaaa.`,
+      provenance: "hodor",
+    };
+    expect(summarizeHodorNotes([finding, fixed])).toEqual({ text: "", included: 0 });
   });
 
   it("leaves superseded summaries out of prior-review context", () => {

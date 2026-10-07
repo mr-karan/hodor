@@ -121,6 +121,8 @@ export interface FindingThread {
   fixId?: string;
   title: string;
   filePath?: string;
+  line?: number;
+  body?: string;
   status: FindingThreadStatus;
   resolvedBy?: string;
   /** Up to the two most recent non-trivial human replies, oldest first. */
@@ -141,17 +143,15 @@ function threadRank(thread: FindingThread): number {
 /**
  * Hodor finding threads for the review prompt, open and resolved, with their
  * latest human replies. Open threads come first; resolved threads follow,
- * newest first. A thread gets a fix id only when it is a candidate and its
- * file is in the reviewed diff.
+ * newest first. Open candidates with a file location may be checked against
+ * current code, including files outside the incremental diff.
  */
 export function selectFindingThreads(
   discussions: readonly HodorDiscussion[],
   candidates: readonly FixCandidate[],
-  changedFiles: readonly string[],
   limit = MAX_PROMPT_FINDING_THREADS,
 ): FindingThread[] {
   const candidatesByDiscussion = new Map(candidates.map((candidate) => [candidate.discussionId, candidate]));
-  const changed = new Set(changedFiles);
   const threads: Array<{ thread: FindingThread; updatedAt: number }> = [];
   for (const discussion of discussions) {
     const finding = parseDiscussionFinding(discussion);
@@ -161,12 +161,13 @@ export function selectFindingThreads(
       ? "resolved"
       : discussion.fixedAtSha ? "fixed" : "open";
     const fixId =
-      candidate && candidate.filePath && changed.has(candidate.filePath) ? candidate.id : undefined;
+      candidate?.filePath ? candidate.id : undefined;
     threads.push({
       thread: {
         ...(fixId ? { fixId } : {}),
         title: finding.title,
         filePath: discussion.filePath,
+        ...(status === "open" ? { body: finding.body, line: discussion.line } : {}),
         status,
         ...(status === "resolved" && discussion.resolvedBy ? { resolvedBy: discussion.resolvedBy } : {}),
         replies: discussion.humanReplies
@@ -185,44 +186,50 @@ export function selectFindingThreads(
 export type FixRejectionReason =
   | "unknown id"
   | "duplicate id"
-  | "file not in the reviewed diff"
+  | "thread file not inspected"
   | "re-reported in this review";
 
 /**
- * Keep only ids that name a candidate shown in this run, whose thread file is
- * in the reviewed diff, and whose finding this review did not report again.
+ * Keep only ids that name a candidate shown in this run, whose code was
+ * supplied in the diff or read by the model, and was not reported again.
+ * Accepted ids are canonical full fingerprints.
  */
 export function selectVerifiedFixes(
   ids: readonly string[],
   candidates: readonly FixCandidate[],
   context: {
     changedFiles: readonly string[];
+    inspectedFiles?: ReadonlySet<string>;
     currentFingerprints: ReadonlySet<string>;
   },
 ): { accepted: string[]; rejected: Array<{ id: string; reason: FixRejectionReason }> } {
-  const candidatesById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+  const candidatesById = new Map<string, FixCandidate>();
+  for (const candidate of candidates) {
+    candidatesById.set(candidate.id, candidate);
+    candidatesById.set(candidate.fingerprint, candidate);
+  }
   const changedFiles = new Set(context.changedFiles);
   const accepted: string[] = [];
   const rejected: Array<{ id: string; reason: FixRejectionReason }> = [];
   for (const id of ids) {
-    const candidate = candidatesById.get(id);
+    const candidate = candidatesById.get(id.trim().toLowerCase());
     if (!candidate) {
       rejected.push({ id, reason: "unknown id" });
-    } else if (accepted.includes(id)) {
+    } else if (accepted.includes(candidate.fingerprint)) {
       rejected.push({ id, reason: "duplicate id" });
-    } else if (!candidate.filePath || !changedFiles.has(candidate.filePath)) {
-      rejected.push({ id, reason: "file not in the reviewed diff" });
+    } else if (!candidate.filePath || (!changedFiles.has(candidate.filePath) && !context.inspectedFiles?.has(candidate.filePath))) {
+      rejected.push({ id, reason: "thread file not inspected" });
     } else if (context.currentFingerprints.has(candidate.fingerprint)) {
       rejected.push({ id, reason: "re-reported in this review" });
     } else {
-      accepted.push(id);
+      accepted.push(candidate.fingerprint);
     }
   }
   return { accepted, rejected };
 }
 
 /**
- * Map verified short ids to the open thread each one names. An id that
+ * Map verified full fingerprints to the open thread each one names. An id that
  * matches no open thread, or more than one, is skipped.
  */
 export function resolveFixedThreads(
@@ -233,7 +240,7 @@ export function resolveFixedThreads(
   for (const id of ids) {
     const matches = discussions.filter((discussion) =>
       !discussion.resolved &&
-      getDiscussionFingerprint(discussion.body)?.startsWith(id.toLowerCase()) === true,
+      getDiscussionFingerprint(discussion.body) === id,
     );
     if (matches.length !== 1) continue;
     const [thread] = matches;

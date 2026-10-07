@@ -2,10 +2,10 @@ import { createHash } from "node:crypto";
 import { gzipSync, gunzipSync } from "node:zlib";
 import { validateReviewOutput } from "./review.js";
 import { relativizeWorkspacePath } from "./utils/path.js";
-import type { Platform, ReviewOutput, TrustedHodorNote } from "./types.js";
+import type { Platform, ReviewOutput, TrustedHodorNote, UntrustedNote } from "./types.js";
 
 // Bumped when the review prompt or cache key changes, so older markers never match.
-export const REVIEW_PROMPT_VERSION = "2026-10-07.1";
+export const REVIEW_PROMPT_VERSION = "2026-10-07.2";
 
 const CACHE_MARKER_RE = /<!--\s*hodor:cache:v1:([A-Za-z0-9_-]+)\s*-->/;
 
@@ -33,6 +33,8 @@ export function getReviewCacheKey(opts: {
   instructions?: readonly string[];
   focus?: string | null;
   guidanceSnapshotSha: string;
+  /** Participant comments affect fix verification even when HEAD is unchanged. */
+  humanNotes?: readonly UntrustedNote[];
 }): string {
   const { scope } = opts;
   return createHash("sha256")
@@ -52,6 +54,10 @@ export function getReviewCacheKey(opts: {
       instructions: opts.instructions ?? [],
       focus: opts.focus ?? "",
       guidanceSnapshotSha: opts.guidanceSnapshotSha,
+      humanNotes: (opts.humanNotes ?? [])
+        .filter((note) => !note.system)
+        .map((note) => JSON.stringify({ id: note.id, author: note.author?.id, body: note.body }))
+        .sort(),
     }))
     .digest("hex");
 }
