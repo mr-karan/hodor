@@ -37,7 +37,8 @@ describe("review cache", () => {
       scope,
       headSha: "a".repeat(40),
       model: "anthropic/claude-opus-4-7",
-      reviewInstructions: "default review profile",
+      instructions: ["default review profile"],
+      guidanceSnapshotSha: "c".repeat(40),
     });
     const marker = buildReviewCacheMarker(key, review, "/builds/private/team/widget");
     const cached = findCachedReview([{
@@ -56,7 +57,8 @@ describe("review cache", () => {
       scope,
       headSha: "a".repeat(40),
       model: "anthropic/claude-opus-4-7",
-      reviewInstructions: "default review profile",
+      instructions: ["default review profile"],
+      guidanceSnapshotSha: "c".repeat(40),
     });
     const legacyReview = {
       ...review,
@@ -90,14 +92,16 @@ describe("review cache", () => {
       scope,
       headSha: "a".repeat(40),
       model: "anthropic/claude-opus-4-7",
-      reviewInstructions: "default review profile",
+      instructions: ["default review profile"],
+      guidanceSnapshotSha: "c".repeat(40),
     });
     const newKey = getReviewCacheKey({
       scope,
       headSha: "a".repeat(40),
       model: "anthropic/claude-opus-4-7",
       requestedReasoningEffort: "high",
-      reviewInstructions: "default review profile",
+      instructions: ["default review profile"],
+      guidanceSnapshotSha: "c".repeat(40),
     });
     const marker = buildReviewCacheMarker(oldKey, review);
 
@@ -105,27 +109,31 @@ describe("review cache", () => {
       .toBeNull();
   });
 
-  it("changes cache identity when the effective profile or additional instructions change", () => {
+  it("changes cache identity when the explicit instructions or focus change", () => {
     const base = {
       scope,
       headSha: "a".repeat(40),
       model: "anthropic/claude-opus-4-7",
-      reviewInstructions: "Review authentication changes.",
+      instructions: ["Review authentication changes."],
+      guidanceSnapshotSha: "c".repeat(40),
     };
 
     const sameContent = getReviewCacheKey(base);
-    const changedProfile = getReviewCacheKey({
+    const changedInstructions = getReviewCacheKey({
       ...base,
-      reviewInstructions: "Review authorization changes.",
+      instructions: ["Review authorization changes."],
     });
-    const changedAdditionalInstructions = getReviewCacheKey({
+    const changedFocus = getReviewCacheKey({
       ...base,
-      additionalInstructions: "Prioritize tenant isolation.",
+      focus: "Prioritize tenant isolation.",
     });
 
     expect(getReviewCacheKey({ ...base })).toBe(sameContent);
-    expect(changedProfile).not.toBe(sameContent);
-    expect(changedAdditionalInstructions).not.toBe(sameContent);
+    expect(changedInstructions).not.toBe(sameContent);
+    expect(changedFocus).not.toBe(sameContent);
+    expect(getReviewCacheKey({ ...base, guidanceSnapshotSha: "d".repeat(40) })).not.toBe(sameContent);
+    expect(getReviewCacheKey({ ...base, instructions: ["First", "Second"] }))
+      .not.toBe(getReviewCacheKey({ ...base, instructions: ["Second", "First"] }));
   });
 
   const scopeChanges: Array<[string, Partial<ReviewCacheScope>]> = [
@@ -142,7 +150,8 @@ describe("review cache", () => {
       scope,
       headSha: "a".repeat(40),
       model: "anthropic/claude-opus-4-7",
-      reviewInstructions: "default review profile",
+      instructions: ["default review profile"],
+      guidanceSnapshotSha: "c".repeat(40),
     };
 
     expect(getReviewCacheKey({ ...base, scope: { ...scope, ...change } }))
@@ -154,7 +163,8 @@ describe("review cache", () => {
       scope,
       headSha: "a".repeat(40),
       model: "anthropic/claude-opus-4-7",
-      reviewInstructions: "default review profile",
+      instructions: ["default review profile"],
+      guidanceSnapshotSha: "c".repeat(40),
     };
 
     expect(getReviewCacheKey({ ...opts, scope: { ...scope } })).toBe(getReviewCacheKey(opts));

@@ -368,6 +368,16 @@ describe("filterEmbeddedDiff", () => {
     expect(filtered).toBe(DIFF_HEADER("src/app.ts"));
   });
 
+  it("keeps automatic guidance changes, including renames into guidance files", () => {
+    const rename = "diff --git a/rules.md b/AGENTS.md\nrename from rules.md\nrename to AGENTS.md\n";
+    const raw = DIFF_HEADER("AGENTS.md") + DIFF_HEADER("src/CLAUDE.md") + rename + DIFF_HEADER("README.md");
+    const { filtered, skippedFiles } = filterEmbeddedDiff(raw);
+    expect(skippedFiles).toEqual(["README.md"]);
+    expect(filtered).toContain(DIFF_HEADER("AGENTS.md"));
+    expect(filtered).toContain(DIFF_HEADER("src/CLAUDE.md"));
+    expect(filtered).toContain(rename);
+  });
+
   it("handles empty diff", () => {
     const { filtered, skippedFiles } = filterEmbeddedDiff("");
     expect(skippedFiles).toEqual([]);

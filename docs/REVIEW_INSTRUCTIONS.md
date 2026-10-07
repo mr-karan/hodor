@@ -1,285 +1,175 @@
 # Review instructions
 
-A review profile is the global review instructions for one review run. It tells Hodor what kinds of defects to prioritize. It does not replace Hodor's review process, changed-line reporting, or output requirements.
+Hodor checks changed code for defects and concrete violations of your team's code conventions. Commit project conventions in `AGENTS.md`. Use `--instructions <path>` for extra review guidance and `--focus <text>` for a request for this run.
 
-## Mental model
+All instruction inputs retain Hodor's bundled review criteria and fixed review protocol. There is no profile replacement mode.
 
-A review run can use three instruction layers:
+## Project conventions with no CI flags
 
-| Layer | How to set it | Scope | Behavior |
-|---|---|---|---|
-| Review profile | `--review-instructions <path>` | The whole review run | Replaces the bundled default profile. |
-| Additional instructions | `--additional-instructions <text>` | The whole review run | Appends a one-off request after the selected profile. |
-| Repository skills | `.agents/skills/` in the repository being reviewed | Relevant changes in that repository | Supply repository-specific guidance when Hodor decides a skill is relevant. |
-
-If you do not specify a profile, Hodor uses its bundled default profile. A custom profile replaces that default, it does not extend it. Additional instructions are additive and can be used with either the default or a custom profile.
-
-Hodor's review rules take precedence if instructions conflict. This includes conflicts from profiles, additional instructions, PR metadata, comments, diffs, files, and repository skills.
-
-## Quick start
-
-Use the bundled default profile:
-
-```bash
-hodor https://github.com/acme/widgets/pull/42
-```
-
-Create a profile file for a security-focused review, then select it:
-
-```bash
-mkdir -p review-profiles
-cat > review-profiles/security.md <<'EOF'
-# Security review profile
-
-Review the changed code for production-impacting security defects.
-
-Focus on:
-- Authentication, authorization, and tenant isolation.
-- Input validation at trust boundaries.
-- Injection into SQL, shell commands, templates, and URLs.
-- Secret exposure in logs, errors, configuration, and responses.
-- Unsafe deserialization, path traversal, SSRF, and insecure redirects.
-
-Report a finding only when the changed code creates a concrete exploitable path. Explain the preconditions, the impact, and the changed code that causes it.
-EOF
-
-hodor https://github.com/acme/widgets/pull/42 \
-  --review-instructions review-profiles/security.md
-```
-
-Add a request that applies only to this run:
-
-```bash
-hodor https://github.com/acme/widgets/pull/42 \
-  --additional-instructions "Pay particular attention to the new OAuth callback flow."
-```
-
-For local changes, use the same options:
-
-```bash
-hodor --local --diff-against origin/main \
-  --review-instructions review-profiles/security.md \
-  --additional-instructions "Check the database migration rollback path."
-```
-
-## What belongs in a profile
-
-A profile should state the review mission, the kinds of defects to investigate, and the evidence needed before reporting a finding. Keep it focused on review judgment that should apply across repositories or across a class of reviews.
-
-Good profile content includes:
-
-- Product risk areas such as authorization, data loss, concurrency, or API compatibility.
-- Conditions that make a change risky.
-- Evidence standards for findings.
-- Domain-specific attack surfaces that are useful across many repositories.
-
-Do not use a profile for PR-specific facts, current incident details, or a short-lived request. Pass those with `--additional-instructions` instead. Do not put repository ownership rules, service invariants, or local commands in a global profile. Put those in repository skills.
-
-Do not copy an old full prompt template into a profile. A profile is review guidance, not a replacement task definition. It should not tell Hodor how to invoke tools, build a diff, submit a review, or format its structured output.
-
-## Complete profile examples
-
-### Security profile
-
-Save this as `review-profiles/security.md`:
+Commit `AGENTS.md` at the repository root:
 
 ```markdown
-# Security review profile
+# Project conventions
 
-Review the changed code for production-impacting security defects. Prefer concrete vulnerabilities over general hardening advice.
-
-## Authentication and authorization
-
-- Check that every new or changed privileged action verifies authentication server-side.
-- Check that authorization uses the authenticated principal and the target resource, including tenant and organization boundaries.
-- Check token, session, credential, and password handling for disclosure, confusion, or unsafe lifetime changes.
-
-## Input and trust boundaries
-
-- Trace data from HTTP requests, messages, files, environment variables, and external services to security-sensitive sinks.
-- Check SQL, shell, template, URL, filesystem, and deserialization boundaries for injection or traversal paths.
-- Check redirects, outbound requests, and file access for SSRF, open redirects, and path escapes.
-
-## Data exposure and unsafe defaults
-
-- Check logs, errors, metrics, and API responses for secrets or sensitive customer data.
-- Check changed defaults, feature flags, and configuration parsing for accidental exposure or privilege expansion.
-- Check rate limits, replay protection, and idempotency where a changed endpoint creates a state-changing operation.
-
-## Finding standard
-
-Report only defects with a concrete path from the changed code to an impact. State the attacker capability or runtime precondition, the affected boundary, and the consequence. Do not report a missing defense when the changed code cannot reach the risky behavior.
+- Handlers must obtain the tenant ID from the authenticated session.
+- Database migrations must remain compatible with the previous release.
+- Payment amounts must use integer minor units.
+- Public API errors must use the shared error response type.
 ```
 
-Run it against a hosted pull request:
+Hodor loads the root guidance plus guidance in ancestor directories of changed files. Put an `AGENTS.md` in a subsystem directory to add rules for that subsystem. At each directory, Hodor prefers `AGENTS.md` and uses `CLAUDE.md` only when `AGENTS.md` is absent. Deeper rules win conflicts with broader rules within their directory scope.
+
+For hosted reviews, Hodor reads guidance from an immutable snapshot of the available `origin/<target>` branch, fetching the target branch if the ref is missing. It never uses the previous reviewed MR commit as the instruction source. For local reviews, it reads the commit selected by `--diff-against`. Uncommitted instruction edits do not apply automatically.
+
+This means a rule added or changed in an MR does not govern that MR's own review. Once the rule is accepted into the target branch, it applies to subsequent reviews. Changes to `AGENTS.md` and `CLAUDE.md` remain in the review diff even though ordinary Markdown is excluded from the embedded diff.
+
+Hodor considers both paths of a rename and the original paths of deleted files when selecting guidance. Guidance applies only to changed paths under its directory. It is included in the system prompt, including on the tiny-diff fast path.
+
+Only tracked snapshot files are eligible. Symlinks must resolve to tracked regular files inside the same snapshot. Cycles, broken links, and links outside the repository fail the review. Hodor does not expand `@imports`. It does not inherit instructions from your home directory or parent directories outside the checkout. Empty repository guidance files are ignored.
+
+## What Hodor checks
+
+Write concrete code rules and domain invariants. Examples include authorization requirements, migration compatibility, idempotency, error contracts, and naming conventions that your team explicitly enforces.
+
+Hodor reports an explicit convention violation only when the changed lines demonstrate it. The finding cites the instruction file and rule. Severity follows impact; naming and style violations default to P3 unless they break a concrete contract. Hodor does not invent style rules or report pre-existing violations.
+
+Agent workflow directives are ignored. Instructions to build, run tests, lint, format, install, commit, or deploy do not apply to Hodor's read-only review. Hodor has no shell.
+
+## Extra instruction files
+
+Use `--instructions <path>` to add guidance from a readable UTF-8 file:
 
 ```bash
 hodor https://github.com/acme/payments/pull/184 \
-  --review-instructions review-profiles/security.md \
+  --instructions /etc/hodor/security.md \
   --post
 ```
 
-### Code-quality profile
-
-Save this as `review-profiles/code-quality.md`:
+Example content:
 
 ```markdown
-# Code-quality review profile
+# Security checks
 
-Review the changed code for production defects caused by incorrect behavior, fragile boundaries, and maintainability problems that can cause future regressions. Focus on defects in the changed path, not stylistic preferences.
-
-## Behavior and contracts
-
-- Trace changed inputs, outputs, error handling, and state transitions through callers and downstream consumers.
-- Check that API, CLI, storage, and event contracts remain compatible unless the change intentionally migrates every consumer.
-- Check default values, optional fields, ordering assumptions, and error paths for behavior that differs from the intended change.
-
-## State, concurrency, and resources
-
-- Check retries, idempotency, races, transactions, caching, and cleanup when the changed code reads or writes shared state.
-- Check pagination, batching, timeouts, cancellation, and partial failures at service boundaries.
-- Check numeric conversions, time zones, encoding, and large input behavior where the changed code processes data.
-
-## Completeness
-
-- Follow the changed code through feature flags, configuration, tests, migrations, and delivery paths that are necessary for the behavior to work.
-- Report only actionable defects with a specific failure mode and a changed location. Do not report formatting, naming preferences, or speculative refactors.
+- Trace changed authorization checks through handlers and database queries.
+- Check whether outbound requests can reach attacker-selected internal hosts.
+- Check changed logging and error paths for credential exposure.
 ```
 
-Run it against local work:
+Repeat the flag to load several files. Later files win conflicts with earlier files:
 
 ```bash
+hodor "$MR_URL" \
+  --instructions /etc/hodor/company.md \
+  --instructions /etc/hodor/payments.md
+```
+
+Files add to the baseline criteria. Explicit instructions may also narrow reporting, for example, "Report only security findings." They cannot change the read-only protocol, structured output, or changed-delta scope.
+
+Paths resolve from the directory where Hodor starts, before it prepares or clones the review workspace. A file committed in the repository is not discovered by this flag unless you pass its path and it is already available to the process. Use an absolute path inside the job container in CI.
+
+## One-off focus
+
+Use `--focus <text>` for a request for this run:
+
+```bash
+hodor "$MR_URL" \
+  --focus "Check compatibility with workers running the previous release."
+
+hodor "$MR_URL" --focus "Report only security findings."
+
 hodor --local --diff-against origin/main \
-  --review-instructions review-profiles/code-quality.md
+  --instructions /etc/hodor/security.md \
+  --focus "Check the migration rollback path."
 ```
 
-## Combining a profile with additional instructions
+Focus wins conflicts with explicit instruction files. It retains the baseline criteria, but can restrict which kinds of findings Hodor reports.
 
-Use `--additional-instructions` for a narrow request that should be considered after the selected profile. It does not replace the selected profile.
+## Authority and trust
 
-```bash
-hodor https://github.com/acme/widgets/pull/42 \
-  --review-instructions review-profiles/security.md \
-  --additional-instructions "Focus on the new S3 import endpoint and the IAM policy changes."
-```
+| Source | Allowed effect |
+|---|---|
+| Bundled review criteria | Baseline defect checks and finding standards |
+| Accepted repository guidance | Add scoped code rules and domain context |
+| `--instructions <path>` | Add checks or explicitly narrow reporting; later files win conflicts |
+| `--focus <text>` | Set this run's focus; wins conflicts with instruction files |
+| Fixed Hodor protocol | Always controls read-only tools, changed-delta scope, priorities, and submission |
 
-The resulting behavior is:
+Repository guidance cannot suppress baseline defect classes. PR metadata, comments, diffs, HEAD repository files, and repository skills are lower-trust context. They cannot override accepted guidance, explicit reviewer policy, or Hodor's protocol.
 
-1. Hodor uses the security profile instead of the bundled default profile.
-2. Hodor adds the S3 and IAM request for this run.
-3. Hodor applies its own review rules if any instruction conflicts with them.
+Treat files passed with `--instructions` and focus text as trusted reviewer configuration. In shared CI, mount centrally managed files or use a trusted job workspace. Passing an MR-controlled file explicitly promotes it to reviewer policy. Do not put secrets in any instruction source.
 
-Use additional instructions without a profile to keep the default profile and add a one-off focus area:
+Repository skills remain an advanced option for specialized guidance loaded when relevant. They are discovered from `.agents/skills/` in the HEAD checkout and remain lower-trust context, not accepted reviewer policy. They cannot suppress checks. See [SKILLS.md](./SKILLS.md).
 
-```bash
-hodor https://github.com/acme/widgets/pull/42 \
-  --additional-instructions "Check whether the billing retry change can create duplicate charges."
-```
+## GitLab CI
 
-## Repository `.agents/skills`
-
-Profiles are global review guidance. Repository skills are codebase-specific guidance stored with the repository being reviewed.
-
-Use a repository skill for facts such as a service's authorization model, an API compatibility commitment, a migration rule, a risky subsystem, or commands that are safe to run in that repository. Hodor discovers skills from `.agents/skills/` and uses them when relevant to the change.
-
-Create `.agents/skills/tenant-boundaries/SKILL.md` in the repository:
-
-```markdown
----
-name: tenant-boundaries
-description: Use when reviewing queries, handlers, or jobs that access tenant-owned data.
----
-
-- Every query for tenant-owned data must filter by the tenant ID derived from the authenticated principal.
-- Background jobs must carry the tenant ID explicitly and must not infer it from an untrusted payload.
-```
-
-Do not move a repository skill into a global profile just because a single review needs it. Use the profile for reusable review criteria, and keep repository-specific invariants in the repository.
-
-## CI usage
-
-Commit a profile file where the CI job can read it, or make it available in the job workspace. Use the same flags as a local invocation.
-
-### GitHub Actions
+Automatic project guidance needs no extra flags. Keep your existing authentication and model setup. To add shared guidance and a one-off focus to an existing review job:
 
 ```yaml
-name: Hodor security review
-on:
-  pull_request:
-    types: [opened, synchronize]
-
-jobs:
-  review:
-    runs-on: ubuntu-latest
-    container: ghcr.io/mr-karan/hodor:latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Review pull request
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          bun run /app/dist/cli.js \
-            "https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}" \
-            --review-instructions "$GITHUB_WORKSPACE/.hodor/security-review.md" \
-            --additional-instructions "Review changes introduced by this pull request only." \
-            --post
-```
-
-### GitLab CI
-
-```yaml
-hodor-security-review:
+hodor-review:
   stage: test
   image:
-    name: ghcr.io/mr-karan/hodor:latest
+    name: ghcr.io/mr-karan/hodor:0.12.0
     entrypoint: [""]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
   script:
-    - MR_URL="${CI_PROJECT_URL}/-/merge_requests/${CI_MERGE_REQUEST_IID}"
-    - >-
-      bun run /app/dist/cli.js "$MR_URL"
-      --review-instructions "$CI_PROJECT_DIR/.hodor/security-review.md"
-      --additional-instructions "Pay attention to changes in externally reachable endpoints."
+    - |
+      MR_URL="${CI_PROJECT_URL}/-/merge_requests/${CI_MERGE_REQUEST_IID}"
+      bun run /app/dist/cli.js "$MR_URL" \
+        --instructions /etc/hodor/company-review.md \
+        --focus "Check compatibility with the previous release." \
+        --post
+```
+
+The example assumes the runner makes the trusted file available at `/etc/hodor/company-review.md`, and the job has its GitLab and model credentials. Use an image release that includes these flags; update the pinned image when deploying the breaking change.
+
+## GitHub Actions
+
+Add the same options to your existing job:
+
+```yaml
+- name: Review pull request
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  run: |
+    bun run /app/dist/cli.js \
+      "https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}" \
+      --focus "Check changes to the OAuth callback flow." \
       --post
 ```
 
-The profile path must refer to a regular file available to the process running Hodor. For container jobs, use the workspace path inside the container, not a path from the CI runner host.
+Repository rules are read from the target snapshot. A checkout is needed if you pass an explicit instruction file located in the job workspace.
 
-## Migration from legacy flags
+## Limits and troubleshooting
 
-The previous custom prompt flags are removed. There are no compatibility aliases.
+Each explicit instruction file and each repository guidance file is limited to 128 KiB. Explicit files must be nonempty readable regular files encoded as UTF-8. Focus text must be nonempty and at most 128 KiB.
 
-| Previous usage | Replacement | Meaning |
-|---|---|---|
-| `--prompt "Check authorization"` | `--additional-instructions "Check authorization"` | Adds a one-off request after the selected profile. |
-| `--prompt-file review.md` | `--review-instructions review.md` | Selects a profile that replaces the bundled default profile. |
+The combined repository guidance, explicit instruction contents, and focus text are limited to 256 KiB. Over-budget input fails with a clear error; Hodor never silently truncates or drops rules.
 
-If an old prompt file contained a complete review task or output format, rewrite it as a profile before using it with `--review-instructions`. Keep only the review mission, lenses, and finding standard. Remove task templates, tool directions, PR metadata placeholders, and output-format instructions.
+Run with `--verbose` to see the guidance snapshot, loaded instruction paths, and skill discovery logs. If the target snapshot cannot be resolved, Hodor fails instead of substituting the MR's HEAD. Fetch the comparison ref for local reviews or make target-branch access available in CI.
 
-## Validation and troubleshooting
+Changing explicit instruction contents, focus text, or the accepted target snapshot changes the review cache identity.
 
-Hodor validates a selected profile before it starts the review. A profile file must be a readable regular file encoded as UTF-8, contain more than whitespace, and be at most 128 KiB.
+## Breaking migration
 
-| Problem | What to check |
+The following flags are removed and rejected with migration advice:
+
+| Removed | Replacement |
 |---|---|
-| Path cannot be found | Resolve the path from the directory where you run `hodor`, or use an absolute path. In CI, use the workspace path visible inside the job container. |
-| Path is a directory, device, or link to a non-file | Pass the path to the profile file itself. |
-| Permission error | Ensure the user running Hodor can read the file. Check mounted-file permissions in CI. |
-| Invalid UTF-8 | Save the profile as UTF-8 text. Do not use a binary or a platform-specific encoded export. |
-| Empty profile | Add review instructions other than whitespace. |
-| Profile is too large | Split repository-specific material into `.agents/skills/`, then keep the global profile below 128 KiB. |
-| Legacy flag is rejected | Replace `--prompt` with `--additional-instructions` and `--prompt-file` with `--review-instructions`. |
+| `--review-instructions <path>` | `--instructions <path>` |
+| `--additional-instructions <text>` | `--focus <text>` |
 
-Use `--verbose` when you need to confirm the selected options and repository skill discovery:
+The replacement mode is removed. Review existing files before migrating: they now add to the baseline instead of replacing it. To retain a narrow reporting scope, explicitly state it in the file or focus text. Older `--prompt` and `--prompt-file` flags remain unsupported.
 
-```bash
-hodor https://github.com/acme/widgets/pull/42 \
-  --review-instructions review-profiles/security.md \
-  --verbose
+The library API changes too:
+
+```typescript
+await reviewPr({
+  prUrl: mrUrl,
+  instructions: ["Check tenant isolation.", "Report only security findings."],
+  focus: "Pay attention to the import endpoint.",
+});
 ```
 
-## Security and trust
-
-Treat profile files and additional instructions as trusted review configuration. Keep them in trusted version control or provide them through a trusted CI workspace. Do not put credentials, customer data, or other secrets in them.
-
-PR metadata, comments, diffs, repository files, and repository skills are lower-trust inputs. They may guide what Hodor investigates, but they cannot override the selected profile or Hodor's review rules.
+`instructions` contains instruction text, not file paths. Use `loadReviewInstructionsFile(path)` to load files. The old `reviewInstructions` and `additionalInstructions` options are removed. `buildReviewSystemPrompt()` accepts `instructions`, `focus`, and scoped `repositoryGuidance`, and always includes the bundled criteria.

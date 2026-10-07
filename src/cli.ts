@@ -57,12 +57,14 @@ program
     false,
   )
   .option(
-    "--additional-instructions <text>",
-    "Additional review instructions appended after the selected review profile",
+    "--focus <text>",
+    "Focus this review, optionally narrowing the kinds of findings to report",
   )
   .option(
-    "--review-instructions <path>",
-    "Path to a custom review instruction profile",
+    "--instructions <path>",
+    "Path to additive review instructions (repeatable, later files win conflicts)",
+    (path: string, previous: string[]) => [...previous, path],
+    [],
   )
   .option(
     "--workspace <dir>",
@@ -140,8 +142,10 @@ program
     const post = cmdOpts.post as boolean;
     const model = cmdOpts.model as string;
     let reasoningEffort = cmdOpts.reasoningEffort as string | undefined;
-    const additionalInstructions = cmdOpts.additionalInstructions as string | undefined;
-    const reviewInstructionsPath = cmdOpts.reviewInstructions as string | undefined;
+    const focus = typeof cmdOpts.focus === "string" ? cmdOpts.focus : undefined;
+    const instructionPaths = Array.isArray(cmdOpts.instructions)
+      ? cmdOpts.instructions.filter((path): path is string => typeof path === "string")
+      : [];
     const workspace = cmdOpts.workspace as string | undefined;
     const reviewStyle = cmdOpts.reviewStyle as "summary" | "inline" | "hybrid" | undefined;
     const codeQuality = cmdOpts.codeQuality as string | undefined;
@@ -224,9 +228,7 @@ program
     };
 
     try {
-      const reviewInstructions = reviewInstructionsPath
-        ? loadReviewInstructionsFile(reviewInstructionsPath)
-        : undefined;
+      const instructions = instructionPaths.map((path) => loadReviewInstructionsFile(path));
       // Detect platform and warn about missing tokens
       let platform: Platform | "local" = "local";
       let target: ReviewTarget = { kind: "local", ref: diffAgainst };
@@ -260,8 +262,8 @@ program
       }
 
       writeLog(`${formatStartLine({ version: packageJson.version, target, model, reasoningEffort, codemode })}\n`);
-      logger.info(`Review instructions: ${reviewInstructionsPath ?? "bundled default"}`);
-      if (additionalInstructions) logger.info("Additional instructions: supplied");
+      for (const path of instructionPaths) logger.info(`Explicit instructions: ${path}`);
+      if (focus) logger.info("Review focus: supplied");
 
       let reviewResult: Awaited<ReturnType<typeof reviewPr>>;
       try {
@@ -269,8 +271,8 @@ program
           prUrl: localMode ? undefined : prUrl,
           model,
           reasoningEffort,
-          reviewInstructions,
-          additionalInstructions,
+          instructions,
+          focus,
           cleanup: !workspace,
           workspaceDir: workspace,
           includeMetricsFooter: post && !localMode,
@@ -508,4 +510,15 @@ program
     }
   });
 
+program.configureOutput({
+  outputError: (message, write) => {
+    if (/unknown option '--review-instructions(?:=|')/.test(message)) {
+      write("error: --review-instructions was removed. Use --instructions <path>; files now add to the baseline review instead of replacing it.\n");
+    } else if (/unknown option '--additional-instructions(?:=|')/.test(message)) {
+      write("error: --additional-instructions was removed. Use --focus <text>.\n");
+    } else {
+      write(message);
+    }
+  },
+});
 program.parse();

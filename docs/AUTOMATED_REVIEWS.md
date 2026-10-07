@@ -1,6 +1,6 @@
 # Automated reviews
 
-This page has copy-pasteable CI examples for running Hodor on pull requests and merge requests.
+Use these CI examples to run Hodor on pull requests and merge requests. These examples pin Hodor 0.12.0, which introduces `--instructions` and `--focus`.
 
 ## GitHub Actions
 
@@ -21,7 +21,7 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
-    container: ghcr.io/mr-karan/hodor:latest
+    container: ghcr.io/mr-karan/hodor:0.12.0
     steps:
       - name: Run Hodor
         env:
@@ -61,7 +61,7 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
-    container: ghcr.io/mr-karan/hodor:latest
+    container: ghcr.io/mr-karan/hodor:0.12.0
     steps:
       - name: Run Hodor
         env:
@@ -84,7 +84,7 @@ workflow:
 hodor-review:
   stage: test
   image:
-    name: ghcr.io/mr-karan/hodor:latest
+    name: ghcr.io/mr-karan/hodor:0.12.0
     entrypoint: [""]
   variables:
     HODOR_MODEL: anthropic/claude-opus-5-5
@@ -154,9 +154,9 @@ hodor "$MR_OR_PR_URL" --prometheus-push "$METRICS_PUSH_URL"
 
 Dashboard JSON lives in [`docs/grafana/`](./grafana/).
 
-## Skills
+## Review instructions
 
-Put repo-specific review instructions under `.agents/skills` in the repository being reviewed. See [SKILLS.md](./SKILLS.md).
+Commit project conventions in `AGENTS.md`; Hodor loads accepted root and scoped guidance automatically. Use `--instructions <path>` for extra files and `--focus <text>` for a one-off request. See [REVIEW_INSTRUCTIONS.md](./REVIEW_INSTRUCTIONS.md). Specialized on-demand context can remain in `.agents/skills`; see [SKILLS.md](./SKILLS.md).
 
 ## Common failures
 

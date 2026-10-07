@@ -5,7 +5,7 @@ import { relativizeWorkspacePath } from "./utils/path.js";
 import type { Platform, ReviewOutput, TrustedHodorNote } from "./types.js";
 
 // Bumped when the review prompt or cache key changes, so older markers never match.
-export const REVIEW_PROMPT_VERSION = "2026-09-30.1";
+export const REVIEW_PROMPT_VERSION = "2026-10-07.1";
 
 const CACHE_MARKER_RE = /<!--\s*hodor:cache:v1:([A-Za-z0-9_-]+)\s*-->/;
 
@@ -30,8 +30,9 @@ export function getReviewCacheKey(opts: {
   headSha: string;
   model: string;
   requestedReasoningEffort?: string;
-  reviewInstructions: string;
-  additionalInstructions?: string | null;
+  instructions?: readonly string[];
+  focus?: string | null;
+  guidanceSnapshotSha: string;
 }): string {
   const { scope } = opts;
   return createHash("sha256")
@@ -48,8 +49,9 @@ export function getReviewCacheKey(opts: {
       // "auto" deliberately stays stable when an identical HEAD changes from
       // a full review to an empty incremental diff on a pipeline retry.
       reasoning: opts.requestedReasoningEffort?.toLowerCase() ?? "auto",
-      reviewInstructions: opts.reviewInstructions,
-      additionalInstructions: opts.additionalInstructions ?? "",
+      instructions: opts.instructions ?? [],
+      focus: opts.focus ?? "",
+      guidanceSnapshotSha: opts.guidanceSnapshotSha,
     }))
     .digest("hex");
 }

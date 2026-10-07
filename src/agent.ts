@@ -44,16 +44,15 @@ import { SUBMIT_REVIEW_SCHEMA, validateReviewOutput } from "./review.js";
 import { resolveReviewLocations } from "./resolve-location.js";
 import { createReviewToolset, REVIEW_TOOL_NAMES, type ReviewToolset } from "./review-tools.js";
 import { buildReviewSystemPrompt } from "./system-prompt.js";
-import {
-  loadDefaultReviewInstructions,
-  validateReviewInstructions,
-} from "./review-instructions.js";
+import { validateInstructionsBudget, validateReviewInstructions } from "./review-instructions.js";
+import { loadRepositoryGuidance, resolveGuidanceSnapshot } from "./repository-guidance.js";
 import { detectPlatform, parsePrUrl } from "./platform.js";
 import {
   filterEmbeddedDiff,
   findLatestReviewBase,
   getReviewDiffArgs,
   getChangedFiles,
+  getChangedPaths,
   getDiffStats,
   resolveReviewBaseSha,
   type DiffStats,
@@ -233,8 +232,9 @@ export async function reviewPr(opts: {
   prUrl?: string;
   model?: string;
   reasoningEffort?: string;
-  reviewInstructions?: string | null;
-  additionalInstructions?: string | null;
+  /** Additive instruction contents, in increasing precedence. */
+  instructions?: readonly string[];
+  focus?: string | null;
   cleanup?: boolean;
   workspaceDir?: string | null;
   includeMetricsFooter?: boolean;
@@ -263,8 +263,8 @@ export async function reviewPr(opts: {
     prUrl,
     model = "anthropic/claude-opus-5-5",
     reasoningEffort,
-    reviewInstructions,
-    additionalInstructions,
+    instructions = [],
+    focus,
     cleanup = true,
     workspaceDir,
     includeMetricsFooter = false,
@@ -278,16 +278,9 @@ export async function reviewPr(opts: {
     codemode = false,
   } = opts;
 
-  const effectiveReviewInstructions = reviewInstructions == null
-    ? loadDefaultReviewInstructions()
-    : validateReviewInstructions(reviewInstructions, "review instructions");
-  const effectiveAdditionalInstructions = additionalInstructions == null
-    ? null
-    : validateReviewInstructions(additionalInstructions, "additional instructions");
-  const composedSystemPrompt = buildReviewSystemPrompt({
-    reviewInstructions: effectiveReviewInstructions,
-    additionalInstructions: effectiveAdditionalInstructions,
-  });
+  for (const content of instructions) validateReviewInstructions(content, "instructions");
+  if (focus != null) validateReviewInstructions(focus, "focus");
+  validateInstructionsBudget([...instructions, ...(focus != null ? [focus] : [])]);
 
   logger.info(`Starting PR review for: ${localMode ? "local diff" : prUrl}`);
 
@@ -474,6 +467,8 @@ export async function reviewPr(opts: {
   let reviewToolset: ReviewToolset | undefined;
 
   try {
+    const guidanceSnapshotSha = await resolveGuidanceSnapshot({ workspacePath, targetBranch, localMode });
+    logger.info(`Repository guidance snapshot: ${guidanceSnapshotSha.slice(0, 12)}`);
     let mrMetadata: MrMetadata | null = null;
     if (!localMode && platform === "gitlab") {
       try {
@@ -534,8 +529,9 @@ export async function reviewPr(opts: {
         headSha,
         model,
         requestedReasoningEffort: reasoningEffort,
-        reviewInstructions: effectiveReviewInstructions,
-        additionalInstructions: effectiveAdditionalInstructions,
+        instructions,
+        focus,
+        guidanceSnapshotSha,
       });
       const cachedReview = findCachedReview(notes.hodor, reviewCacheKey);
       if (cachedReview) {
@@ -608,6 +604,7 @@ export async function reviewPr(opts: {
     let reviewDiff: string | null = null;
     let diffStats: DiffStats | null = null;
     let changedFiles: string[] = [];
+    let guidanceChangedPaths: string[] = [];
     try {
       const diffArgs = getReviewDiffArgs({
         platform,
@@ -618,6 +615,10 @@ export async function reviewPr(opts: {
         localMode,
       });
       const { stdout: rawDiff } = await exec("git", diffArgs, { cwd: workspacePath });
+      const { stdout: changedPaths } = await exec("git", [
+        ...diffArgs.slice(0, 2), "--name-status", "-z", "-M", ...diffArgs.slice(2),
+      ], { cwd: workspacePath });
+      guidanceChangedPaths = getChangedPaths(changedPaths);
       rawReviewDiff = rawDiff;
       const { filtered: filteredDiff, skippedFiles } = filterEmbeddedDiff(rawDiff);
       if (skippedFiles.length > 0) {
@@ -637,6 +638,18 @@ export async function reviewPr(opts: {
       // Without this diff there is nothing to review.
       throw new Error(`Failed to compute the review diff: ${err instanceof Error ? err.message : err}`);
     }
+
+    const repositoryGuidance = await loadRepositoryGuidance({
+      workspacePath,
+      snapshotSha: guidanceSnapshotSha,
+      changedPaths: guidanceChangedPaths,
+    });
+    for (const file of repositoryGuidance) logger.info(`Loaded repository guidance: ${file.path}`);
+    const composedSystemPrompt = buildReviewSystemPrompt({
+      instructions,
+      focus,
+      repositoryGuidance,
+    });
 
     // Earlier Hodor finding threads give the model human replies as context
     // and name the open ones it may confirm fixed.

@@ -15,6 +15,7 @@ import {
 import { createAssistantMessageEventStream, type AssistantMessage, type ToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { createReviewResourceLoader, getReviewSessionTools } from "../src/agent.js";
+import { buildReviewSystemPrompt } from "../src/system-prompt.js";
 import { createModelRuntime } from "../src/models-json.js";
 import { createReviewToolset, globToRegExp, REVIEW_TOOL_NAMES, type ReviewToolset } from "../src/review-tools.js";
 
@@ -69,11 +70,12 @@ async function createSession(
   singleTurn: boolean,
   codemode = false,
   codemodeLimits?: { timeoutMs: number; maxOutputTokens: number },
+  systemPrompt?: string,
 ): Promise<AgentSession> {
   const agentDir = join(base, "pi-agent");
   mkdirSync(agentDir, { recursive: true });
   const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, cacheWarming: "off" });
-  const resourceLoader = await createReviewResourceLoader({ cwd: repo, agentDir, settingsManager, codemode, codemodeLimits });
+  const resourceLoader = await createReviewResourceLoader({ cwd: repo, agentDir, settingsManager, codemode, codemodeLimits, systemPrompt });
   const modelRuntime = await createModelRuntime(null);
   const { session: created } = await createAgentSession({
     cwd: repo,
@@ -177,6 +179,24 @@ describe("review session tools", () => {
   it("exposes only submit_review on the single-turn fast path", async () => {
     const fastSession = await createSession(true);
     try {
+      expect(fastSession.getActiveToolNames()).toEqual(["submit_review"]);
+    } finally {
+      fastSession.dispose();
+    }
+  });
+
+  it("retains accepted project guidance and extra instructions in a real fast-path session", async () => {
+    const prompt = buildReviewSystemPrompt({
+      repositoryGuidance: [{ path: "src/AGENTS.md", directory: "src", content: "Amounts use integer minor units." }],
+      instructions: ["Check migration compatibility."],
+      focus: "Report only security findings.",
+    });
+    const fastSession = await createSession(true, false, undefined, prompt);
+    try {
+      expect(fastSession.systemPrompt).toContain("Amounts use integer minor units.");
+      expect(fastSession.systemPrompt).toContain("Check migration compatibility.");
+      expect(fastSession.systemPrompt).toContain("Report only security findings.");
+      expect(fastSession.systemPrompt).toContain("Identify production bugs introduced");
       expect(fastSession.getActiveToolNames()).toEqual(["submit_review"]);
     } finally {
       fastSession.dispose();

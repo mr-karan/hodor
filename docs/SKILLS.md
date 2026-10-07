@@ -1,8 +1,10 @@
 # Skills
 
-Hodor reads repository-specific review guidance from `.agents/skills` in the repository being reviewed.
+For conventions that apply on every review, use root or scoped `AGENTS.md` files. Hodor loads those from an accepted target-side snapshot. See [Review instructions](./REVIEW_INSTRUCTIONS.md).
 
-Use skills for rules that are specific to your codebase: auth requirements, database conventions, API compatibility rules, migration safety checks, or known risky areas.
+Skills are an advanced option for specialized context loaded when relevant. Hodor discovers `.agents/skills` in the HEAD checkout, not the accepted instruction snapshot. Skills are lower-trust context and cannot suppress checks or override accepted guidance, explicit reviewer instructions, focus, or Hodor's protocol.
+
+Useful skill context includes how authorization works, database contracts, migration examples, and known risky code paths.
 
 ## Layout
 
@@ -49,14 +51,7 @@ hodor <PR_URL> --verbose
 
 ## Frontmatter
 
-Each skill should include YAML frontmatter:
-
-```yaml
----
-name: security-review
-description: Use when reviewing API, authentication, authorization, or session handling changes.
----
-```
+Each skill should include YAML frontmatter as shown in the example above.
 
 - `description` is required. It tells the agent when to load the skill.
 - `name` is recommended. Match it to the directory name.
@@ -71,7 +66,7 @@ Use:
 - Project-specific invariants.
 - Examples of bad patterns to flag.
 - Files or directories that need special care.
-- Commands that are safe to run during review.
+- References to tracked files that establish the relevant behavior.
 
 Avoid:
 
@@ -79,6 +74,7 @@ Avoid:
 - Long policy documents.
 - Secrets, private tokens, host credentials, or customer data.
 - Instructions that ask the agent to modify files. Hodor reviews code, it does not patch it.
+- Instructions to run commands, tests, builds, linters, or formatters. Hodor has no shell and establishes findings by reading code.
 
 ## How Hodor uses skills
 

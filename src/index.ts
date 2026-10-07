@@ -8,10 +8,13 @@ export { validateReviewOutput } from "./review.js";
 export { renderMarkdown } from "./render.js";
 export {
   MAX_REVIEW_INSTRUCTIONS_BYTES,
+  MAX_TOTAL_INSTRUCTIONS_BYTES,
+  validateInstructionsBudget,
   validateReviewInstructions,
   loadReviewInstructionsFile,
   loadDefaultReviewInstructions,
 } from "./review-instructions.js";
+export type { RepositoryGuidanceFile } from "./repository-guidance.js";
 export {
   HODOR_REVIEW_PROTOCOL,
   buildReviewSystemPrompt,

@@ -3,6 +3,7 @@ import {
   findLatestReviewBase,
   getReviewDiffArgs,
   getChangedFiles,
+  getChangedPaths,
   getDiffStats,
   resolveReviewBaseSha,
 } from "../src/review-diff.js";
@@ -17,6 +18,21 @@ const notes: TrustedHodorNote[] = [{
   created_at: "2026-07-16T00:00:00Z",
   provenance: "hodor",
 }];
+
+describe("changed paths", () => {
+  it("preserves rename, copy, deletion, and unusual filename paths", () => {
+    expect(getChangedPaths("R100\0old path.ts\0new path.ts\0C100\0new path.ts\0copy\npath.ts\0D\0gone.ts\0"))
+      .toEqual(["old path.ts", "new path.ts", "copy\npath.ts", "gone.ts"]);
+  });
+
+  it("handles an empty change set", () => {
+    expect(getChangedPaths("")).toEqual([]);
+  });
+
+  it("rejects incomplete path records", () => {
+    expect(() => getChangedPaths("R100\0old.ts\0")).toThrow(/Invalid changed-path/);
+  });
+});
 
 describe("findLatestReviewBase", () => {
   beforeEach(() => vi.mocked(exec).mockReset());

@@ -27,7 +27,7 @@ describe("review instruction profiles", () => {
   it("loads the bundled default profile", () => {
     const instructions = loadDefaultReviewInstructions();
 
-    expect(instructions).toContain("Identify production bugs introduced by the proposed change.");
+    expect(instructions).toContain("Identify production bugs introduced by the proposed change");
   });
 
   it("loads a custom profile verbatim relative to the supplied working directory", () => {

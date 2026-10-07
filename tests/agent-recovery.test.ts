@@ -142,6 +142,12 @@ describe("reviewPr submit_review recovery", () => {
       if (args.includes("--show-toplevel")) {
         return { stdout: `${workspaceDir}\n`, stderr: "" };
       }
+      if (args.includes("--end-of-options")) {
+        return { stdout: `${"c".repeat(40)}\n`, stderr: "" };
+      }
+      if (args.includes("--name-status")) {
+        return { stdout: "M\0src/example.ts\0", stderr: "" };
+      }
       if (args.includes("diff")) {
         return {
           stdout: [
@@ -287,7 +293,7 @@ describe("reviewPr submit_review recovery", () => {
     });
   });
 
-  it("passes selected instructions as the system prompt without leaking them into the user task", async () => {
+  it("adds explicit instructions to the baseline without leaking them into the user task", async () => {
     const customProfile = "# Custom profile\nReview tenant-boundary regressions.";
     const additionalInstructions = "Prioritize authorization checks.";
 
@@ -296,14 +302,15 @@ describe("reviewPr submit_review recovery", () => {
       workspaceDir,
       cleanup: false,
       model: "anthropic/test-model",
-      reviewInstructions: customProfile,
-      additionalInstructions,
+      instructions: [customProfile],
+      focus: additionalInstructions,
     });
 
     const loader = mocks.resourceLoaderOptions[mocks.resourceLoaderOptions.length - 1];
     const systemPrompt = loader.systemPromptOverride?.() ?? "";
 
     expect(systemPrompt).toContain(customProfile);
+    expect(systemPrompt).toContain("Identify production bugs introduced by the proposed change");
     expect(systemPrompt).toContain(additionalInstructions);
     expect(systemPrompt.indexOf(customProfile)).toBeLessThan(systemPrompt.indexOf(additionalInstructions));
     expect(systemPrompt.indexOf(additionalInstructions)).toBeLessThan(
@@ -312,6 +319,55 @@ describe("reviewPr submit_review recovery", () => {
     expect(loader.appendSystemPromptOverride?.()).toEqual([]);
     expect(mocks.prompts[0]).not.toContain(customProfile);
     expect(mocks.prompts[0]).not.toContain(additionalInstructions);
+  });
+
+  it("loads accepted scoped rules through reviewPr while keeping HEAD rule edits in the diff", async () => {
+    const root = mkdtempSync(join(tmpdir(), "hodor-guidance-review-"));
+    const env = {
+      ...process.env,
+      GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
+      GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.com",
+      GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.com",
+    };
+    const git = (args: string[]) => execFileSync("git", args, { cwd: root, env, encoding: "utf8" });
+    try {
+      git(["init", "-q"]);
+      mkdirSync(join(root, "src"));
+      writeFileSync(join(root, "AGENTS.md"), "ACCEPTED_ROOT_RULE");
+      writeFileSync(join(root, "src", "CLAUDE.md"), "ACCEPTED_SCOPED_RULE");
+      writeFileSync(join(root, "src", "example.ts"), "const value = 1;\n");
+      git(["add", "."]);
+      git(["commit", "-qm", "base"]);
+      writeFileSync(join(root, "AGENTS.md"), "UNACCEPTED_SUPPRESS_CHECKS");
+      writeFileSync(join(root, "src", "example.ts"), "const value = 2;\n");
+      git(["add", "."]);
+      git(["commit", "-qm", "change"]);
+      const fallback = mocks.exec.getMockImplementation();
+      mocks.exec.mockImplementation(async (cmd: string, args: string[], opts?: unknown) => {
+        if (cmd === "git" && ["rev-parse", "diff", "ls-tree"].some((command) => args.includes(command))) {
+          return { stdout: git(args), stderr: "" };
+        }
+        if (!fallback) throw new Error("exec fallback missing");
+        return fallback(cmd, args, opts);
+      });
+      mocks.promptResponses = [{ kind: "tool" }];
+      await reviewPr({
+        localMode: true, workspaceDir: root, diffAgainst: "HEAD~1", cleanup: false,
+        model: "anthropic/test-model", instructions: ["EXPLICIT_RULE"], focus: "RUN_FOCUS",
+      });
+      const loader = mocks.resourceLoaderOptions[mocks.resourceLoaderOptions.length - 1];
+      const systemPrompt = loader.systemPromptOverride?.() ?? "";
+      expect(systemPrompt).toContain("ACCEPTED_ROOT_RULE");
+      expect(systemPrompt).toContain("ACCEPTED_SCOPED_RULE");
+      expect(systemPrompt).toContain('"directory":"src"');
+      expect(systemPrompt).toContain("EXPLICIT_RULE");
+      expect(systemPrompt).toContain("RUN_FOCUS");
+      expect(systemPrompt).not.toContain("UNACCEPTED_SUPPRESS_CHECKS");
+      expect(mocks.prompts[0]).toContain("diff --git a/AGENTS.md b/AGENTS.md");
+      expect(mocks.prompts[0]).toContain("UNACCEPTED_SUPPRESS_CHECKS");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("asks the same session to recover when the first run ends without submit_review", async () => {

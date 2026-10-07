@@ -69,24 +69,24 @@ npx @mrkaran/hodor <PR_URL> -v
 
 ## Review instructions
 
-Choose the default review profile, a custom security profile, or a one-off focus for a review:
+Commit project code conventions in `AGENTS.md`. Hodor automatically loads root and applicable nested guidance from the target branch, with `CLAUDE.md` as a per-directory fallback. No CI flag is needed. Add shared instructions or a one-off focus when needed:
 
 ```bash
-# Default profile
+# Baseline review plus automatic project guidance
 npx @mrkaran/hodor <PR_URL>
 
-# Custom profile that replaces the bundled default
+# Add shared review rules from a file
 npx @mrkaran/hodor <PR_URL> \
-  --review-instructions ./review-profiles/security.md
+  --instructions /etc/hodor/security.md
 
-# One-off request added after the selected profile
+# One-off focus, optionally narrowing reporting
 npx @mrkaran/hodor <PR_URL> \
-  --additional-instructions "Focus on authorization changes in the admin API."
+  --focus "Focus on authorization changes in the admin API."
 ```
 
-A review profile applies to the whole run. A custom profile replaces the bundled default profile. Additional instructions are additive. Repository-specific rules remain in `.agents/skills/` and are used when relevant. Hodor's review rules take precedence if these inputs conflict.
+Instruction files are additive and repeatable. Later files win conflicts, and focus wins conflicts with files. Explicit reviewer instructions can narrow reporting, for example, `--focus "Report only security findings."` Repository guidance adds scoped conventions but cannot suppress baseline defect checks. Hodor's fixed review protocol always wins. Repository skills remain optional context loaded when relevant.
 
-See [Review instructions](./docs/REVIEW_INSTRUCTIONS.md) for complete security and code-quality profiles, local and CI examples, migration guidance, and file validation troubleshooting.
+See [Review instructions](./docs/REVIEW_INSTRUCTIONS.md) for precedence, accepted instruction snapshots, local and CI examples, limits, and breaking migration from the removed `--review-instructions` and `--additional-instructions` flags.
 
 ## Local Mode
 
@@ -134,8 +134,8 @@ Local mode:
 | `--commit-status` | Off | Post a pass/fail status based on all unresolved Hodor findings |
 | `--require-delivery` | Off | Exit non-zero if requested comments, statuses, or artifacts are not delivered |
 | `--fail-on-priority` | None | Exit non-zero for findings at or above `P0`, `P1`, `P2`, or `P3` |
-| `--review-instructions` | None | Read a custom review profile from a file. It replaces the bundled default profile for this run. |
-| `--additional-instructions` | None | Add one-off review instructions after the selected profile. |
+| `--instructions` | None | Add review instructions from a file. Repeatable; later files win conflicts. |
+| `--focus` | None | Set a one-off review focus, optionally narrowing the kinds of findings to report. |
 | `--workspace` | Temp dir | Workspace directory (reuse for faster multi-PR reviews) |
 | `--bedrock-tags` | None | JSON `requestMetadata` for filtering Bedrock invocation logs. Not billing tags; see [Bedrock cost attribution](./docs/MODELS.md#application-inference-profiles-cost-attribution). |
 | `--prometheus-push` | None | Push review metrics to a Prometheus Pushgateway or VictoriaMetrics import endpoint |
@@ -192,65 +192,11 @@ In CI, set `METRICS_PUSH_URL` as a secret/variable and add `--prometheus-push "$
 
 Each metric is labeled with `platform`, `model`, `verdict`, `outcome`, and for PR/MR URLs also `project` (`owner/repo`). MR/PR numbers are deliberately excluded to avoid unbounded time-series cardinality. Exported metrics include token usage, cache read/write tokens, cache hit ratio, cost, turns, tool calls, duration, and findings by priority (`P0` to `P3`). A generic Grafana dashboard is available in [`docs/grafana/`](./docs/grafana/).
 
-### GitHub Actions
+### Workflows
 
-```yaml
-name: Hodor Review
-on:
-  pull_request:
-    types: [opened, synchronize]
+See [Automated reviews](./docs/AUTOMATED_REVIEWS.md) for GitHub Actions and GitLab CI examples. See [Review instructions](./docs/REVIEW_INSTRUCTIONS.md#gitlab-ci) for adding shared instructions and a one-off focus to a CI job.
 
-jobs:
-  review:
-    runs-on: ubuntu-latest
-    container: ghcr.io/mr-karan/hodor:0.8.0
-    steps:
-      - name: Run Hodor
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          METRICS_PUSH_URL: ${{ secrets.METRICS_PUSH_URL }} # optional
-        run: |
-          EXTRA_ARGS=""
-          if [ -n "${METRICS_PUSH_URL:-}" ]; then EXTRA_ARGS="--prometheus-push $METRICS_PUSH_URL"; fi
-          bun run /app/dist/cli.js "https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}" --post $EXTRA_ARGS
-```
-
-### GitLab CI
-
-```yaml
-# .gitlab-ci.yml
-workflow:
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-
-hodor-review:
-  stage: test
-  image:
-    name: ghcr.io/mr-karan/hodor:0.8.0
-    entrypoint: [""]
-  variables:
-    HODOR_MODEL: "anthropic/claude-opus-5-5"
-  before_script:
-    - glab auth login --hostname $CI_SERVER_HOST --token $GITLAB_TOKEN
-  script:
-    - MR_URL="${CI_PROJECT_URL}/-/merge_requests/${CI_MERGE_REQUEST_IID}"
-    - |
-      EXTRA_ARGS=""
-      if [ -n "${METRICS_PUSH_URL:-}" ]; then EXTRA_ARGS="--prometheus-push $METRICS_PUSH_URL"; fi
-      bun run /app/dist/cli.js "$MR_URL" --model "$HODOR_MODEL" --post --code-quality gl-code-quality-report.json --commit-status $EXTRA_ARGS
-  artifacts:
-    expose_as: "Hodor findings"
-    paths:
-      - gl-code-quality-report.json
-    reports:
-      codequality: gl-code-quality-report.json
-    when: always
-  allow_failure: true
-  timeout: 15m
-```
-
-This posts actionable findings inline, posts a new summary note with collapsed run metrics (older Hodor summaries collapse to a link to it), sets a commit status from all unresolved Hodor findings, and exposes the cumulative Code Quality report from the MR.
+The GitLab example posts actionable findings inline, posts a new summary note with collapsed run metrics (older Hodor summaries collapse to a link to it), sets a commit status from all unresolved Hodor findings, and exposes the cumulative Code Quality report from the MR.
 
 The summary's count table lists **unresolved Hodor threads at the time of the review**. It includes threads from earlier reviews that are still open on GitLab, and says so when this review did not confirm them fixed. The count does not update when someone resolves a thread later; the next review's summary shows the new state.
 
@@ -269,15 +215,13 @@ The default job log is short:
 
 Without `--post`, the review markdown goes to stdout after the summary. `-v` prints everything live instead: tool result previews, reasoning, and model text.
 
-See [AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md) for advanced workflows.
-
 ## Token optimization
 
 Hodor automatically optimizes token usage:
 
 - **Diff embedding**: For PRs under 200KB, the diff is embedded directly in the prompt, cutting agent turns from ~60 to ~5.
 - **Incremental reviews**: On re-runs, only reviews changes since the last hodor comment. After a force-push or rebase on GitLab, Hodor reviews the whole MR diff again against the recalculated merge base. A diff from the old snapshot would also include target-branch commits that the rebase brought in. On GitHub and Gitea, it compares the last reviewed snapshot directly with the current HEAD.
-- **Identical-HEAD reuse**: Successful summaries include a versioned, compressed review payload. Pipeline retries with the same MR/PR, target branch and base commit, HEAD, model, reasoning request, review profile, and additional instructions reuse that result while still regenerating artifacts and retrying delivery.
+- **Identical-HEAD reuse**: Successful summaries include a versioned, compressed review payload. Pipeline retries with the same MR/PR, target branch and base commit, accepted guidance snapshot, HEAD, model, reasoning request, explicit instruction contents, and focus reuse that result while still regenerating artifacts and retrying delivery.
 - **Adaptive reasoning**: Models that default to `xhigh` (Opus 4.7 and later) use `high` for incremental reviews and small diffs (10 files or fewer, 500 changed lines or fewer). High-risk, large, and `--full` reviews keep `xhigh`. An explicit `--reasoning-effort` always wins.
 - **Focused exploration**: Embedded diffs include a changed-file manifest and direct the agent toward bounded context reads without limiting how far it may investigate.
 - **Compaction**: Hodor auto-summarizes older conversation turns when context grows too large.
@@ -299,25 +243,7 @@ Codemode scripts run in a QuickJS sandbox that can only call the review tools ab
 
 ## Skills
 
-Hodor discovers repository-specific review guidelines from `.agents/skills/`, the cross-client Agent Skills convention:
-
-```bash
-mkdir -p .agents/skills/review-guidelines
-```
-
-```markdown
-# .agents/skills/review-guidelines/SKILL.md
----
-name: review-guidelines
-description: Security and performance review checklist.
----
-
-- All API endpoints must have authentication checks.
-- Database queries must use parameterized statements.
-- API responses should be < 200ms p95.
-```
-
-Skills are loaded automatically during reviews. See [SKILLS.md](./docs/SKILLS.md) for details.
+Use `AGENTS.md` for conventions checked on every applicable review. Repository skills in `.agents/skills/` provide specialized context loaded when relevant. They come from the HEAD checkout and cannot override accepted project rules or suppress checks. See [Skills](./docs/SKILLS.md) for layout, examples, and discovery troubleshooting.
 
 ## Security model
 
@@ -374,7 +300,8 @@ flowchart LR
 | `src/platform.ts` | Platform detection and PR/MR URL parsing |
 | `src/review-diff.ts` | Diff construction, incremental and snapshot bases, skipped files |
 | `src/prompt.ts`, `src/templates.ts` | Review task prompt from `templates/` |
-| `src/system-prompt.ts`, `src/review-instructions.ts` | System prompt, review profiles, additional instructions |
+| `src/system-prompt.ts`, `src/review-instructions.ts` | Baseline criteria, additive instructions, focus, and limits |
+| `src/repository-guidance.ts` | Accepted project guidance snapshots and directory scope |
 | `src/review.ts` | `submit_review` schema and semantic validation |
 | `src/review-recovery.ts` | Recovery when a model skips `submit_review` |
 | `src/resolve-location.ts` | Snippet-based line resolution ([details](./docs/SNIPPET_LINE_RESOLUTION.md)) |
@@ -387,18 +314,19 @@ flowchart LR
 | `src/render.ts`, `src/codequality.ts` | Markdown rendering and GitLab Code Quality reports |
 | `src/metrics.ts` | Token, cost, and duration metrics; Prometheus push |
 | `src/evaluation.ts`, `scripts/run-evals.ts`, `evals/` | Review-quality evals |
-| `templates/` | Default review profile and review task template |
+| `templates/` | Baseline review criteria and review task template |
 
 ---
 
-## Learn More
+## Learn more
 
-### Hodor Documentation
+### Documentation
+
 - **[MODELS.md](./docs/MODELS.md)** - Providers, reasoning, Bedrock inference profiles, custom endpoints
 - **[OPENROUTER.md](./docs/OPENROUTER.md)** - End-to-end OpenRouter example
-- **[REVIEW_INSTRUCTIONS.md](./docs/REVIEW_INSTRUCTIONS.md)** - Review profiles and additional instructions
-- **[SKILLS.md](./docs/SKILLS.md)** - Repository-specific review guidelines
-- **[AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md)** - Advanced CI/CD workflows
+- **[REVIEW_INSTRUCTIONS.md](./docs/REVIEW_INSTRUCTIONS.md)** - Project conventions, extra instructions, and focus
+- **[SKILLS.md](./docs/SKILLS.md)** - Specialized repository context
+- **[AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md)** - GitHub Actions and GitLab CI setup
 - **[SNIPPET_LINE_RESOLUTION.md](./docs/SNIPPET_LINE_RESOLUTION.md)** - How finding locations are resolved
 - **[grafana/](./docs/grafana/)** - Metrics dashboard
 

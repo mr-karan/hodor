@@ -181,6 +181,24 @@ export function getChangedFiles(diff: string): string[] {
   return [...new Set(files)];
 }
 
+/** Parse git diff --name-status -z, preserving both sides of renames and copies. */
+export function getChangedPaths(output: string): string[] {
+  const fields = output.split("\0");
+  const paths = new Set<string>();
+  for (let index = 0; index < fields.length && fields[index];) {
+    const status = fields[index++];
+    const count = /^[RC]/.test(status) ? 2 : 1;
+    for (let part = 0; part < count; part++) {
+      const path = fields[index++];
+      if (!path) throw new Error("Invalid changed-path output from git diff");
+      paths.add(path);
+    }
+  }
+  return [...paths];
+}
+
+const GUIDANCE_FILE_PATTERN = /(?:^|\/)(?:AGENTS|CLAUDE)\.md$/;
+
 const DIFF_SKIP_PATTERNS: RegExp[] = [
   /(?:^|\/)testdata\//,
   /(?:^|\/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|go\.sum|Cargo\.lock|poetry\.lock|Gemfile\.lock|composer\.lock)$/,
@@ -194,13 +212,14 @@ export function filterEmbeddedDiff(
   const sections = rawDiff.split(/(?=^diff --git )/m);
   const kept: string[] = [];
   for (const section of sections) {
-    const match = section.match(/^diff --git a\/(.*?) b\//);
+    const match = section.match(/^diff --git a\/(.*?) b\/(.*?)$/m);
     if (!match) {
       kept.push(section);
       continue;
     }
     const filePath = match[1];
-    if (DIFF_SKIP_PATTERNS.some((pattern) => pattern.test(filePath))) {
+    const isGuidanceChange = GUIDANCE_FILE_PATTERN.test(filePath) || GUIDANCE_FILE_PATTERN.test(match[2]);
+    if (!isGuidanceChange && DIFF_SKIP_PATTERNS.some((pattern) => pattern.test(filePath))) {
       skippedFiles.push(filePath);
     } else {
       kept.push(section);

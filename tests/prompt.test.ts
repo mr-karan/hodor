@@ -6,7 +6,6 @@ import {
   normalizeLabelNames,
 } from "../src/prompt.js";
 import type { FindingThread } from "../src/review-state.js";
-import { loadDefaultReviewInstructions } from "../src/review-instructions.js";
 import { buildReviewSystemPrompt } from "../src/system-prompt.js";
 describe("buildMrSections", () => {
   it("handles string labels", () => {
@@ -235,9 +234,7 @@ describe("buildPrReviewPrompt", () => {
       platform: "github",
       targetBranch: "main",
     });
-    const systemPrompt = buildReviewSystemPrompt({
-      reviewInstructions: loadDefaultReviewInstructions(),
-    });
+    const systemPrompt = buildReviewSystemPrompt();
 
     expect(task).toContain("submit_review");
     expect(task).not.toContain("Call `submit_review` exactly once");
@@ -251,9 +248,7 @@ describe("buildPrReviewPrompt", () => {
       platform: "github",
       targetBranch: "main",
     });
-    const systemPrompt = buildReviewSystemPrompt({
-      reviewInstructions: loadDefaultReviewInstructions(),
-    });
+    const systemPrompt = buildReviewSystemPrompt();
 
     expect(task).not.toContain("Conditional Lenses");
     expect(task).not.toContain("For error handling, retries, fallbacks");
