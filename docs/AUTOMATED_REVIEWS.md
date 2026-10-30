@@ -142,6 +142,40 @@ review reports again counts as open again.
 
 GitHub posting currently uses a summary PR comment.
 
+## Run a second review job
+
+To run a second Hodor job on the same MR with different instructions, give that job its own `--review-key`. This example adds a security review next to the `hodor-review` job above:
+
+```yaml
+hodor-security-review:
+  extends: hodor-review
+  script:
+    - MR_URL="${CI_PROJECT_URL}/-/merge_requests/${CI_MERGE_REQUEST_IID}"
+    - bun run /app/dist/cli.js "$MR_URL" --model "$HODOR_MODEL" --review-key security --instructions /etc/hodor/security.md --post --commit-status --code-quality gl-code-quality-security.json
+  artifacts:
+    expose_as: "Hodor security findings"
+    paths:
+      - gl-code-quality-security.json
+    reports:
+      codequality: gl-code-quality-security.json
+```
+
+Both jobs need an image release that includes `--review-key`. An older release in the default job reads the keyed job's notes as its own.
+
+Hodor writes a `<!-- hodor:key:security -->` marker into every note the keyed job posts. Each job reads back only its own notes:
+
+- Each job reviews incrementally from its own last reviewed commit and reuses only its own cached review.
+- Each job collapses only its own older summaries.
+- Each job compares new findings only with its own open threads, so it still posts a finding that the other job already reported.
+- Each job replies "Fixed in" only on its own threads.
+- The commit status and the Code Quality report of each job count only that job's open findings.
+
+The keyed job names its commit status `hodor/security` instead of `hodor`. Its Code Quality issues use the check name `hodor/security/P<n>` and their own fingerprints, so GitLab keeps the issues of both jobs.
+
+A job without `--review-key` ignores keyed notes, so an existing job keeps working unchanged. A key is 1 to 32 lowercase letters, digits, or hyphens, and starts with a letter or digit.
+
+If you change or remove the key of a job, the job starts a fresh history. Its next review is a full review, and it no longer collapses, replies on, or counts the notes it wrote under the old key. Resolve the old threads by hand.
+
 ## Metrics
 
 Push metrics at the end of a run:

@@ -55,6 +55,8 @@ Example content:
 - Check changed logging and error paths for credential exposure.
 ```
 
+To run checks like these in a separate job next to your main review, give that job its own `--review-key`. See [Run a second review job](./AUTOMATED_REVIEWS.md#run-a-second-review-job).
+
 Repeat the flag to load several files. Later files win conflicts with earlier files:
 
 ```bash
