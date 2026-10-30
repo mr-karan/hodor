@@ -1,4 +1,5 @@
 import { isAbsolute } from "node:path";
+import type { ConstrainedSamplingConfig } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import type { ReviewOutput, ReviewPriority } from "./types.js";
 import { isRecord } from "./utils/json.js";
@@ -10,13 +11,16 @@ const REVIEW_PRIORITY_TAGS = new Map<string, ReviewPriority>([
   ["[P3]", 3],
 ]);
 
+// Strict tool use on Claude (Anthropic and Bedrock) does not support numeric or
+// string-length bounds (minimum, maximum, minLength, maxLength) and may reject them
+// with a 400. Priority is an enum, and validateReviewOutput() checks the rest.
 export const REVIEW_LOCATION_SCHEMA = Type.Object(
   {
-    absolute_file_path: Type.String({ minLength: 1 }),
+    absolute_file_path: Type.String(),
     line_range: Type.Object(
       {
-        start: Type.Integer({ minimum: 1 }),
-        end: Type.Integer({ minimum: 1 }),
+        start: Type.Integer(),
+        end: Type.Integer(),
       },
       { additionalProperties: false },
     ),
@@ -26,12 +30,12 @@ export const REVIEW_LOCATION_SCHEMA = Type.Object(
 
 export const REVIEW_FINDING_SCHEMA = Type.Object(
   {
-    title: Type.String({ minLength: 1 }),
-    body: Type.String({ minLength: 1 }),
-    priority: Type.Integer({ minimum: 0, maximum: 3 }),
+    title: Type.String(),
+    body: Type.String(),
+    priority: Type.Union([Type.Literal(0), Type.Literal(1), Type.Literal(2), Type.Literal(3)]),
     code_location: REVIEW_LOCATION_SCHEMA,
-    existing_code: Type.Optional(Type.String({ minLength: 1 })),
-    suggestion: Type.Optional(Type.String({ minLength: 1 })),
+    existing_code: Type.Optional(Type.String()),
+    suggestion: Type.Optional(Type.String()),
   },
   { additionalProperties: false },
 );
@@ -43,11 +47,16 @@ export const SUBMIT_REVIEW_SCHEMA = Type.Object(
       Type.Literal("patch is correct"),
       Type.Literal("patch is incorrect"),
     ]),
-    overall_explanation: Type.String({ minLength: 1 }),
-    resolved_findings: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+    overall_explanation: Type.String(),
+    resolved_findings: Type.Optional(Type.Array(Type.String())),
   },
   { additionalProperties: false },
 );
+
+export const SUBMIT_REVIEW_CONSTRAINED_SAMPLING: ConstrainedSamplingConfig = {
+  type: "json_schema",
+  strict: "prefer",
+};
 
 const NULLABLE_FINDING_FIELDS = ["existing_code", "suggestion"];
 
@@ -77,6 +86,9 @@ export function validateReviewOutput(review: ReviewOutput): ReviewOutput {
   if (review.overall_explanation.trim().length === 0) {
     throw new Error("submit_review overall_explanation must be non-empty");
   }
+  if (review.resolved_findings?.some((id) => id.length === 0)) {
+    throw new Error("submit_review resolved_findings entries must be non-empty");
+  }
 
   // Auto-correct verdict when it contradicts findings. Findings are the ground truth;
   // the verdict field is mechanically derivable. Throwing here would prevent `terminate: true`
@@ -95,6 +107,12 @@ export function validateReviewOutput(review: ReviewOutput): ReviewOutput {
     if (finding.body.trim().length === 0) {
       throw new Error(`${label} body must be non-empty`);
     }
+    if (finding.existing_code === "") {
+      throw new Error(`${label} existing_code must be non-empty when present`);
+    }
+    if (finding.suggestion === "") {
+      throw new Error(`${label} suggestion must be non-empty when present`);
+    }
 
     const taggedPriority = getPriorityFromTitle(finding.title);
     if (taggedPriority == null) {
@@ -109,6 +127,9 @@ export function validateReviewOutput(review: ReviewOutput): ReviewOutput {
     const { absolute_file_path: filePath, line_range: lineRange } = finding.code_location;
     if (!isAbsolute(filePath)) {
       throw new Error(`${label} code_location.absolute_file_path must be absolute`);
+    }
+    if (lineRange.start < 1) {
+      throw new Error(`${label} code_location line_range start must be >= 1`);
     }
     if (lineRange.start > lineRange.end) {
       throw new Error(`${label} code_location line_range start must be <= end`);

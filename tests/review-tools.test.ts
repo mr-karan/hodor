@@ -275,13 +275,13 @@ describe("codemode (experimental)", () => {
   it("gives scripts the confined tools and no host globals, model API, or submit_review", async () => {
     const out = await runScript(
       "text(JSON.stringify({ globals: [typeof process, typeof require, typeof fetch, typeof setTimeout, typeof models], " +
-        "tools: ALL_TOOLS.map((t) => t.name).sort(), submit: typeof tools.submit_review }));",
+        "tools: ALL_TOOLS.map((t) => t.name).sort(), submit: \"submit_review\" in tools }));",
     );
     const parsed: unknown = JSON.parse(out.slice(out.indexOf("{"), out.lastIndexOf("}") + 1));
     expect(parsed).toEqual({
       globals: ["undefined", "undefined", "undefined", "undefined", "undefined"],
       tools: ["find", "git_diff", "grep", "ls", "read"],
-      submit: "undefined",
+      submit: false,
     });
   });
 

@@ -41,7 +41,11 @@ import {
 } from "./models-json.js";
 import { createCodemodeLimitsExtension, type CodemodeLimits } from "./codemode-limits.js";
 import { formatMetricsMarkdown } from "./metrics.js";
-import { SUBMIT_REVIEW_SCHEMA, validateReviewOutput } from "./review.js";
+import {
+  SUBMIT_REVIEW_CONSTRAINED_SAMPLING,
+  SUBMIT_REVIEW_SCHEMA,
+  validateReviewOutput,
+} from "./review.js";
 import { resolveReviewLocations } from "./resolve-location.js";
 import { createReviewToolset, REVIEW_TOOL_NAMES, type ReviewToolset } from "./review-tools.js";
 import { buildReviewSystemPrompt } from "./system-prompt.js";
@@ -791,7 +795,7 @@ export async function reviewPr(opts: {
       description: "Submit the final structured review after the analysis is complete.",
       promptSnippet: "Submit the final structured review (call exactly once when done)",
       parameters: SUBMIT_REVIEW_SCHEMA,
-      constrainedSampling: { type: "json_schema", strict: "prefer" },
+      constrainedSampling: SUBMIT_REVIEW_CONSTRAINED_SAMPLING,
       // Codemode scripts must not submit: a nested call would lose `terminate`.
       exposure: "model-only",
       execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
