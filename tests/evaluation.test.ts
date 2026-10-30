@@ -103,3 +103,28 @@ describe("eval run summaries", () => {
     });
   });
 });
+
+describe("rejected-finding traps", () => {
+  it("counts a trap as raised again only for a finding on the same path within three lines", () => {
+    const finding = (path: string, start: number, end: number) => ({
+      title: "t",
+      body: "b",
+      priority: 2 as const,
+      code_location: { absolute_file_path: `/tmp/ws/${path}`, line_range: { start, end } },
+    });
+    const score = scoreReview(
+      {
+        findings: [finding("api/handler.go", 40, 42), finding("api/other.go", 10, 10)],
+        overall_correctness: "patch is incorrect",
+        overall_explanation: "",
+      },
+      [],
+      [
+        { path: "api/handler.go", line: 45 },
+        { path: "api/handler.go", line: 46 },
+        { path: "api/store.go", line: 10 },
+      ],
+    );
+    expect(score).toMatchObject({ traps: 3, trapsHit: 1, falsePositives: 2 });
+  });
+});

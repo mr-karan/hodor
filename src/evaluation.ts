@@ -6,17 +6,29 @@ export interface ExpectedFinding {
   maximumPriority: ReviewPriority;
 }
 
+/** A location where an earlier review raised a finding that people rejected. */
+export interface TrapFinding {
+  path: string;
+  line: number;
+}
+
+/** How far a finding may sit from a trap's line and still count as raising it again. */
+export const TRAP_LINE_TOLERANCE = 3;
+
 export interface EvaluationScore {
   expected: number;
   matched: number;
   missed: ExpectedFinding[];
   falsePositives: number;
   recall: number;
+  traps: number;
+  trapsHit: number;
 }
 
 export function scoreReview(
   review: ReviewOutput,
   expectedFindings: ExpectedFinding[],
+  trapFindings: readonly TrapFinding[] = [],
 ): EvaluationScore {
   const unmatchedActual = new Set(review.findings.map((_, index) => index));
   const missed: ExpectedFinding[] = [];
@@ -41,12 +53,25 @@ export function scoreReview(
     matched++;
   }
 
+  const trapsHit = trapFindings.filter((trap) =>
+    review.findings.some((finding) => {
+      const { start, end } = finding.code_location.line_range;
+      return (
+        finding.code_location.absolute_file_path.endsWith(trap.path) &&
+        trap.line >= start - TRAP_LINE_TOLERANCE &&
+        trap.line <= end + TRAP_LINE_TOLERANCE
+      );
+    }),
+  ).length;
+
   return {
     expected: expectedFindings.length,
     matched,
     missed,
     falsePositives: unmatchedActual.size,
     recall: expectedFindings.length === 0 ? 1 : matched / expectedFindings.length,
+    traps: trapFindings.length,
+    trapsHit,
   };
 }
 
@@ -54,6 +79,7 @@ interface EvalCaseBase {
   id: string;
   description: string;
   expectedFindings: ExpectedFinding[];
+  trapFindings: TrapFinding[];
 }
 
 /** A change written out as file contents before and after. */
@@ -97,16 +123,23 @@ function parseExpectedFinding(value: unknown, where: string): ExpectedFinding {
 /** Parses one eval case file. Repo paths resolve against the case file's directory. */
 export function parseEvalCase(value: unknown, source: string): EvalCase {
   if (!isRecord(value)) throw new Error(`${source}: eval case must be an object`);
-  const { id, description, expectedFindings } = value;
+  const { id, description, expectedFindings, trapFindings = [] } = value;
   if (typeof id !== "string" || id === "") throw new Error(`${source}: id must be a non-empty string`);
   if (typeof description !== "string") throw new Error(`${source}: description must be a string`);
   if (!Array.isArray(expectedFindings)) throw new Error(`${source}: expectedFindings must be a list`);
+  if (!Array.isArray(trapFindings)) throw new Error(`${source}: trapFindings must be a list`);
   const base = {
     id,
     description,
     expectedFindings: expectedFindings.map((finding, index) =>
       parseExpectedFinding(finding, `${source}: expectedFindings[${index}]`),
     ),
+    trapFindings: trapFindings.map((trap, index) => {
+      if (!isRecord(trap) || typeof trap.path !== "string" || trap.path === "" || !Number.isInteger(trap.line)) {
+        throw new Error(`${source}: trapFindings[${index}] needs a path and an integer line`);
+      }
+      return { path: trap.path, line: Number(trap.line) };
+    }),
   };
   if ("repo" in value) {
     const { repo, base: baseRef, head } = value;
@@ -140,9 +173,12 @@ export interface EvalSummary {
   matched: number;
   falsePositives: number;
   recall: number;
+  traps: number;
+  trapsHit: number;
   /** Recall of each trial, to show run-to-run spread. */
   recallByTrial: number[];
   falsePositivesByTrial: number[];
+  trapsHitByTrial: number[];
   cost: number;
   medianDurationSeconds: number;
 }
@@ -164,12 +200,16 @@ export function summarizeRuns(runs: readonly EvalRun[], expectedByCase: Readonly
     let expected = 0;
     let matched = 0;
     let falsePositives = 0;
+    let traps = 0;
+    let trapsHit = 0;
     for (const run of subset) {
       expected += run.score?.expected ?? expectedByCase.get(run.caseId) ?? 0;
       matched += run.score?.matched ?? 0;
       falsePositives += run.score?.falsePositives ?? 0;
+      traps += run.score?.traps ?? 0;
+      trapsHit += run.score?.trapsHit ?? 0;
     }
-    return { expected, matched, falsePositives, recall: expected === 0 ? 1 : matched / expected };
+    return { expected, matched, falsePositives, traps, trapsHit, recall: expected === 0 ? 1 : matched / expected };
   };
   const all = totals(runs);
   const byTrial = trials.map((trial) => totals(runs.filter((run) => run.trial === trial)));
@@ -180,6 +220,7 @@ export function summarizeRuns(runs: readonly EvalRun[], expectedByCase: Readonly
     ...all,
     recallByTrial: byTrial.map((entry) => entry.recall),
     falsePositivesByTrial: byTrial.map((entry) => entry.falsePositives),
+    trapsHitByTrial: byTrial.map((entry) => entry.trapsHit),
     cost: runs.reduce((total, run) => total + run.cost, 0),
     medianDurationSeconds: median(runs.map((run) => run.durationSeconds)),
   };

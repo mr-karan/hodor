@@ -112,7 +112,7 @@ async function runJob({ evalCase, trial }: { evalCase: EvalCase; trial: number }
       reasoningEffort,
       codemode,
     });
-    const score = scoreReview(result.review, evalCase.expectedFindings);
+    const score = scoreReview(result.review, evalCase.expectedFindings, evalCase.trapFindings);
     run = { caseId: evalCase.id, trial, score, error: null, cost: result.metrics.cost, durationSeconds: result.metrics.durationSeconds };
     record = {
       findings: result.review.findings.map((finding) => ({
@@ -127,6 +127,7 @@ async function runJob({ evalCase, trial }: { evalCase: EvalCase; trial: number }
     };
     console.log(
       `${evalCase.id} #${trial}: ${score.matched}/${score.expected} expected, ${score.falsePositives} false positive(s), ` +
+        `${score.trapsHit}/${score.traps} rejected finding(s) raised again, ` +
         `$${result.metrics.cost.toFixed(3)}, ${result.metrics.durationSeconds.toFixed(0)}s`,
     );
     for (const miss of score.missed) console.error(`  missed: ${miss.path} (${miss.keywords.join(", ")})`);
@@ -156,6 +157,7 @@ const percent = (value: number) => `${(value * 100).toFixed(1)}%`;
 console.log(
   `${label} aggregate: recall ${percent(summary.recall)} (per trial ${summary.recallByTrial.map(percent).join(", ")}), ` +
     `${summary.falsePositives} false positive(s) (per trial ${summary.falsePositivesByTrial.join(", ")}), ` +
+    `${summary.trapsHit}/${summary.traps} rejected finding(s) raised again (per trial ${summary.trapsHitByTrial.join(", ")}), ` +
     `${summary.reviews - summary.failedReviews}/${summary.reviews} reviews completed, ` +
     `$${summary.cost.toFixed(2)}, median ${summary.medianDurationSeconds.toFixed(0)}s`,
 );
