@@ -49,3 +49,138 @@ export function scoreReview(
     recall: expectedFindings.length === 0 ? 1 : matched / expectedFindings.length,
   };
 }
+
+interface EvalCaseBase {
+  id: string;
+  description: string;
+  expectedFindings: ExpectedFinding[];
+}
+
+/** A change written out as file contents before and after. */
+export interface InlineEvalCase extends EvalCaseBase {
+  kind: "inline";
+  baseFiles: Record<string, string>;
+  changedFiles: Record<string, string>;
+}
+
+/** A change replayed from two commits of an existing git repository. */
+export interface RepoEvalCase extends EvalCaseBase {
+  kind: "repo";
+  repo: string;
+  base: string;
+  head: string;
+}
+
+export type EvalCase = InlineEvalCase | RepoEvalCase;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStringMap(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
+}
+
+function parseExpectedFinding(value: unknown, where: string): ExpectedFinding {
+  if (!isRecord(value)) throw new Error(`${where}: expected finding must be an object`);
+  const { path, keywords, maximumPriority } = value;
+  if (typeof path !== "string" || path === "") throw new Error(`${where}: path must be a non-empty string`);
+  if (!Array.isArray(keywords) || keywords.length === 0 || !keywords.every((k) => typeof k === "string" && k !== "")) {
+    throw new Error(`${where}: keywords must be a non-empty list of strings`);
+  }
+  if (maximumPriority !== 0 && maximumPriority !== 1 && maximumPriority !== 2 && maximumPriority !== 3) {
+    throw new Error(`${where}: maximumPriority must be 0, 1, 2, or 3`);
+  }
+  return { path, keywords, maximumPriority };
+}
+
+/** Parses one eval case file. Repo paths resolve against the case file's directory. */
+export function parseEvalCase(value: unknown, source: string): EvalCase {
+  if (!isRecord(value)) throw new Error(`${source}: eval case must be an object`);
+  const { id, description, expectedFindings } = value;
+  if (typeof id !== "string" || id === "") throw new Error(`${source}: id must be a non-empty string`);
+  if (typeof description !== "string") throw new Error(`${source}: description must be a string`);
+  if (!Array.isArray(expectedFindings)) throw new Error(`${source}: expectedFindings must be a list`);
+  const base = {
+    id,
+    description,
+    expectedFindings: expectedFindings.map((finding, index) =>
+      parseExpectedFinding(finding, `${source}: expectedFindings[${index}]`),
+    ),
+  };
+  if ("repo" in value) {
+    const { repo, base: baseRef, head } = value;
+    if (typeof repo !== "string" || typeof baseRef !== "string" || typeof head !== "string") {
+      throw new Error(`${source}: repo cases need string repo, base, and head`);
+    }
+    return { ...base, kind: "repo", repo, base: baseRef, head };
+  }
+  const { baseFiles, changedFiles } = value;
+  if (!isStringMap(baseFiles) || !isStringMap(changedFiles)) {
+    throw new Error(`${source}: inline cases need baseFiles and changedFiles maps of path to contents`);
+  }
+  return { ...base, kind: "inline", baseFiles, changedFiles };
+}
+
+/** The outcome of one review of one case. A failed review has no score. */
+export interface EvalRun {
+  caseId: string;
+  trial: number;
+  score: EvaluationScore | null;
+  error: string | null;
+  cost: number;
+  durationSeconds: number;
+}
+
+export interface EvalSummary {
+  reviews: number;
+  failedReviews: number;
+  trials: number;
+  expected: number;
+  matched: number;
+  falsePositives: number;
+  recall: number;
+  /** Recall of each trial, to show run-to-run spread. */
+  recallByTrial: number[];
+  falsePositivesByTrial: number[];
+  cost: number;
+  medianDurationSeconds: number;
+}
+
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? (sorted[middle] ?? 0) : ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2;
+}
+
+/**
+ * Aggregates review runs. A failed review counts its expected findings as
+ * missed, so errors lower recall instead of disappearing from the total.
+ */
+export function summarizeRuns(runs: readonly EvalRun[], expectedByCase: ReadonlyMap<string, number>): EvalSummary {
+  const trials = [...new Set(runs.map((run) => run.trial))].sort((a, b) => a - b);
+  const totals = (subset: readonly EvalRun[]) => {
+    let expected = 0;
+    let matched = 0;
+    let falsePositives = 0;
+    for (const run of subset) {
+      expected += run.score?.expected ?? expectedByCase.get(run.caseId) ?? 0;
+      matched += run.score?.matched ?? 0;
+      falsePositives += run.score?.falsePositives ?? 0;
+    }
+    return { expected, matched, falsePositives, recall: expected === 0 ? 1 : matched / expected };
+  };
+  const all = totals(runs);
+  const byTrial = trials.map((trial) => totals(runs.filter((run) => run.trial === trial)));
+  return {
+    reviews: runs.length,
+    failedReviews: runs.filter((run) => run.error !== null).length,
+    trials: trials.length,
+    ...all,
+    recallByTrial: byTrial.map((entry) => entry.recall),
+    falsePositivesByTrial: byTrial.map((entry) => entry.falsePositives),
+    cost: runs.reduce((total, run) => total + run.cost, 0),
+    medianDurationSeconds: median(runs.map((run) => run.durationSeconds)),
+  };
+}
