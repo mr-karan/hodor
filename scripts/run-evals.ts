@@ -77,6 +77,15 @@ console.log(
 
 async function prepareWorkspace(evalCase: EvalCase): Promise<{ workspace: string; diffAgainst: string }> {
   const workspace = await mkdtemp(join(tmpdir(), `hodor-eval-${evalCase.id}-`));
+  try {
+    return await fillWorkspace(evalCase, workspace);
+  } catch (error) {
+    await rm(workspace, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function fillWorkspace(evalCase: EvalCase, workspace: string): Promise<{ workspace: string; diffAgainst: string }> {
   if (evalCase.kind === "repo") {
     await execFileAsync("git", ["clone", "--quiet", "--no-checkout", evalCase.repo, workspace]);
     await execFileAsync("git", ["checkout", "--quiet", "--detach", evalCase.head], { cwd: workspace });
@@ -95,12 +104,18 @@ async function prepareWorkspace(evalCase: EvalCase): Promise<{ workspace: string
   return { workspace, diffAgainst: "HEAD~1" };
 }
 
+// Appends go through one chain so concurrent reviews never interleave records.
+let outQueue: Promise<void> = Promise.resolve();
+
 async function runJob({ evalCase, trial }: { evalCase: EvalCase; trial: number }): Promise<void> {
-  const { workspace, diffAgainst } = await prepareWorkspace(evalCase);
   const started = Date.now();
+  let workspace: string | null = null;
   let run: EvalRun;
   let record: Record<string, unknown>;
   try {
+    const prepared = await prepareWorkspace(evalCase);
+    workspace = prepared.workspace;
+    const { diffAgainst } = prepared;
     const result = await reviewPr({
       localMode: true,
       workspaceDir: workspace,
@@ -119,7 +134,7 @@ async function runJob({ evalCase, trial }: { evalCase: EvalCase; trial: number }
         title: finding.title,
         body: finding.body,
         priority: finding.priority,
-        path: finding.code_location.absolute_file_path.slice(workspace.length + 1),
+        path: finding.code_location.absolute_file_path.slice(prepared.workspace.length + 1),
         lines: finding.code_location.line_range,
       })),
       overallCorrectness: result.review.overall_correctness,
@@ -137,11 +152,13 @@ async function runJob({ evalCase, trial }: { evalCase: EvalCase; trial: number }
     record = {};
     console.error(`${evalCase.id} #${trial}: review failed: ${message}`);
   } finally {
-    await rm(workspace, { recursive: true, force: true });
+    if (workspace !== null) await rm(workspace, { recursive: true, force: true });
   }
   runs.push(run);
   if (outPath !== undefined) {
-    await appendFile(outPath, `${JSON.stringify({ label, model, focus, instructions: instructionPaths, reasoningEffort: reasoningEffort ?? null, codemode, ...run, ...record })}\n`);
+    const line = `${JSON.stringify({ label, model, focus, instructions: instructionPaths, reasoningEffort: reasoningEffort ?? null, codemode, ...run, ...record })}\n`;
+    outQueue = outQueue.then(() => appendFile(outPath, line));
+    await outQueue;
   }
 }
 

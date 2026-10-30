@@ -25,6 +25,11 @@ export interface EvaluationScore {
   trapsHit: number;
 }
 
+/** True when a reviewed file is the case-relative path, compared by whole path segments. */
+export function findingPathMatches(absolutePath: string, relativePath: string): boolean {
+  return absolutePath === relativePath || absolutePath.endsWith(`/${relativePath}`);
+}
+
 export function scoreReview(
   review: ReviewOutput,
   expectedFindings: ExpectedFinding[],
@@ -37,7 +42,7 @@ export function scoreReview(
   for (const expected of expectedFindings) {
     const actualIndex = review.findings.findIndex((finding, index) => {
       if (!unmatchedActual.has(index)) return false;
-      const pathMatches = finding.code_location.absolute_file_path.endsWith(expected.path);
+      const pathMatches = findingPathMatches(finding.code_location.absolute_file_path, expected.path);
       const text = `${finding.title}\n${finding.body}`.toLowerCase();
       const keywordsMatch = expected.keywords.every((keyword) =>
         text.includes(keyword.toLowerCase()),
@@ -57,7 +62,7 @@ export function scoreReview(
     review.findings.some((finding) => {
       const { start, end } = finding.code_location.line_range;
       return (
-        finding.code_location.absolute_file_path.endsWith(trap.path) &&
+        findingPathMatches(finding.code_location.absolute_file_path, trap.path) &&
         trap.line >= start - TRAP_LINE_TOLERANCE &&
         trap.line <= end + TRAP_LINE_TOLERANCE
       );

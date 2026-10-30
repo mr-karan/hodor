@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseEvalCase, scoreReview, summarizeRuns } from "../src/evaluation.js";
+import { findingPathMatches, parseEvalCase, scoreReview, summarizeRuns } from "../src/evaluation.js";
 import type { ReviewOutput } from "../src/types.js";
 
 const review: ReviewOutput = {
@@ -126,5 +126,30 @@ describe("rejected-finding traps", () => {
       ],
     );
     expect(score).toMatchObject({ traps: 3, trapsHit: 1, falsePositives: 2 });
+  });
+});
+
+describe("finding path matching", () => {
+  it("compares whole path segments, so a longer file name never matches a shorter one", () => {
+    expect(findingPathMatches("/tmp/ws/src/math.ts", "src/math.ts")).toBe(true);
+    expect(findingPathMatches("/tmp/ws/src/notmath.ts", "math.ts")).toBe(false);
+    expect(findingPathMatches("/tmp/ws/math.ts", "math.ts")).toBe(true);
+    const score = scoreReview(
+      {
+        findings: [
+          {
+            title: "t",
+            body: "b",
+            priority: 2,
+            code_location: { absolute_file_path: "/tmp/ws/notmath.ts", line_range: { start: 5, end: 5 } },
+          },
+        ],
+        overall_correctness: "patch is incorrect",
+        overall_explanation: "",
+      },
+      [],
+      [{ path: "math.ts", line: 5 }],
+    );
+    expect(score.trapsHit).toBe(0);
   });
 });
