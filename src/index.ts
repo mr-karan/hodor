@@ -6,6 +6,8 @@ export { parseModelString, mapReasoningEffort, getApiKey } from "./model.js";
 export { formatMetricsMarkdown, printMetrics, pushMetrics } from "./metrics.js";
 export { validateReviewOutput } from "./review.js";
 export { renderMarkdown } from "./render.js";
+export { parseReviewKey } from "./review-key.js";
+export type { ReviewKey } from "./review-key.js";
 export {
   MAX_REVIEW_INSTRUCTIONS_BYTES,
   MAX_TOTAL_INSTRUCTIONS_BYTES,

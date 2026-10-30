@@ -27,6 +27,7 @@ import {
   type FailOnPriority,
 } from "./review-policy.js";
 import { loadReviewInstructionsFile } from "./review-instructions.js";
+import { parseReviewKey, type ReviewKey } from "./review-key.js";
 import { drainBufferedLogs, getWarnings, logger, setLogBuffering, setLogLevel } from "./utils/logger.js";
 
 const program = new Command();
@@ -83,6 +84,10 @@ program
     "--commit-status",
     "Post a pass/fail status from all unresolved Hodor findings",
     false,
+  )
+  .option(
+    "--review-key <name>",
+    "Keep this job's notes, threads, commit status, and Code Quality issues separate from Hodor jobs with another key (lowercase letters, digits, and hyphens)",
   )
   .option(
     "--require-delivery",
@@ -152,6 +157,7 @@ program
     const commitStatus = cmdOpts.commitStatus as boolean;
     const requireDelivery = cmdOpts.requireDelivery as boolean;
     const failOnPriorityRaw = cmdOpts.failOnPriority as string | undefined;
+    const reviewKeyRaw = typeof cmdOpts.reviewKey === "string" ? cmdOpts.reviewKey : undefined;
     const ultrathink = cmdOpts.ultrathink as boolean;
     const bedrockTagsRaw = cmdOpts.bedrockTags as string | undefined;
     const prometheusPush = cmdOpts.prometheusPush as string | undefined;
@@ -189,6 +195,16 @@ program
     if (failOnPriorityRaw) {
       try {
         failOnPriority = parseFailOnPriority(failOnPriorityRaw.toUpperCase());
+      } catch (error) {
+        console.error(chalk.red(`Error: ${error instanceof Error ? error.message : error}`));
+        process.exit(1);
+      }
+    }
+
+    let reviewKey: ReviewKey | null = null;
+    if (reviewKeyRaw !== undefined) {
+      try {
+        reviewKey = parseReviewKey(reviewKeyRaw);
       } catch (error) {
         console.error(chalk.red(`Error: ${error instanceof Error ? error.message : error}`));
         process.exit(1);
@@ -284,6 +300,7 @@ program
           targetBranchOverride,
           tinyDiffFastPath,
           codemode,
+          reviewKey,
         });
       } finally {
         trace.close();
@@ -331,6 +348,7 @@ program
             skipSummary: reusedReview,
             skipInline: reusedReview,
             reviewMode: metrics.reviewMode,
+            reviewKey,
           });
         } else if (reusedReview) {
           result = {
@@ -346,6 +364,7 @@ program
             metricsFooter,
             headSha,
             cacheMarker,
+            reviewKey,
           });
         }
         delivery = { kind: "posted", result };
@@ -371,6 +390,7 @@ program
               parsed.prNumber,
               parsed.host,
               await fetchGitlabPublisherIdentity(parsed.host),
+              reviewKey,
             );
             reviewFindings = mergeReviewStateFindings(
               review.findings,
@@ -383,7 +403,7 @@ program
             ).open;
           }
 
-          writeFileSync(codeQuality, formatCodeQualityReport(reviewFindings), "utf-8");
+          writeFileSync(codeQuality, formatCodeQualityReport(reviewFindings, reviewKey), "utf-8");
           codeQualityWritten = true;
           logger.info(`Wrote code quality report to ${codeQuality}`);
         } catch (err) {
@@ -420,6 +440,7 @@ program
           fast_path: metrics.fastPath ? "true" : "false",
         };
         if (metricsProject) labels.project = metricsProject;
+        if (reviewKey) labels.review_key = reviewKey;
 
         await pushMetrics({
           pushgatewayUrl: prometheusPush,
@@ -490,6 +511,7 @@ program
           outcome: "review_failed",
         };
         if (failureProject) labels.project = failureProject;
+        if (reviewKey) labels.review_key = reviewKey;
         await pushMetrics({
           pushgatewayUrl: prometheusPush,
           metrics: {

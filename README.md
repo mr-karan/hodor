@@ -132,6 +132,7 @@ Local mode:
 | `--review-style` | `hybrid` | GitLab posting style: `summary` note, `inline`, or both with `hybrid` |
 | `--code-quality` | None | Write a Code Quality report containing current and unresolved Hodor findings |
 | `--commit-status` | Off | Post a pass/fail status based on all unresolved Hodor findings |
+| `--review-key` | None | Separate this job from other Hodor jobs on the same PR/MR. The job reads back only notes written under the same key and names its commit status `hodor/<key>`. Use up to 32 lowercase letters, digits, and hyphens. See [Run a second review job](./docs/AUTOMATED_REVIEWS.md#run-a-second-review-job). |
 | `--require-delivery` | Off | Exit non-zero if requested comments, statuses, or artifacts are not delivered |
 | `--fail-on-priority` | None | Exit non-zero for findings at or above `P0`, `P1`, `P2`, or `P3` |
 | `--instructions` | None | Add review instructions from a file. Repeatable; later files win conflicts. |
@@ -309,6 +310,7 @@ flowchart LR
 | `src/review-state.ts` | Finding fingerprints, dedupe against open discussions, verified fixes |
 | `src/review-cache.ts` | Identical-HEAD review reuse |
 | `src/provenance.ts` | Publishing identity and trusted Hodor note partitioning |
+| `src/review-key.ts` | `--review-key` parsing, the key marker, and which notes belong to a job |
 | `src/review-policy.ts` | `--fail-on-priority` evaluation |
 | `src/publisher.ts` | Inline notes, per-review summary note (older ones collapsed), commit status, fixed-thread replies |
 | `src/gitlab.ts`, `src/github.ts`, `src/gitea.ts` | Platform APIs via `glab`, `gh`, and the Gitea REST API |

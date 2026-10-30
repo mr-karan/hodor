@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReviewFinding, ReviewOutput } from "../src/types.js";
 
 const mocks = vi.hoisted(() => ({
@@ -843,5 +843,221 @@ describe("GitLab verified fixes", () => {
     expect(result.fixedAwaiting).toBe(0);
     expect(summaryBody()).toContain("Incomplete delivery");
     expect(summaryBody()).not.toContain("**Fixed, waiting to be resolved:** 1.");
+  });
+});
+
+describe("bodies written without a review key", () => {
+  const HEAD = "0123456789abcdef0123456789abcdef01234567";
+  const BOT = { id: 7, username: "hodor-bot" };
+  const MODEL = "anthropic/claude-opus-5-5";
+  const METRICS = "**Review metrics:** 3 turns";
+  const CACHE = "<!-- hodor:cache:v1:payload -->";
+  const EARLIER_FINGERPRINT = "402569e39da0ad398506ea3fdb3a51ba5ac2d6ce8ccdefbdb4aaca7044ab1a4a";
+  const REPORTED_FINGERPRINT = "b5b44df4539025d0c3c28729b6d42e290d1451ce010eccc43b80416adb50de16";
+  const DETAILS = [
+    "<details>",
+    "<summary>Review details</summary>",
+    "",
+    `- Model: \`${MODEL}\``,
+    "",
+    METRICS,
+    "",
+    "</details>",
+    "",
+  ];
+  const reported: ReviewFinding = {
+    ...finding,
+    code_location: { absolute_file_path: "/workspace/src/app.ts", line_range: { start: 12, end: 13 } },
+    suggestion: "if (!owner) return deny();",
+  };
+  const reviewed: ReviewOutput = {
+    findings: [reported],
+    overall_correctness: "patch is incorrect",
+    overall_explanation: "One blocking issue remains.",
+    resolved_findings: [EARLIER_FINGERPRINT],
+  };
+
+  function writtenBodies(): Record<string, string> {
+    const bodies: Record<string, string> = {};
+    for (const call of [...mocks.exec.mock.calls, ...mocks.execJson.mock.calls]) {
+      const args = call[1] as string[];
+      const input = (call[2] as { input?: string } | undefined)?.input;
+      if (!args.includes("--method") || input === undefined) continue;
+      const payload = JSON.parse(input) as { body?: string; note?: string };
+      bodies[args[1]] = payload.body ?? payload.note ?? input;
+    }
+    return bodies;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-30T09:00:00Z"));
+    mocks.exec.mockReset();
+    mocks.execJson.mockReset();
+    mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.some((arg) => arg.includes("/discussions?"))) {
+        return {
+          stdout: JSON.stringify([{
+            id: "thread-1",
+            notes: [{
+              id: 11,
+              body: `<!-- hodor-review -->\n<!-- hodor:finding:${EARLIER_FINGERPRINT} -->\n**[P2] Validate the archive schema**\n\nThe schema can drift.`,
+              resolvable: true,
+              resolved: false,
+              author: BOT,
+              position: { new_path: "src/archive.ts", new_line: 4 },
+            }],
+          }]),
+          stderr: "",
+        };
+      }
+      if (args.some((arg) => arg.endsWith("/notes")) && args.includes("POST")) {
+        return { stdout: JSON.stringify({ id: 500 }), stderr: "" };
+      }
+      if (args.some((arg) => arg.includes("/notes?per_page=100"))) {
+        return {
+          stdout: JSON.stringify([{
+            id: 7,
+            body: `<!-- hodor:sha:${"e".repeat(40)} -->\n<!-- hodor-review -->\n<!-- hodor:summary:v1 -->\nold`,
+            author: BOT,
+            system: false,
+            type: null,
+            position: null,
+          }]),
+          stderr: "",
+        };
+      }
+      return { stdout: "", stderr: "" };
+    });
+    mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.includes("user")) return BOT;
+      if (args.some((arg) => arg.endsWith("/draft_notes"))) return { id: 1 };
+      if (args.some((arg) => arg.includes("merge_requests/42"))) {
+        return { diff_refs: { base_sha: "a".repeat(40), head_sha: HEAD, start_sha: "c".repeat(40) } };
+      }
+      return {};
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("keeps every GitLab note, reply, summary, and status payload byte-identical", async () => {
+    const { postReviewStructured } = await import("../src/publisher.js");
+
+    const result = await postReviewStructured({
+      prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42",
+      review: reviewed,
+      reviewStyle: "hybrid",
+      workspacePath: "/workspace",
+      headSha: HEAD,
+      commitStatus: true,
+      reviewMode: "incremental",
+      cacheMarker: CACHE,
+      model: MODEL,
+      metricsFooter: METRICS,
+    });
+
+    expect(result.success).toBe(true);
+    expect(writtenBodies()).toEqual({
+      "projects/acme%2Fapp/merge_requests/42/discussions/thread-1/notes": [
+        "<!-- hodor-review -->",
+        `<!-- hodor:fixed:${EARLIER_FINGERPRINT}:${HEAD} -->`,
+        "Fixed in `01234567`. Resolve this thread if you agree.",
+      ].join("\n"),
+      "projects/acme%2Fapp/merge_requests/42/draft_notes": [
+        "<!-- hodor-review -->",
+        `<!-- hodor:finding:${REPORTED_FINGERPRINT} -->`,
+        "**[P1] Preserve authorization**",
+        "",
+        "The new path skips the ownership check.",
+        "",
+        "```suggestion:-0+1",
+        "if (!owner) return deny();",
+        "```",
+      ].join("\n"),
+      "projects/acme%2Fapp/merge_requests/42/notes": [
+        `<!-- hodor:sha:${HEAD} -->`,
+        CACHE,
+        "<!-- hodor-review -->",
+        "<!-- hodor:summary:v1 -->",
+        "",
+        "### Hodor review",
+        "",
+        "**New findings:** 1.",
+        "",
+        "| Unresolved Hodor threads (as of 2026-10-30 09:00 UTC) | Count |",
+        "| --- | ---: |",
+        "| Critical (P0/P1) | 1 |",
+        "| Important (P2) | 0 |",
+        "| Minor (P3) | 0 |",
+        "",
+        "**Fixed, waiting to be resolved:** 1. Hodor replied on the thread; resolve it on GitLab if you agree.",
+        "",
+        "**Overall verdict:** Blocking findings remain",
+        "",
+        "**Reviewed commit:** `01234567`",
+        "",
+        "**Incremental review:** One blocking issue remains.",
+        "",
+        "**Inline comments:** 1 new",
+        "",
+        "### Findings from this review",
+        "",
+        "| Finding | Location | Priority |",
+        "| --- | --- | ---: |",
+        "| **[P1] Preserve authorization**<br>The new path skips the ownership check. | `src/app.ts:12-13` | P1 |",
+        "",
+        ...DETAILS,
+      ].join("\n"),
+      "projects/acme%2Fapp/merge_requests/42/notes/7": [
+        "<!-- hodor-review -->",
+        "<!-- hodor:superseded -->",
+        "_This Hodor review was superseded by a newer one: [latest review](https://gitlab.example.com/acme/app/-/merge_requests/42#note_500)._",
+        "",
+      ].join("\n"),
+      [`projects/acme%2Fapp/statuses/${HEAD}`]:
+        '{"state":"failed","name":"hodor","description":"1 blocking Hodor finding(s) unresolved"}',
+    });
+  });
+
+  it("keeps the GitHub review body and the GitLab fallback summary byte-identical", async () => {
+    const { postReviewComment } = await import("../src/publisher.js");
+    const { renderMarkdown } = await import("../src/render.js");
+    const issues = [
+      "### Issues Found",
+      "",
+      "**Critical (P0/P1)**",
+      "- **[P1] Preserve authorization** (`src/app.ts:12-13`)",
+      "  - The new path skips the ownership check.",
+      "",
+      "### Summary",
+      "Total issues: 1 critical, 0 important, 0 minor.",
+      "",
+      "### Overall Verdict",
+      "**Status**: Patch has blocking issues",
+      "",
+      "**Explanation**: One blocking issue remains.",
+      "",
+    ];
+    const options = {
+      reviewText: renderMarkdown(reviewed),
+      model: MODEL,
+      metricsFooter: METRICS,
+      headSha: HEAD,
+      cacheMarker: CACHE,
+    };
+
+    await postReviewComment({ prUrl: "https://github.com/acme/app/pull/42", ...options });
+    await postReviewComment({ prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42", ...options });
+
+    const ghArgs = mocks.exec.mock.calls.map((call) => call[1] as string[]).find((args) => args[0] === "pr");
+    expect(ghArgs?.[ghArgs.indexOf("--body") + 1]).toBe(
+      [`<!-- hodor:sha:${HEAD} -->`, CACHE, "<!-- hodor-review -->", ...issues, ...DETAILS].join("\n"),
+    );
+    expect(writtenBodies()["projects/acme%2Fapp/merge_requests/42/notes"]).toBe(
+      [`<!-- hodor:sha:${HEAD} -->`, CACHE, "<!-- hodor-review -->", "<!-- hodor:summary:v1 -->", ...issues, ...DETAILS].join("\n"),
+    );
   });
 });

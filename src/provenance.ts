@@ -1,6 +1,7 @@
 import { fetchGiteaPublisherIdentity } from "./gitea.js";
 import { fetchGithubUser } from "./github.js";
 import { fetchGitlabPublisherIdentity, isHodorGeneratedNote } from "./gitlab.js";
+import { belongsToReviewKey, type ReviewKey } from "./review-key.js";
 import { logger } from "./utils/logger.js";
 import type {
   GithubPublisherIdentity,
@@ -15,7 +16,7 @@ import type {
 const GITHUB_ACTIONS_BOT_LOGIN = "github-actions[bot]";
 
 export interface PartitionedNotes {
-  /** Hodor-marked notes written by the publishing identity. */
+  /** Hodor-marked notes written by the publishing identity under this review key. */
   hodor: TrustedHodorNote[];
   /** Everything else, including participant notes that copy a Hodor marker. */
   others: UntrustedNote[];
@@ -80,25 +81,29 @@ export function isAuthoredByPublisher(
 }
 
 /**
- * Split notes into authenticated Hodor state and untrusted context. This is
- * the only place that creates TrustedHodorNote values. Any previous
- * provenance on the input is ignored and recomputed.
+ * Split notes into this run's authenticated Hodor state and untrusted
+ * context. This is the only place that creates TrustedHodorNote values. Any
+ * previous provenance on the input is ignored and recomputed. Hodor notes
+ * written under another review key are another job's state and land in
+ * neither list.
  */
 export function partitionNotesByProvenance(
   notes: readonly NoteEntry[] | undefined | null,
   identity: PublisherIdentity | null,
+  reviewKey: ReviewKey | null = null,
 ): PartitionedNotes {
   const result: PartitionedNotes = { hodor: [], others: [] };
   for (const note of notes ?? []) {
+    const body = note.body ?? "";
     const trusted =
       identity != null &&
       note.system !== true &&
-      isHodorGeneratedNote(note.body) &&
+      isHodorGeneratedNote(body) &&
       isAuthoredByPublisher(note.author, identity);
-    if (trusted) {
-      result.hodor.push({ ...note, provenance: "hodor" });
-    } else {
+    if (!trusted) {
       result.others.push({ ...note, provenance: "untrusted" });
+    } else if (belongsToReviewKey(body, reviewKey)) {
+      result.hodor.push({ ...note, provenance: "hodor" });
     }
   }
   return result;

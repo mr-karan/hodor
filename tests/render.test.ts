@@ -1,6 +1,7 @@
 import { describe, test, expect, it } from "vitest";
 import { renderMarkdown, renderSummaryMarkdown, renderSupersededSummary } from "../src/render.js";
 import type { ReviewOutput, ReviewFinding } from "../src/types.js";
+import { parseReviewKey } from "../src/review-key.js";
 
 function makeFinding(title: string, priority: 0 | 1 | 2 | 3): ReviewFinding {
   return {
@@ -252,3 +253,14 @@ describe("renderSummaryMarkdown thread labels", () => {
   });
 });
 
+
+describe("summary heading for a keyed review job", () => {
+  const review: ReviewOutput = { findings: [], overall_correctness: "patch is correct", overall_explanation: "" };
+
+  it("names the job only when a review key is set", () => {
+    expect(renderSummaryMarkdown(review)).toContain("\n### Hodor review\n");
+    expect(renderSummaryMarkdown(review, { reviewKey: parseReviewKey("security") })).toContain(
+      "\n### Hodor review (security)\n",
+    );
+  });
+});

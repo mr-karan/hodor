@@ -8,6 +8,7 @@ import {
   renderSupersededSummary,
 } from "./render.js";
 import { getDiscussionFingerprint, getFixedMarker } from "./review-state.js";
+import { belongsToReviewKey, withReviewKey, type ReviewKey } from "./review-key.js";
 
 export { HODOR_REVIEW_MARKER, HODOR_SUMMARY_MARKER };
 
@@ -216,8 +217,9 @@ export interface PublishedSummary {
 
 /**
  * Post a new summary note, so it lands at the bottom of the MR and notifies
- * participants, then collapse Hodor's older summaries into a link to it.
- * Only a failed POST throws. Collapse failures are logged as warnings.
+ * participants, then collapse the older summaries of this review key into a
+ * link to it. Only a failed POST throws. Collapse failures are logged as
+ * warnings.
  */
 export async function publishGitlabMrSummary(
   owner: string,
@@ -226,6 +228,7 @@ export async function publishGitlabMrSummary(
   body: string,
   host: string | null | undefined,
   identity: GitlabPublisherIdentity,
+  reviewKey: ReviewKey | null = null,
 ): Promise<PublishedSummary> {
   const encoded = encodedProjectPath(owner, repo);
   const env = glabEnv(host);
@@ -253,7 +256,7 @@ export async function publishGitlabMrSummary(
   try {
     const { stdout } = await exec("glab", ["api", `${notesEndpoint}?per_page=100`, "--paginate"], { env });
     priorSummaryIds = parsePaginatedJsonArrays(stdout)
-      .filter((note) => isActiveSummaryNote(note, identity))
+      .filter((note) => isActiveSummaryNote(note, identity, reviewKey))
       .map((note) => note.id)
       // Note ids increase monotonically. Collapse only older summaries, so two
       // overlapping runs cannot collapse each other's newer note.
@@ -264,7 +267,10 @@ export async function publishGitlabMrSummary(
     return { noteId, collapsed: 0 };
   }
 
-  const collapsedBody = renderSupersededSummary(gitlabNoteUrl(owner, repo, mrNumber, noteId, host));
+  const collapsedBody = withReviewKey(
+    renderSupersededSummary(gitlabNoteUrl(owner, repo, mrNumber, noteId, host)),
+    reviewKey,
+  );
   let collapsed = 0;
   for (const priorId of priorSummaryIds) {
     try {
@@ -304,15 +310,20 @@ function parseCreatedNoteId(stdout: string): number | null {
   return typeof id === "number" && Number.isSafeInteger(id) ? id : null;
 }
 
-/** A summary note by the publisher that still carries machine state. */
-function isActiveSummaryNote(note: Record<string, unknown>, identity: GitlabPublisherIdentity): boolean {
+/** A summary note by the publisher, for this review key, that still carries machine state. */
+function isActiveSummaryNote(
+  note: Record<string, unknown>,
+  identity: GitlabPublisherIdentity,
+  reviewKey: ReviewKey | null,
+): boolean {
   const body = note.body;
   if (
     typeof body !== "string" ||
     !isPublisherNote(note, identity) ||
     note.type != null ||
     note.position != null ||
-    isSupersededSummary(body)
+    isSupersededSummary(body) ||
+    !belongsToReviewKey(body, reviewKey)
   ) {
     return false;
   }
@@ -665,10 +676,12 @@ export async function postGitlabCommitStatus(
 }
 
 /**
- * List resolvable Hodor discussions written by the publishing identity. Notes
- * from other authors are dropped before fingerprinting, deduplication, merge,
- * status, and code quality, even if they copy a Hodor marker. A fixed-reply
- * counts only when the publishing identity wrote it in the same discussion.
+ * List resolvable Hodor discussions written by the publishing identity under
+ * this review key. Notes from other authors are dropped before
+ * fingerprinting, deduplication, merge, status, and code quality, even if
+ * they copy a Hodor marker. Hodor notes with another key belong to another
+ * job and are skipped. A fixed-reply counts only when the publishing identity
+ * wrote it in the same discussion.
  */
 export async function listHodorDiscussions(
   owner: string,
@@ -676,6 +689,7 @@ export async function listHodorDiscussions(
   mrNumber: number | string,
   host: string | null | undefined,
   identity: GitlabPublisherIdentity,
+  reviewKey: ReviewKey | null = null,
 ): Promise<HodorDiscussion[]> {
   const encoded = encodedProjectPath(owner, repo);
   const env = glabEnv(host);
@@ -730,7 +744,7 @@ export async function listHodorDiscussions(
         humanReplies.push({ noteId, author: author?.username ?? author?.name ?? "unknown", body });
         continue;
       }
-      if (!isHodorGeneratedNote(body)) {
+      if (!isHodorGeneratedNote(body) || !belongsToReviewKey(body, reviewKey)) {
         continue;
       }
 
