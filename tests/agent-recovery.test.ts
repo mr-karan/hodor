@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { reviewPr, type AgentProgressEvent } from "../src/agent.js";
+import { parseReviewKey, type ReviewKey } from "../src/review-key.js";
 import { logger } from "../src/utils/logger.js";
 
 const mocks = vi.hoisted(() => ({
@@ -716,6 +717,71 @@ describe("reviewPr submit_review recovery", () => {
       });
       expect(result.range).toEqual({ headSha: HEAD, targetBranch: "main", baseSha: "a".repeat(40) });
       expect(result.metrics.diffEmbedded).toBe(true);
+    });
+
+    it.each([
+      { name: "the default run", key: null, other: parseReviewKey("security") },
+      { name: "the security run", key: parseReviewKey("security"), other: null },
+    ])("$name reviews from its own base and shows only its own threads and summaries", async ({ key, other }) => {
+      const ownSha = "1".repeat(40);
+      const keyLine = (value: ReviewKey | null): string => (value === null ? "" : `<!-- hodor:key:${value} -->\n`);
+      const summary = (value: ReviewKey | null, sha: string, verdict: string): string =>
+        `<!-- hodor:sha:${sha} -->\n<!-- hodor-review -->\n<!-- hodor:summary:v1 -->\n${keyLine(value)}\n### Hodor review\n\n**Overall verdict:** ${verdict}`;
+      const keyedThread = (id: string, value: ReviewKey | null, fingerprint: string, title: string, path: string) => ({
+        id,
+        notes: [{
+          id: 1,
+          body: `<!-- hodor-review -->\n<!-- hodor:finding:${fingerprint} -->\n${keyLine(value)}**${title}**\n\nBody.`,
+          resolvable: true,
+          resolved: false,
+          author: { id: 7, username: "hodor-bot" },
+          position: { new_path: path, new_line: 1 },
+        }],
+      });
+      const fallback = mocks.exec.getMockImplementation();
+      mocks.exec.mockImplementation(async (cmd: string, args: string[], opts?: unknown) => {
+        if (args.includes("cat-file")) return { stdout: "commit\n", stderr: "" };
+        if (args.some((arg) => arg.endsWith("/notes"))) {
+          return {
+            stdout: JSON.stringify([
+              { id: 50, body: summary(key, ownSha, "Own job summary"), author: { id: 7, username: "hodor-bot" }, created_at: "2026-10-01T10:00:00Z" },
+              { id: 51, body: summary(other, "2".repeat(40), "Other job summary"), author: { id: 7, username: "hodor-bot" }, created_at: "2026-10-01T10:05:00Z" },
+            ]),
+            stderr: "",
+          };
+        }
+        if (args.some((arg) => arg.includes("/discussions?"))) {
+          return {
+            stdout: JSON.stringify([
+              keyedThread("own", key, inDiff, "[P2] Keep the value in range", "src/example.ts"),
+              keyedThread("other", other, outsideDiff, "[P3] Rename the helper", "src/other.ts"),
+            ]),
+            stderr: "",
+          };
+        }
+        if (!fallback) throw new Error("exec fallback missing");
+        return fallback(cmd, args, opts);
+      });
+      mocks.promptResponses = [{ kind: "tool" }];
+
+      const result = await reviewPr({
+        prUrl: "https://gitlab.example.com/acme/app/-/merge_requests/42",
+        cleanup: false,
+        model: "anthropic/test-model",
+        reviewKey: key,
+      });
+
+      expect(result.metrics.reviewMode).toBe("incremental");
+      expect(result.range.baseSha).toBe(ownSha);
+      expect(mocks.prompts[0]).toContain("[P2] Keep the value in range");
+      expect(mocks.prompts[0]).not.toContain("Rename the helper");
+      expect(mocks.prompts[0]).toContain("Own job summary");
+      expect(mocks.prompts[0]).not.toContain("Other job summary");
+      expect(result.context).toEqual({
+        hodorThreads: { open: 1, fixedWaiting: 0, resolved: 0, droppedByLimit: 0 },
+        humanComments: { included: 0, droppedByBudget: 0 },
+        priorHodorReviews: 1,
+      });
     });
 
     it("drops an id whose finding the review reports again", async () => {

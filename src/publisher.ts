@@ -19,6 +19,7 @@ import {
 } from "./gitlab.js";
 import { detectPlatform, parsePrUrl } from "./platform.js";
 import { HODOR_SUMMARY_MARKER, renderMarkdown, renderSummaryMarkdown } from "./render.js";
+import { reviewCheckName, withReviewKey, type ReviewKey } from "./review-key.js";
 import {
   buildFixedReplyBody,
   getDiscussionFingerprint,
@@ -42,6 +43,7 @@ export async function postGitlabReviewCommitStatus(
   parsed: ParsedPrUrl,
   findings: ReviewStateFinding[],
   diffRefs: DiffRefs,
+  reviewKey: ReviewKey | null = null,
 ): Promise<void> {
   const blocking = findings.filter((finding) => finding.priority <= 1).length;
   const state = blocking > 0 ? "failed" : "success";
@@ -58,7 +60,7 @@ export async function postGitlabReviewCommitStatus(
     diffRefs.head_sha,
     state,
     parsed.host,
-    { description },
+    { name: reviewCheckName(reviewKey), description },
   );
 }
 
@@ -85,6 +87,7 @@ async function publishSummary(
   parsed: ParsedPrUrl,
   body: string,
   identity: GitlabPublisherIdentity,
+  reviewKey: ReviewKey | null,
 ): Promise<string | null> {
   const { noteId, collapsed } = await publishGitlabMrSummary(
     parsed.owner,
@@ -93,6 +96,7 @@ async function publishSummary(
     body,
     parsed.host,
     identity,
+    reviewKey,
   );
   logger.info(
     `Posted summary note${noteId === null ? "" : ` ${noteId}`}; collapsed ${collapsed} older summary note(s)`,
@@ -134,8 +138,9 @@ export async function postReviewComment(opts: {
   metricsFooter?: string | null;
   headSha?: string | null;
   cacheMarker?: string | null;
+  reviewKey?: ReviewKey | null;
 }): Promise<PostCommentResult> {
-  const { prUrl, reviewText, model, metricsFooter, headSha, cacheMarker } = opts;
+  const { prUrl, reviewText, model, metricsFooter, headSha, cacheMarker, reviewKey = null } = opts;
   const platform = detectPlatform(prUrl);
   const parsed = parsePrUrl(prUrl);
   let body = reviewText;
@@ -147,6 +152,7 @@ export async function postReviewComment(opts: {
   }
   if (headSha) body = `<!-- hodor:sha:${headSha} -->\n${body}`;
   if (cacheMarker) body = body.replace("\n", `\n${cacheMarker}\n`);
+  body = withReviewKey(body, reviewKey);
   body = appendReviewDetails(body, model, metricsFooter);
 
   try {
@@ -178,7 +184,7 @@ export async function postReviewComment(opts: {
     if ("error" in resolved) {
       return { success: false, platform, error: resolved.error };
     }
-    const summaryUrl = await publishSummary(parsed, body, resolved.identity);
+    const summaryUrl = await publishSummary(parsed, body, resolved.identity, reviewKey);
     return {
       success: true,
       platform,
@@ -206,6 +212,7 @@ export async function postReviewStructured(opts: {
   skipSummary?: boolean;
   skipInline?: boolean;
   reviewMode?: ReviewMetrics["reviewMode"];
+  reviewKey?: ReviewKey | null;
 }): Promise<PostCommentResult> {
   const {
     prUrl,
@@ -220,6 +227,7 @@ export async function postReviewStructured(opts: {
     skipSummary = false,
     skipInline = false,
     reviewMode,
+    reviewKey = null,
   } = opts;
 
   const platform = detectPlatform(prUrl);
@@ -231,6 +239,7 @@ export async function postReviewStructured(opts: {
       metricsFooter,
       headSha,
       cacheMarker,
+      reviewKey,
     });
   }
 
@@ -265,6 +274,7 @@ export async function postReviewStructured(opts: {
       metricsFooter,
       headSha,
       cacheMarker,
+      reviewKey,
     });
   }
 
@@ -278,6 +288,7 @@ export async function postReviewStructured(opts: {
       parsed.prNumber,
       parsed.host,
       identity,
+      reviewKey,
     );
     for (const discussion of discussions) {
       if (discussion.resolved) continue;
@@ -304,6 +315,7 @@ export async function postReviewStructured(opts: {
     fixedThreads: resolveFixedThreads(review.resolved_findings ?? [], discussions),
     currentFingerprints,
     headSha,
+    reviewKey,
   });
   errors.push(...fixedReplyResult.errors);
   const { open: reviewFindings, fixedAwaiting } = mergeReviewStateFindings(
@@ -348,7 +360,10 @@ export async function postReviewStructured(opts: {
       const title = /^\[P[0-3]\]/.test(finding.title)
         ? finding.title
         : `[P${finding.priority}] ${finding.title}`;
-      let body = `${HODOR_REVIEW_MARKER}\n<!-- hodor:finding:${fingerprint} -->\n**${title}**\n\n${finding.body}`;
+      let body = withReviewKey(
+        `${HODOR_REVIEW_MARKER}\n<!-- hodor:finding:${fingerprint} -->\n**${title}**\n\n${finding.body}`,
+        reviewKey,
+      );
 
       if (finding.suggestion) {
         const { start, end } = finding.code_location.line_range;
@@ -461,9 +476,10 @@ export async function postReviewStructured(opts: {
     });
     if (headSha) summaryBody = `<!-- hodor:sha:${headSha} -->\n${summaryBody}`;
     if (cacheMarker) summaryBody = summaryBody.replace("\n", `\n${cacheMarker}\n`);
+    summaryBody = withReviewKey(summaryBody, reviewKey);
     summaryBody = appendReviewDetails(summaryBody, model, metricsFooter);
     try {
-      summaryUrl = await publishSummary(parsed, summaryBody, identity);
+      summaryUrl = await publishSummary(parsed, summaryBody, identity, reviewKey);
       summaryPosted = true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -475,7 +491,7 @@ export async function postReviewStructured(opts: {
   let commitStatusPosted = false;
   if (commitStatus && !discussionListingFailed) {
     try {
-      await postGitlabReviewCommitStatus(parsed, reviewFindings, diffRefs);
+      await postGitlabReviewCommitStatus(parsed, reviewFindings, diffRefs, reviewKey);
       commitStatusPosted = true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -524,8 +540,9 @@ async function replyToFixedThreads(opts: {
   fixedThreads: ReadonlyMap<string, HodorDiscussion>;
   currentFingerprints: ReadonlySet<string>;
   headSha?: string | null;
+  reviewKey: ReviewKey | null;
 }): Promise<{ posted: number; persisted: Set<string>; errors: string[] }> {
-  const { parsed, fixedThreads, currentFingerprints, headSha } = opts;
+  const { parsed, fixedThreads, currentFingerprints, headSha, reviewKey } = opts;
   const persisted = new Set<string>();
   const errors: string[] = [];
   let posted = 0;
@@ -545,7 +562,7 @@ async function replyToFixedThreads(opts: {
         parsed.repo,
         parsed.prNumber,
         thread.discussionId,
-        buildFixedReplyBody(fingerprint, headSha),
+        withReviewKey(buildFixedReplyBody(fingerprint, headSha), reviewKey),
         parsed.host,
       );
       posted++;

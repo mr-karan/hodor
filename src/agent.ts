@@ -64,6 +64,7 @@ import {
   type ReviewDiffMode,
 } from "./review-diff.js";
 import { partitionNotesByProvenance, resolvePublisherIdentity } from "./provenance.js";
+import type { ReviewKey } from "./review-key.js";
 import {
   buildFixCandidates,
   getFindingFingerprint,
@@ -252,6 +253,8 @@ export async function reviewPr(opts: {
   tinyDiffFastPath?: boolean;
   /** Let the model batch tool calls through Pi's codemode sandbox. */
   codemode?: boolean;
+  /** Read back only Hodor notes and threads written under this key. */
+  reviewKey?: ReviewKey | null;
 }): Promise<{
   review: ReviewOutput;
   metricsFooter: string | null;
@@ -281,6 +284,7 @@ export async function reviewPr(opts: {
     targetBranchOverride,
     tinyDiffFastPath = false,
     codemode = false,
+    reviewKey = null,
   } = opts;
 
   for (const content of instructions) validateReviewInstructions(content, "instructions");
@@ -288,6 +292,7 @@ export async function reviewPr(opts: {
   validateInstructionsBudget([...instructions, ...(focus != null ? [focus] : [])]);
 
   logger.info(`Starting PR review for: ${localMode ? "local diff" : prUrl}`);
+  if (reviewKey) logger.info(`Review key: ${reviewKey}`);
 
   let owner = "", repo = "", host = "";
   let prNumber = 0;
@@ -507,10 +512,11 @@ export async function reviewPr(opts: {
     }
 
     // Authenticate note provenance once. Only Hodor-marked notes written by
-    // the publishing identity carry machine state; everything else, including
-    // forged markers, stays untrusted context for the prompt.
+    // the publishing identity under this review key carry machine state.
+    // Another key's notes are left out; everything else, including forged
+    // markers, stays untrusted context for the prompt.
     const publisherIdentity = localMode ? null : await resolvePublisherIdentity(platform, host);
-    const notes = partitionNotesByProvenance(mrMetadata?.Notes, publisherIdentity);
+    const notes = partitionNotesByProvenance(mrMetadata?.Notes, publisherIdentity, reviewKey);
     if (mrMetadata) mrMetadata.Notes = [...notes.others, ...notes.hodor];
 
     // Load finding state before cache lookup and fast-path selection. Missing
@@ -519,7 +525,7 @@ export async function reviewPr(opts: {
     let findingStateLoaded = platform !== "gitlab" || localMode;
     if (!localMode && platform === "gitlab" && publisherIdentity?.platform === "gitlab") {
       try {
-        discussions = await listHodorDiscussions(owner, repo, prNumber, host, publisherIdentity);
+        discussions = await listHodorDiscussions(owner, repo, prNumber, host, publisherIdentity, reviewKey);
         findingStateLoaded = true;
       } catch (err) {
         logger.warn(`Failed to list Hodor finding threads for the prompt: ${err instanceof Error ? err.message : err}`);

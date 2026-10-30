@@ -50,9 +50,10 @@ export interface UntrustedNote extends NoteFields {
 }
 
 /**
- * A Hodor-marked note written by the resolved publishing identity. Only
- * partitionNotesByProvenance creates these. Machine state (review SHA,
- * cached review, prior review context) is read only from trusted notes.
+ * A Hodor-marked note written by the resolved publishing identity under this
+ * run's review key. Only partitionNotesByProvenance creates these. Machine
+ * state (review SHA, cached review, prior review context) is read only from
+ * trusted notes.
  */
 export interface TrustedHodorNote extends NoteFields {
   provenance: "hodor";

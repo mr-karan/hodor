@@ -57,6 +57,18 @@ describe("CLI policy validation", () => {
     expect(result.output).not.toContain("--prompt <");
   });
 
+  it("rejects a review key that is not a lowercase slug before starting a review", () => {
+    const help = runCli(["--help"]);
+    expect(help.output).toContain("--review-key <name>");
+
+    for (const key of ["Security", "security review", "-security", "a".repeat(33)]) {
+      const result = runCli(["--local", "--review-key", key]);
+      expect(result.status).toBe(1);
+      expect(result.output).toContain("--review-key must be");
+      expect(result.output).not.toContain("local diff vs");
+    }
+  });
+
   it("rejects an unreadable review profile before starting workspace setup", () => {
     const missingProfile = join(cwd, ".hodor-missing-review-profile-test.md");
     const result = runCli(["--local", "--instructions", missingProfile]);
