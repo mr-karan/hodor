@@ -58,6 +58,21 @@ describe("formatCodeQualityReport", () => {
     });
   });
 
+  it("keeps the report byte-identical without a review key", () => {
+    const finding = makeFinding("[P1] Preserve authorization", 1, "b".repeat(64));
+
+    expect(formatCodeQualityReport([finding])).toBe(JSON.stringify([{
+      type: "issue",
+      check_name: "hodor/P1",
+      description: "[P1] Preserve authorization",
+      content: { body: "Test body" },
+      categories: ["Bug Risk"],
+      severity: "major",
+      location: { path: "src/foo.ts", lines: { begin: 42, end: 42 } },
+      fingerprint: "b".repeat(64),
+    }], null, 2));
+  });
+
   it("rejects findings without a reportable location", () => {
     const finding = makeFinding("[P1] Missing location", 1);
     delete finding.lineRange;
