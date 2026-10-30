@@ -440,6 +440,7 @@ program
           fast_path: metrics.fastPath ? "true" : "false",
         };
         if (metricsProject) labels.project = metricsProject;
+        if (reviewKey) labels.review_key = reviewKey;
 
         await pushMetrics({
           pushgatewayUrl: prometheusPush,
@@ -510,6 +511,7 @@ program
           outcome: "review_failed",
         };
         if (failureProject) labels.project = failureProject;
+        if (reviewKey) labels.review_key = reviewKey;
         await pushMetrics({
           pushgatewayUrl: prometheusPush,
           metrics: {

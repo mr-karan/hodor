@@ -468,6 +468,7 @@ export async function postReviewStructured(opts: {
         reviewStyle === "summary" ? undefined : inlineDeduplicated,
       reviewMode,
       reviewedSha: headSha,
+      reviewKey,
       carriedOver: carriedFindings.length,
       earlierThreads,
       fixedReplyFailures: fixedReplyResult.errors.length,

@@ -2,6 +2,7 @@
  * Render structured review output into clean markdown for PR/MR comments.
  */
 
+import type { ReviewKey } from "./review-key.js";
 import type { ReviewFinding, ReviewOutput, ReviewStateFinding } from "./types.js";
 
 export const HODOR_REVIEW_MARKER = "<!-- hodor-review -->";
@@ -100,10 +101,12 @@ export function renderSummaryMarkdown(
     fixedAwaiting?: number;
     /** When the counts were taken; they do not update when threads are resolved later. */
     asOf?: Date;
+    /** Names the job in the heading, so two jobs' summaries on one MR are distinguishable. */
+    reviewKey?: ReviewKey | null;
   } = {},
 ): string {
   const lines: string[] = [HODOR_REVIEW_MARKER, HODOR_SUMMARY_MARKER];
-  lines.push("", "### Hodor review");
+  lines.push("", options.reviewKey ? `### Hodor review (${options.reviewKey})` : "### Hodor review");
   const openFindings = options.openFindings ?? review.findings;
   const fallbackFindings = options.fallbackFindings ?? review.findings;
   const counts = { blocking: 0, important: 0, minor: 0 };
