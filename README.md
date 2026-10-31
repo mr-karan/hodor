@@ -75,6 +75,9 @@ Commit project code conventions in `AGENTS.md`. Hodor automatically loads root a
 # Baseline review plus automatic project guidance
 npx @mrkaran/hodor <PR_URL>
 
+# Opt in to evidence-first, security-only reporting
+npx @mrkaran/hodor <PR_URL> --profile security
+
 # Add shared review rules from a file
 npx @mrkaran/hodor <PR_URL> \
   --instructions /etc/hodor/security.md
@@ -83,6 +86,8 @@ npx @mrkaran/hodor <PR_URL> \
 npx @mrkaran/hodor <PR_URL> \
   --focus "Focus on authorization changes in the admin API."
 ```
+
+`--profile security` adds the bundled [security instructions](./templates/security-review-instructions.md) before explicit instruction files. It narrows reporting to security vulnerabilities without replacing the baseline or read-only, changed-delta protocol. It is opt-in and does not guarantee complete coverage or zero false positives. The default review is unchanged. For a separate security job alongside the main review, also pass `--review-key security`; the profile never selects a review key automatically.
 
 Instruction files are additive and repeatable. Later files win conflicts, and focus wins conflicts with files. Explicit reviewer instructions can narrow reporting, for example, `--focus "Report only security findings."` Repository guidance adds scoped conventions but cannot suppress baseline defect checks. Hodor's fixed review protocol always wins. Repository skills remain optional context loaded when relevant.
 
@@ -135,6 +140,7 @@ Local mode:
 | `--review-key` | None | Separate this job from other Hodor jobs on the same PR/MR. The job reads back only notes written under the same key and names its commit status `hodor/<key>`. Use up to 32 lowercase letters, digits, and hyphens. See [Run a second review job](./docs/AUTOMATED_REVIEWS.md#run-a-second-review-job). |
 | `--require-delivery` | Off | Exit non-zero if requested comments, statuses, or artifacts are not delivered |
 | `--fail-on-priority` | None | Exit non-zero for findings at or above `P0`, `P1`, `P2`, or `P3` |
+| `--profile` | None | Add bundled profile defaults: `security` for evidence-first, security-only reporting. Explicit instructions and focus win conflicts. Does not change the review key. |
 | `--instructions` | None | Add review instructions from a file. Repeatable; later files win conflicts. |
 | `--focus` | None | Set a one-off review focus, optionally narrowing the kinds of findings to report. |
 | `--workspace` | Temp dir | Workspace directory (reuse for faster multi-PR reviews) |
@@ -222,7 +228,7 @@ Hodor automatically optimizes token usage:
 
 - **Diff embedding**: For PRs under 200KB, the diff is embedded directly in the prompt, cutting agent turns from ~60 to ~5.
 - **Incremental reviews**: On re-runs, only reviews changes since the last hodor comment. After a force-push or rebase on GitLab, Hodor reviews the whole MR diff again against the recalculated merge base. A diff from the old snapshot would also include target-branch commits that the rebase brought in. On GitHub and Gitea, it compares the last reviewed snapshot directly with the current HEAD.
-- **Identical-HEAD reuse**: Successful summaries include a versioned, compressed review payload. Pipeline retries with the same MR/PR, target branch and base commit, accepted guidance snapshot, HEAD, model, reasoning request, explicit instruction contents, focus, and participant comments reuse that result while still regenerating artifacts and retrying delivery.
+- **Identical-HEAD reuse**: Successful summaries include a versioned, compressed review payload. Pipeline retries with the same MR/PR, target branch and base commit, accepted guidance snapshot, HEAD, model, reasoning request, selected profile contents, explicit instruction contents, focus, and participant comments reuse that result while still regenerating artifacts and retrying delivery.
 - **Fast-path inspection**: The tools-free tiny-diff shortcut is disabled when earlier unresolved findings need verification.
 - **Adaptive reasoning**: Models that default to `xhigh` (Opus 4.7 and later) use `high` for incremental reviews and small diffs (10 files or fewer, 500 changed lines or fewer). High-risk, large, and `--full` reviews keep `xhigh`. An explicit `--reasoning-effort` always wins.
 - **Focused exploration**: Embedded diffs include a changed-file manifest and direct the agent toward bounded context reads without limiting how far it may investigate.

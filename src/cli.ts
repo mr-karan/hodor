@@ -26,7 +26,7 @@ import {
   parseFailOnPriority,
   type FailOnPriority,
 } from "./review-policy.js";
-import { loadReviewInstructionsFile } from "./review-instructions.js";
+import { loadReviewInstructionsFile, loadReviewProfileInstructions } from "./review-instructions.js";
 import { parseReviewKey, type ReviewKey } from "./review-key.js";
 import { drainBufferedLogs, getWarnings, logger, setLogBuffering, setLogLevel } from "./utils/logger.js";
 
@@ -56,6 +56,10 @@ program
     "--post",
     "Post the review directly to the PR/MR as a comment",
     false,
+  )
+  .option(
+    "--profile <name>",
+    "Add a bundled review profile: security (opt-in; default review unchanged)",
   )
   .option(
     "--focus <text>",
@@ -147,6 +151,7 @@ program
     const post = cmdOpts.post as boolean;
     const model = cmdOpts.model as string;
     let reasoningEffort = cmdOpts.reasoningEffort as string | undefined;
+    const profile = typeof cmdOpts.profile === "string" ? cmdOpts.profile : undefined;
     const focus = typeof cmdOpts.focus === "string" ? cmdOpts.focus : undefined;
     const instructionPaths = Array.isArray(cmdOpts.instructions)
       ? cmdOpts.instructions.filter((path): path is string => typeof path === "string")
@@ -244,7 +249,10 @@ program
     };
 
     try {
-      const instructions = instructionPaths.map((path) => loadReviewInstructionsFile(path));
+      const instructions = [
+        ...loadReviewProfileInstructions(profile),
+        ...instructionPaths.map((path) => loadReviewInstructionsFile(path)),
+      ];
       // Detect platform and warn about missing tokens
       let platform: Platform | "local" = "local";
       let target: ReviewTarget = { kind: "local", ref: diffAgainst };
@@ -278,6 +286,7 @@ program
       }
 
       writeLog(`${formatStartLine({ version: packageJson.version, target, model, reasoningEffort, codemode })}\n`);
+      if (profile) logger.info(`Review profile: ${profile}`);
       for (const path of instructionPaths) logger.info(`Explicit instructions: ${path}`);
       if (focus) logger.info("Review focus: supplied");
 

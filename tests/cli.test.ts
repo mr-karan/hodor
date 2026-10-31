@@ -48,6 +48,8 @@ describe("CLI policy validation", () => {
     const result = runCli(["--help"]);
 
     expect(result.status).toBe(0);
+    expect(result.output).toContain("--profile <name>");
+    expect(result.output.replace(/\s+/g, " ")).toContain("security (opt-in; default review unchanged)");
     expect(result.output).toContain("--instructions <path>");
     expect(result.output.replace(/\s+/g, " ")).toContain("Path to additive review instructions");
     expect(result.output).toContain("--focus <text>");
@@ -67,6 +69,23 @@ describe("CLI policy validation", () => {
       expect(result.output).toContain("--review-key must be");
       expect(result.output).not.toContain("local diff vs");
     }
+  });
+
+  it.each(["default", "Security", "unknown", "../security"])("rejects invalid bundled profile %j before starting a review", (profile) => {
+    const result = runCli(["--local", "--profile", profile]);
+    expect(result.status).toBe(1);
+    expect(result.output).toContain("--profile must be one of: security");
+    expect(result.output).not.toContain("local diff vs");
+    expect(result.output).not.toContain("Starting PR review");
+  });
+
+  it("accepts security before loading explicit instruction files", () => {
+    const missingInstructions = join(cwd, ".hodor-missing-security-overlay.md");
+    const result = runCli(["--local", "--profile", "security", "--instructions", missingInstructions]);
+    expect(result.status).toBe(1);
+    expect(result.output).toContain("Unable to read review instructions");
+    expect(result.output).toContain(missingInstructions);
+    expect(result.output).not.toContain("--profile must be");
   });
 
   it("rejects an unreadable review profile before starting workspace setup", () => {

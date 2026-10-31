@@ -6,7 +6,8 @@ import {
   getReviewCacheKey,
   type ReviewCacheScope,
 } from "../src/review-cache.js";
-import type { ReviewFinding, ReviewOutput } from "../src/types.js";
+import type { ReviewFinding, ReviewOutput, TrustedHodorNote } from "../src/types.js";
+import { loadReviewProfileInstructions } from "../src/review-instructions.js";
 
 const scope: ReviewCacheScope = {
   platform: "gitlab",
@@ -156,6 +157,19 @@ describe("review cache", () => {
     expect(getReviewCacheKey({ ...base, guidanceSnapshotSha: "d".repeat(40) })).not.toBe(sameContent);
     expect(getReviewCacheKey({ ...base, instructions: ["First", "Second"] }))
       .not.toBe(getReviewCacheKey({ ...base, instructions: ["Second", "First"] }));
+  });
+
+  it("keys the selected profile by its exact content and keeps default retries stable", () => {
+    const base = { scope, headSha: "a".repeat(40), model: "test", guidanceSnapshotSha: "b".repeat(40) };
+    const instructions = loadReviewProfileInstructions("security");
+    const defaultKey = getReviewCacheKey(base);
+    const securityKey = getReviewCacheKey({ ...base, instructions });
+    expect(getReviewCacheKey({ ...base, instructions: loadReviewProfileInstructions() })).toBe(defaultKey);
+    expect(securityKey).not.toBe(defaultKey);
+    expect(getReviewCacheKey({ ...base, instructions: loadReviewProfileInstructions("security") })).toBe(securityKey);
+    expect(getReviewCacheKey({ ...base, instructions: instructions.map((content) => `${content}\n`) })).not.toBe(securityKey);
+    const notes: TrustedHodorNote[] = [{ provenance: "hodor", body: buildReviewCacheMarker(defaultKey, review) }];
+    expect(findCachedReview(notes, securityKey)).toBeNull();
   });
 
   const scopeChanges: Array<[string, Partial<ReviewCacheScope>]> = [
