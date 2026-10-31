@@ -535,7 +535,7 @@ export async function createGitlabDraftNote(
   body: string,
   host?: string | null,
   opts?: { filePath?: string; line?: number; diffRefs?: DiffRefs },
-): Promise<Record<string, unknown>> {
+): Promise<{ id: number | null }> {
   const encoded = encodedProjectPath(owner, repo);
   const env = glabEnv(host);
   const endpoint = `projects/${encoded}/merge_requests/${mrNumber}/draft_notes`;
@@ -556,45 +556,31 @@ export async function createGitlabDraftNote(
     };
   }
 
+  let stdout: string;
   try {
-    return await execJson<Record<string, unknown>>(
+    ({ stdout } = await exec(
       "glab",
       ["api", endpoint, "--method", "POST", "-H", "Content-Type: application/json", "--input", "-"],
       {
         env,
         input: JSON.stringify(payload),
       },
-    );
+    ));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new GitLabAPIError(`Failed to create draft note for MR !${mrNumber}: ${msg}`);
   }
-}
 
-export async function bulkPublishGitlabDraftNotes(
-  owner: string,
-  repo: string,
-  mrNumber: number | string,
-  host?: string | null,
-): Promise<void> {
-  const encoded = encodedProjectPath(owner, repo);
-  const env = glabEnv(host);
-
+  // A successful POST may have created a draft even when its response is unusable.
+  let draftNote: unknown;
   try {
-    await exec(
-      "glab",
-      [
-        "api",
-        `projects/${encoded}/merge_requests/${mrNumber}/draft_notes/bulk_publish`,
-        "--method",
-        "POST",
-      ],
-      { env },
-    );
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new GitLabAPIError(`Failed to bulk publish draft notes for MR !${mrNumber}: ${msg}`);
+    draftNote = JSON.parse(stdout.trim());
+  } catch {
+    return { id: null };
   }
+  const rawId = isRecord(draftNote) ? draftNote.id : undefined;
+  const id = typeof rawId === "string" && /^[1-9]\d*$/.test(rawId) ? Number(rawId) : rawId;
+  return { id: typeof id === "number" && Number.isSafeInteger(id) && id > 0 ? id : null };
 }
 
 export async function publishGitlabDraftNote(
