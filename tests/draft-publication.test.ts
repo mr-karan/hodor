@@ -3,6 +3,7 @@ import { postReviewStructured } from "../src/publisher.js";
 import { parseReviewKey, withReviewKey, type ReviewKey } from "../src/review-key.js";
 import { getFindingFingerprint } from "../src/review-state.js";
 import type { ReviewFinding, ReviewOutput } from "../src/types.js";
+import { addedFileVersion, answerVersion, isReadback, persistedNote } from "./gitlab-fakes.js";
 
 const mocks = vi.hoisted(() => ({ exec: vi.fn(), execJson: vi.fn() }));
 vi.mock("../src/utils/exec.js", () => ({ exec: mocks.exec, execJson: mocks.execJson }));
@@ -71,6 +72,8 @@ function gitlab() {
     [92, "<!-- hodor-review -->\nAn older default run's pending draft"],
   ]);
   const published = new Map<number, string>();
+  const draftInputs = new Map<number, string>();
+  const version = addedFileVersion({ base_sha: SHA, start_sha: SHA, head_sha: SHA }, "src/app.ts", 3);
   const publishAttempts: number[] = [];
   const bulkAttempts: string[] = [];
   const failures = new Map<number, string>();
@@ -80,6 +83,7 @@ function gitlab() {
 
   mocks.execJson.mockImplementation(async (_command: string, args: string[]) => {
     const endpoint = args[1];
+    if (answerVersion(endpoint, version)) return answerVersion(endpoint, version);
     if (endpoint === "user") return BOT;
     if (endpoint === ROOT) return { diff_refs: { base_sha: SHA, start_sha: SHA, head_sha: SHA } };
     throw new Error(`unexpected JSON endpoint: ${endpoint}`);
@@ -94,6 +98,7 @@ function gitlab() {
       }
       const id = nextId++;
       pending.set(id, payload.note);
+      draftInputs.set(id, options?.input ?? "");
       await afterCreate?.(id);
       return { stdout: JSON.stringify(draftResponse ? draftResponse(id) : { id }) ?? "", stderr: "" };
     }
@@ -120,6 +125,12 @@ function gitlab() {
         }))),
         stderr: "",
       };
+    } else if (isReadback(endpoint)) {
+      const notes = [...published.keys()].reverse().flatMap((id) => {
+        const input = draftInputs.get(id);
+        return input === undefined ? [] : [persistedNote(9000 + id, input, BOT)];
+      });
+      return { stdout: JSON.stringify(notes), stderr: "" };
     } else if (endpoint === `${ROOT}/notes?per_page=100`) {
       return { stdout: "[]", stderr: "" };
     } else if (endpoint === `${ROOT}/notes` && args.includes("POST")) {

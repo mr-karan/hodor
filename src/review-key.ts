@@ -48,12 +48,18 @@ export function belongsToReviewKey(body: string, key: ReviewKey | null): boolean
 
 /** Read the key from the leading marker lines only, so review text cannot claim one. */
 function readReviewKey(body: string): string | null {
-  for (const line of body.split("\n")) {
-    if (!MARKER_LINE_RE.test(line)) return null;
+  for (const line of leadingMarkerLines(body)) {
     const prefix = line.match(KEY_MARKER_PREFIX_RE);
     if (prefix) return line.slice(prefix[0].length, line.lastIndexOf("-->")).trim();
   }
   return null;
+}
+
+/** The marker lines a note starts with: machine state that review text below cannot add to. */
+export function leadingMarkerLines(body: string): string[] {
+  const lines = body.split("\n");
+  const end = lines.findIndex((line) => !MARKER_LINE_RE.test(line));
+  return end === -1 ? lines : lines.slice(0, end);
 }
 
 export function reviewCheckName(key: ReviewKey | null): string {

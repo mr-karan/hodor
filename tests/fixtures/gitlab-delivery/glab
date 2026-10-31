@@ -13,13 +13,42 @@ state.calls.push({ endpoint, method });
 function save() { writeFileSync(path, JSON.stringify(state)); }
 function finish(value) { save(); if (value !== undefined) process.stdout.write(JSON.stringify(value)); process.exit(0); }
 function fail(message) { save(); process.stderr.write(message); process.exit(1); }
+const defaultDiffs = [{
+  old_path: 'src/app.ts', new_path: 'src/app.ts', new_file: true, renamed_file: false, deleted_file: false,
+  collapsed: false, too_large: false, diff: '@@ -0,0 +1,2 @@\n+const value = 2;\n+const limit = 10;\n',
+}];
+// Valid [old_line, new_line] pairs per new path, written out by hand for each synthetic diff.
+const validLines = state.validLines ?? { 'src/app.ts': [[null, 1], [null, 2]] };
+function version() {
+  return { id: 9, head_commit_sha: 'b'.repeat(40), base_commit_sha: 'a'.repeat(40), start_commit_sha: 'a'.repeat(40), state: 'collected' };
+}
+// Rewrites what the readback returns for every persisted diff note, to model altered or malformed responses.
+function readbackMutation(note) {
+  const change = state.readback ?? {};
+  if ('id' in change) note.id = change.id;
+  if (change.position) note.position = { ...note.position, ...change.position };
+  for (const field of change.omit ?? []) delete note.position[field];
+  if (change.replace) note.body = note.body.replace(new RegExp(change.replace[0], change.replace[2] ?? ''), change.replace[1]);
+  return note;
+}
+function onDiffLine(position) {
+  if (!position) return false;
+  const oldLine = position.old_line ?? null;
+  const newLine = position.new_line ?? null;
+  return (validLines[position.new_path] ?? []).some(([o, n]) => o === oldLine && n === newLine);
+}
 const payload = args.includes('--input') ? JSON.parse(await Bun.stdin.text()) : {};
 if (endpoint === 'user' && method === 'GET') finish(bot);
-if (endpoint === root && method === 'GET') finish({ title: 'Synthetic MR', target_branch: 'main', diff_refs: { base_sha: 'a'.repeat(40), start_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40) } });
+if (endpoint === root && method === 'GET') {
+  if (state.failRefs) fail('500 diff refs failed');
+  finish({ title: 'Synthetic MR', target_branch: 'main', diff_refs: { base_sha: 'a'.repeat(40), start_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40) } });
+}
 if (endpoint === `${root}/draft_notes` && method === 'POST') {
   if (state.failCreate) fail('400 invalid position');
   const id = state.nextId++;
   state.pending[id] = payload.note;
+  state.positions ??= {};
+  state.positions[id] = payload.position ?? null;
   if (state.parkFirst && id === 501) {
     save();
     writeFileSync(`${path}.ready`, 'ready');
@@ -50,13 +79,36 @@ if (match && method === 'PUT') {
   state.publishAttempts.push(id);
   if (state.failPublish.includes(id)) fail('500 publish failed');
   if (!(id in state.pending)) fail('404 not found');
-  state.published.push({ id, body: state.pending[id] });
+  // Like GitLab before 12bd5d20: an unpublishable draft is deleted and the PUT still succeeds.
+  const position = state.positions?.[id] ?? null;
+  if (state.publishMode !== 'drop' && onDiffLine(position)) {
+    const stored = state.moveOnPublish ? { ...position, new_line: position.new_line + state.moveOnPublish } : position;
+    state.published.push({ id, body: state.pending[id], position: stored, author: state.publishAuthor ?? bot });
+  }
   delete state.pending[id];
   finish();
 }
+if (endpoint === `${root}/versions?per_page=20` && method === 'GET') {
+  if (state.failVersions) fail('500 versions failed');
+  finish(state.versions ?? [version()]);
+}
+const versionMatch = new RegExp(`^${root}/versions/(\\d+)$`).exec(endpoint);
+if (versionMatch && method === 'GET') {
+  const found = (state.versions ?? [version()]).find(item => item.id === Number(versionMatch[1]));
+  if (!found) fail('404 version not found');
+  finish({ ...found, diffs: state.diffs ?? defaultDiffs, ...state.detailPatch });
+}
+if (endpoint === `${root}/notes?sort=desc&order_by=created_at&per_page=100` && method === 'GET') {
+  if (state.failReadback) fail('500 notes failed');
+  const diffNotes = state.published.map(({ id, body, position, author, resolved }) => readbackMutation({
+    id: 9000 + id, type: 'DiffNote', body, author: author ?? bot, system: false, resolvable: true, resolved: resolved === true,
+    position: position && { ...position, old_line: position.old_line ?? null, new_line: position.new_line ?? null, line_range: null },
+  }));
+  finish([...diffNotes, ...state.notes].sort((a, b) => b.id - a.id));
+}
 if (endpoint === `${root}/discussions?per_page=100` && method === 'GET') {
   // Multiple concatenated pages exercise the real pagination parser.
-  const discussions = state.published.map(({ id, body }) => ({ id: `discussion-${id}`, notes: [{ id, body, author: bot, resolvable: true, resolved: false }] }));
+  const discussions = state.published.map(({ id, body, resolved }) => ({ id: `discussion-${id}`, notes: [{ id, body, author: bot, resolvable: true, resolved: resolved === true }] }));
   save(); process.stdout.write(JSON.stringify(discussions) + '[]'); process.exit(0);
 }
 if ((endpoint === `${root}/notes?per_page=100` || endpoint === `${root}/notes`) && method === 'GET') finish(state.notes);
