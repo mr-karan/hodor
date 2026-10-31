@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -6,6 +6,7 @@ import {
   MAX_REVIEW_INSTRUCTIONS_BYTES,
   loadDefaultReviewInstructions,
   loadReviewInstructionsFile,
+  loadReviewProfileInstructions,
   validateReviewInstructions,
 } from "../src/review-instructions.js";
 
@@ -24,6 +25,20 @@ afterEach(() => {
 });
 
 describe("review instruction profiles", () => {
+  it("adds no instructions by default", () => {
+    expect(loadReviewProfileInstructions()).toEqual([]);
+  });
+
+  it("loads the exact bundled security profile, not a working-directory file", () => {
+    const expected = readFileSync(new URL("../templates/security-review-instructions.md", import.meta.url), "utf8");
+    expect(loadReviewProfileInstructions("security")).toEqual([expected]);
+    expect(expected).toContain("Report only security vulnerabilities");
+  });
+
+  it.each(["", "default", "Security", "../security", "unknown"])("rejects invalid profile %j", (profile) => {
+    expect(() => loadReviewProfileInstructions(profile)).toThrow("--profile must be one of: security");
+  });
+
   it("loads the bundled default profile", () => {
     const instructions = loadDefaultReviewInstructions();
 

@@ -1,6 +1,6 @@
 # Review instructions
 
-Hodor checks changed code for defects and concrete violations of your team's code conventions. Commit project conventions in `AGENTS.md`. Use `--instructions <path>` for extra review guidance and `--focus <text>` for a request for this run.
+Hodor checks changed code for defects and concrete violations of your team's code conventions. Commit project conventions in `AGENTS.md`. Use `--profile security` for bundled security-only guidance, `--instructions <path>` for extra review guidance, and `--focus <text>` for a request for this run.
 
 All instruction inputs retain Hodor's bundled review criteria and fixed review protocol. There is no profile replacement mode.
 
@@ -34,6 +34,32 @@ Write concrete code rules and domain invariants. Examples include authorization 
 Hodor reports an explicit convention violation only when the changed lines demonstrate it. The finding cites the instruction file and rule. Severity follows impact; naming and style violations default to P3 unless they break a concrete contract. Hodor does not invent style rules or report pre-existing violations.
 
 Agent workflow directives are ignored. Instructions to build, run tests, lint, format, install, commit, or deploy do not apply to Hodor's read-only review. Hodor has no shell.
+
+## Bundled security profile
+
+Opt in to evidence-first, security-only reporting:
+
+```bash
+hodor "$MR_URL" --profile security --post
+hodor --local --diff-against origin/main --profile security
+
+# A second job alongside the main review needs a separate key
+hodor "$MR_URL" --profile security --review-key security --post
+
+# Add your own policy after the bundled defaults
+hodor "$MR_URL" --profile security \
+  --instructions /etc/hodor/company-review.md \
+  --instructions /etc/hodor/payments.md \
+  --focus "Check authorization on the export endpoint."
+```
+
+The bundled [security instructions](../templates/security-review-instructions.md) emphasize attacker influence, reachable paths, failed controls, and concrete impact. They are guidance, not a guarantee of complete vulnerability coverage or zero false positives. No measured performance claim is made for this profile.
+
+Hodor reads the template shipped with the installed package or container, not a file from the repository under review. The profile is the first additive instruction: baseline criteria and accepted repository guidance remain, then profile defaults, explicit files in supplied order, focus, and the fixed protocol. Later explicit files override the profile, and focus overrides those files. The read-only restrictions, changed-delta scope, priority mapping, and submission format always remain in force. Without `--profile`, prompt contents and review behavior are unchanged. The only accepted profile name is `security`; other names fail before review setup.
+
+The evaluation runner accepts the same profile flag: `bun run eval -- --profile security --cases /path/to/cases --out results.jsonl`. It uses the same bundled loader and composition as the CLI, and records `profile: "security"` on each JSONL row. Runs without a profile keep their existing output fields. Use `--list --profile security` to validate profile loading without model calls.
+
+Profiles do not select a review key or isolate prior notes, incremental review state, statuses, or Code Quality issues. Use `--review-key security` when running a second job next to the main review. See [Run a second review job](./AUTOMATED_REVIEWS.md#run-a-second-review-job). Existing company instruction files are not replaced or changed by this option.
 
 ## Extra instruction files
 
@@ -92,7 +118,8 @@ Focus wins conflicts with explicit instruction files. It retains the baseline cr
 |---|---|
 | Bundled review criteria | Baseline defect checks and finding standards |
 | Accepted repository guidance | Add scoped code rules and domain context |
-| `--instructions <path>` | Add checks or explicitly narrow reporting; later files win conflicts |
+| `--profile security` | Add security-only defaults before explicit files; retain baseline and protocol |
+| `--instructions <path>` | Add checks or explicitly narrow reporting; override profile defaults; later files win conflicts |
 | `--focus <text>` | Set this run's focus; wins conflicts with instruction files |
 | Fixed Hodor protocol | Always controls read-only tools, changed-delta scope, priorities, and submission |
 
@@ -147,11 +174,11 @@ Repository rules are read from the target snapshot. A checkout is needed if you 
 
 Each explicit instruction file and each repository guidance file is limited to 128 KiB. Explicit files must be nonempty readable regular files encoded as UTF-8. Focus text must be nonempty and at most 128 KiB.
 
-The combined repository guidance, explicit instruction contents, and focus text are limited to 256 KiB. Over-budget input fails with a clear error; Hodor never silently truncates or drops rules.
+The combined repository guidance, selected profile contents, explicit instruction contents, and focus text are limited to 256 KiB. Over-budget input fails with a clear error; Hodor never silently truncates or drops rules.
 
-Run with `--verbose` to see the guidance snapshot, loaded instruction paths, and skill discovery logs. If the target snapshot cannot be resolved, Hodor fails instead of substituting the MR's HEAD. Fetch the comparison ref for local reviews or make target-branch access available in CI.
+Run with `--verbose` to see the guidance snapshot, selected profile, loaded instruction paths, and skill discovery logs. If the target snapshot cannot be resolved, Hodor fails instead of substituting the MR's HEAD. Fetch the comparison ref for local reviews or make target-branch access available in CI.
 
-Changing explicit instruction contents, focus text, or the accepted target snapshot changes the review cache identity.
+Selecting a profile or changing its exact contents, explicit instruction contents, focus text, or the accepted target snapshot changes the review cache identity. Profile contents enter the existing content-based instruction key; selecting the same profile with identical bytes permits reuse.
 
 ## Breaking migration
 
@@ -174,4 +201,19 @@ await reviewPr({
 });
 ```
 
-`instructions` contains instruction text, not file paths. Use `loadReviewInstructionsFile(path)` to load files. The old `reviewInstructions` and `additionalInstructions` options are removed. `buildReviewSystemPrompt()` accepts `instructions`, `focus`, and scoped `repositoryGuidance`, and always includes the bundled criteria.
+`instructions` contains instruction text, not file paths. Use `loadReviewInstructionsFile(path)` to load files. To use the bundled profile through the library, prepend `loadReviewProfileInstructions("security")` to `instructions`:
+
+```typescript
+import { loadReviewProfileInstructions, loadReviewInstructionsFile, reviewPr } from "@mrkaran/hodor";
+
+await reviewPr({
+  prUrl: mrUrl,
+  instructions: [
+    ...loadReviewProfileInstructions("security"),
+    loadReviewInstructionsFile("/etc/hodor/company-review.md"),
+  ],
+  focus: "Check the export endpoint.",
+});
+```
+
+No new `reviewPr()` profile option is required. The old `reviewInstructions` and `additionalInstructions` options are removed. `buildReviewSystemPrompt()` accepts `instructions`, `focus`, and scoped `repositoryGuidance`, and always includes the bundled criteria.

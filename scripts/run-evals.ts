@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { reviewPr } from "../src/agent.js";
+import { loadReviewProfileInstructions } from "../src/review-instructions.js";
 import {
   parseEvalCase,
   scoreReview,
@@ -40,6 +41,8 @@ function positiveInteger(name: string, fallback: number): number {
 
 const model = flagValue("--model") ?? process.env.HODOR_EVAL_MODEL ?? "anthropic/claude-opus-5-5";
 const casesDir = resolve(flagValue("--cases") ?? join(process.cwd(), "evals"));
+const profile = flagValue("--profile");
+const profileInstructions = loadReviewProfileInstructions(profile);
 const instructionPaths = flagValues("--instructions").map((path) => resolve(path));
 const focus = flagValue("--focus") ?? null;
 const reasoningEffort = flagValue("--reasoning-effort");
@@ -64,13 +67,17 @@ if (args.includes("--list")) {
   process.exit(0);
 }
 
-const instructions = await Promise.all(instructionPaths.map((path) => readFile(path, "utf-8")));
+const instructions = [
+  ...profileInstructions,
+  ...await Promise.all(instructionPaths.map((path) => readFile(path, "utf-8"))),
+];
 const expectedByCase = new Map(cases.map((evalCase) => [evalCase.id, evalCase.expectedFindings.length]));
 const jobs = Array.from({ length: trials }, (_, trial) => cases.map((evalCase) => ({ evalCase, trial: trial + 1 }))).flat();
 const runs: EvalRun[] = [];
 
 console.log(
   `${label}: ${cases.length} case(s) x ${trials} trial(s) = ${jobs.length} review(s) with ${model}` +
+    `${profile !== undefined ? `, profile ${profile}` : ""}` +
     `${instructionPaths.length > 0 ? `, instructions ${instructionPaths.join(", ")}` : ""}` +
     `${focus !== null ? `, focus "${focus}"` : ""}`,
 );
@@ -156,7 +163,7 @@ async function runJob({ evalCase, trial }: { evalCase: EvalCase; trial: number }
   }
   runs.push(run);
   if (outPath !== undefined) {
-    const line = `${JSON.stringify({ label, model, focus, instructions: instructionPaths, reasoningEffort: reasoningEffort ?? null, codemode, ...run, ...record })}\n`;
+    const line = `${JSON.stringify({ label, model, ...(profile !== undefined ? { profile } : {}), focus, instructions: instructionPaths, reasoningEffort: reasoningEffort ?? null, codemode, ...run, ...record })}\n`;
     outQueue = outQueue.then(() => appendFile(outPath, line));
     await outQueue;
   }
