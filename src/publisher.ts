@@ -1,24 +1,30 @@
+import { randomUUID } from "node:crypto";
 import { exec } from "./utils/exec.js";
 import { logger } from "./utils/logger.js";
 import { relativizeWorkspacePath } from "./utils/path.js";
 import { postGiteaPrComment } from "./gitea.js";
 import {
   createGitlabDraftNote,
+  fetchGitlabDiffFiles,
   fetchGitlabPublisherIdentity,
   getGitlabMrDiffRefs,
   gitlabNoteUrl,
   HODOR_REVIEW_MARKER,
   listHodorDiscussions,
+  listRecentGitlabDiffNotes,
   postGitlabCommitStatus,
   publishGitlabMrSummary,
   publishGitlabDraftNote,
   replyToGitlabDiscussion,
   type DiffRefs,
   type HodorDiscussion,
+  type PersistedDiffNote,
+  type PersistedDiffPosition,
 } from "./gitlab.js";
+import { findLinePosition, type GitlabFileDiff, type GitlabLinePosition } from "./gitlab-diff-position.js";
 import { detectPlatform, parsePrUrl } from "./platform.js";
 import { HODOR_SUMMARY_MARKER, renderMarkdown, renderSummaryMarkdown } from "./render.js";
-import { reviewCheckName, withReviewKey, type ReviewKey } from "./review-key.js";
+import { belongsToReviewKey, leadingMarkerLines, reviewCheckName, withReviewKey, type ReviewKey } from "./review-key.js";
 import {
   buildFixedReplyBody,
   getDiscussionFingerprint,
@@ -264,17 +270,21 @@ export async function postReviewStructured(opts: {
       parsed.host,
     );
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.warn(`Failed to get diff_refs, falling back to summary mode: ${message}`);
-    return postReviewComment({
+    const message = `diff refs: ${error instanceof Error ? error.message : String(error)}`;
+    logger.warn(`${message}; posting the summary without completion markers`);
+    const fallback = await postReviewComment({
       prUrl,
       reviewText: renderMarkdown(review),
       model,
       metricsFooter,
-      headSha,
-      cacheMarker,
       reviewKey,
     });
+    return {
+      ...fallback,
+      success: false,
+      error: message,
+      errors: [message, ...(fallback.error ? [fallback.error] : [])],
+    };
   }
 
   const existingByFingerprint = new Map<string, Set<string>>();
@@ -342,25 +352,53 @@ export async function postReviewStructured(opts: {
   let inlineCreated = 0;
   let inlineFailed = 0;
   let inlineDeduplicated = 0;
-  const draftNoteIds: number[] = [];
+  let diffError: string | null = null;
+  const ownedDrafts: OwnedDraft[] = [];
   const failedFindings: ReviewFinding[] = [];
   if (reviewStyle !== "summary" && !skipInline) {
-    for (const finding of review.findings) {
-      const fingerprint = getFindingFingerprint(finding, workspacePath);
-      if (existingByFingerprint.has(fingerprint)) {
-        inlineDeduplicated++;
-        continue;
+    const newFindings = review.findings.filter(
+      (finding) => !existingByFingerprint.has(getFindingFingerprint(finding, workspacePath)),
+    );
+    inlineDeduplicated = review.findings.length - newFindings.length;
+    let diffFiles: GitlabFileDiff[] = [];
+    if (newFindings.length > 0) {
+      try {
+        diffFiles = await fetchGitlabDiffFiles(parsed.owner, parsed.repo, parsed.prNumber, parsed.host, diffRefs);
+      } catch (error) {
+        // Unlike an unanchorable line, a failed diff read says nothing about the findings,
+        // so inline delivery stays incomplete and a rerun at this HEAD tries again.
+        diffError = error instanceof Error ? error.message : String(error);
+        const message = `inline notes: cannot load the MR diff (${diffError})`;
+        errors.push(message);
+        logger.warn(`${message}; delivering ${newFindings.length} finding(s) in the summary only`);
+        inlineFailed += newFindings.length;
+        failedFindings.push(...newFindings);
       }
-
+    }
+    for (const finding of diffError === null ? newFindings : []) {
+      const fingerprint = getFindingFingerprint(finding, workspacePath);
       const relPath = relativizeWorkspacePath(
         finding.code_location.absolute_file_path,
         workspacePath ?? undefined,
       );
+      const located = findLinePosition(diffFiles, relPath, finding.code_location.line_range);
+      if (!located.ok) {
+        // The summary carries findings GitLab cannot anchor inline (docs/AUTOMATED_REVIEWS.md).
+        const message = `inline note for ${finding.title}: no GitLab diff position (${located.reason})`;
+        errors.push(message);
+        logger.warn(`${message}; delivering it in the summary only`);
+        inlineFailed++;
+        failedFindings.push(finding);
+        continue;
+      }
+
       const title = /^\[P[0-3]\]/.test(finding.title)
         ? finding.title
         : `[P${finding.priority}] ${finding.title}`;
+      // Publication returns no note, so this marker is how the readback finds this draft's note.
+      const deliveryMarker = `<!-- hodor:delivery:${randomUUID()} -->`;
       let body = withReviewKey(
-        `${HODOR_REVIEW_MARKER}\n<!-- hodor:finding:${fingerprint} -->\n**${title}**\n\n${finding.body}`,
+        `${HODOR_REVIEW_MARKER}\n<!-- hodor:finding:${fingerprint} -->\n${deliveryMarker}\n**${title}**\n\n${finding.body}`,
         reviewKey,
       );
 
@@ -377,15 +415,11 @@ export async function postReviewStructured(opts: {
           parsed.prNumber,
           body,
           parsed.host,
-          {
-            filePath: relPath,
-            line: finding.code_location.line_range.start,
-            diffRefs,
-          },
+          { position: located.position, diffRefs },
         );
         inlineCreated++;
         if (draftNote.id !== null) {
-          draftNoteIds.push(draftNote.id);
+          ownedDrafts.push({ id: draftNote.id, finding, fingerprint, deliveryMarker, position: located.position });
         } else {
           const message = `draft publish: created draft note for ${finding.title} has no valid id`;
           errors.push(message);
@@ -408,28 +442,31 @@ export async function postReviewStructured(opts: {
   );
 
   // GitLab bulk_publish publishes all pending drafts of this user, including other runs.
-  let individuallyPublished = 0;
-  for (const draftNoteId of draftNoteIds) {
+  const publishedDrafts: OwnedDraft[] = [];
+  for (const draft of ownedDrafts) {
     try {
       await publishGitlabDraftNote(
         parsed.owner,
         parsed.repo,
         parsed.prNumber,
-        draftNoteId,
+        draft.id,
         parsed.host,
       );
-      individuallyPublished++;
+      publishedDrafts.push(draft);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       errors.push(`draft publish: ${message}`);
-      logger.warn(`Failed to publish draft note ${draftNoteId}: ${message}`);
+      logger.warn(`Failed to publish draft note ${draft.id}: ${message}`);
     }
   }
-  const draftsPublished = inlineCreated > 0 && individuallyPublished === inlineCreated;
-  const inlineDeliveryComplete = inlineCreated === 0 || draftsPublished;
-  if (individuallyPublished > 0) {
-    logger.info(`Published ${individuallyPublished} draft note(s) individually`);
+  if (publishedDrafts.length > 0) {
+    logger.info(`Requested publication of ${publishedDrafts.length} draft note(s) individually; verifying the persisted notes`);
   }
+  const unverified = await verifyPersistedDrafts(parsed, identity, publishedDrafts, { diffRefs, reviewKey }, errors);
+  failedFindings.push(...unverified.map((draft) => draft.finding));
+  const inlinePublished = publishedDrafts.length - unverified.length;
+  const draftsPublished = inlineCreated > 0 && inlinePublished === inlineCreated;
+  const inlineDeliveryComplete = diffError === null && (inlineCreated === 0 || draftsPublished);
 
   let summaryPosted = false;
   let summaryUrl: string | null = null;
@@ -448,7 +485,7 @@ export async function postReviewStructured(opts: {
       fallbackFindings: summaryFindings,
       fallbackHeading:
         reviewMode === "incremental" ? "Findings from this review" : "Findings",
-      inlineCreated: reviewStyle === "summary" ? undefined : inlineCreated,
+      inlineCreated: reviewStyle === "summary" ? undefined : inlinePublished,
       inlineDeduplicated:
         reviewStyle === "summary" ? undefined : inlineDeduplicated,
       reviewMode,
@@ -516,6 +553,93 @@ export async function postReviewStructured(opts: {
     reviewStateComplete: !discussionListingFailed,
     reviewFindings,
   };
+}
+
+/** A draft this invocation created, with what its published note must match. */
+interface OwnedDraft {
+  id: number;
+  finding: ReviewFinding;
+  fingerprint: string;
+  deliveryMarker: string;
+  position: GitlabLinePosition;
+}
+
+/**
+ * GitLab can answer a draft publish with success yet persist no note, so a
+ * draft counts as delivered only when exactly one diff note by the publishing
+ * identity carries its delivery marker, and that note's leading markers name
+ * this review key and finding at the requested position of the same diff
+ * version. Returns the drafts that could not be verified and records why in
+ * `errors`. Unverified means not confirmed, not proven absent.
+ */
+async function verifyPersistedDrafts(
+  parsed: ParsedPrUrl,
+  identity: GitlabPublisherIdentity,
+  drafts: readonly OwnedDraft[],
+  expected: { diffRefs: DiffRefs; reviewKey: ReviewKey | null },
+  errors: string[],
+): Promise<OwnedDraft[]> {
+  if (drafts.length === 0) return [];
+  let notes: PersistedDiffNote[];
+  try {
+    notes = await listRecentGitlabDiffNotes(parsed.owner, parsed.repo, parsed.prNumber, parsed.host, identity);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    errors.push(`inline note readback: ${message}`);
+    logger.warn(`Cannot verify ${drafts.length} published inline note(s): ${message}`);
+    return [...drafts];
+  }
+  const unverified = drafts.filter((draft) => {
+    const problem = deliveryProblem(draft, notes, expected);
+    if (problem === null) return false;
+    const message = `inline note for ${draft.finding.title}: unverified after publishing draft ${draft.id} (${problem})`;
+    errors.push(message);
+    logger.warn(message);
+    return true;
+  });
+  logger.info(`Verified ${drafts.length - unverified.length} of ${drafts.length} published inline note(s)`);
+  return unverified;
+}
+
+function deliveryProblem(
+  draft: OwnedDraft,
+  notes: readonly PersistedDiffNote[],
+  expected: { diffRefs: DiffRefs; reviewKey: ReviewKey | null },
+): string | null {
+  // Any note quoting the marker counts, so a copy elsewhere fails verification instead of hiding.
+  const matches = notes.filter((note) => note.body.includes(draft.deliveryMarker));
+  if (matches.length === 0) return "no note with its delivery marker among the newest notes read back";
+  if (matches.length > 1) return `${matches.length} notes carry its delivery marker`;
+  const [note] = matches;
+  if (note.id === null || note.position === null) return "the note has a malformed id or position";
+  const envelope = leadingMarkerLines(note.body).map((line) => line.trim());
+  if (
+    !envelope.includes(HODOR_REVIEW_MARKER) ||
+    !envelope.includes(draft.deliveryMarker) ||
+    getDiscussionFingerprint(envelope.join("\n")) !== draft.fingerprint ||
+    !belongsToReviewKey(note.body, expected.reviewKey)
+  ) {
+    return "the note's leading Hodor markers do not name this review key and finding";
+  }
+  if (!atPosition(note.position, draft.position, expected.diffRefs)) {
+    return "the note is not at the requested position of this diff version";
+  }
+  return null;
+}
+
+/** Exact refs: a note GitLab moved to another diff version does not verify. */
+function atPosition(actual: PersistedDiffPosition, position: GitlabLinePosition, diffRefs: DiffRefs): boolean {
+  const { anchor } = position;
+  return (
+    actual.positionType === "text" &&
+    actual.diffRefs.base_sha === diffRefs.base_sha &&
+    actual.diffRefs.start_sha === diffRefs.start_sha &&
+    actual.diffRefs.head_sha === diffRefs.head_sha &&
+    actual.oldPath === position.oldPath &&
+    actual.newPath === position.newPath &&
+    actual.newLine === anchor.newLine &&
+    actual.oldLine === (anchor.kind === "context" ? anchor.oldLine : null)
+  );
 }
 
 /**

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReviewFinding, ReviewOutput } from "../src/types.js";
+import { addedFileVersion, answerVersion, isReadback, readbackOfAllDrafts } from "./gitlab-fakes.js";
 
 const mocks = vi.hoisted(() => ({
   exec: vi.fn(),
@@ -21,6 +22,8 @@ const finding: ReviewFinding = {
   },
 };
 
+const APP_VERSION = addedFileVersion({ base_sha: "a".repeat(40), head_sha: "b".repeat(40), start_sha: "c".repeat(40) }, "src/app.ts", 20);
+
 function review(findings: ReviewFinding[]): ReviewOutput {
   return {
     findings,
@@ -34,10 +37,13 @@ describe("GitLab review publication", () => {
     mocks.exec.mockReset();
     mocks.execJson.mockReset();
     mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => ({
-      stdout: args.some((arg) => arg.endsWith("/draft_notes")) ? '{"id":1}' : "",
+      stdout: args.some((arg) => arg.endsWith("/draft_notes"))
+        ? '{"id":1}'
+        : isReadback(args[1]) ? readbackOfAllDrafts(mocks.exec.mock.calls, { id: 7, username: "hodor-bot" }) : "",
       stderr: "",
     }));
     mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (answerVersion(args[1], APP_VERSION)) return answerVersion(args[1], APP_VERSION);
       if (args.includes("user")) return { id: 7, username: "hodor-bot" };
       if (args.some((arg) => arg.includes("merge_requests/42")) && !args.includes("--method")) {
         return {
@@ -132,9 +138,11 @@ describe("GitLab review publication", () => {
           stderr: "",
         };
       }
+      if (isReadback(args[1])) return { stdout: readbackOfAllDrafts(mocks.exec.mock.calls, { id: 7, username: "hodor-bot" }), stderr: "" };
       return { stdout: "", stderr: "" };
     });
     mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (answerVersion(args[1], APP_VERSION)) return answerVersion(args[1], APP_VERSION);
       if (args.includes("user")) return { id: 7, username: "hodor-bot" };
       if (args.some((arg) => arg.includes("merge_requests/42"))) {
         return {
@@ -419,6 +427,7 @@ describe("GitLab review publication", () => {
       return { stdout: "", stderr: "" };
     });
     mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (answerVersion(args[1], APP_VERSION)) return answerVersion(args[1], APP_VERSION);
       if (args.includes("user")) return { id: 7, username: "hodor-bot" };
       if (args.some((arg) => arg.includes("merge_requests/42")) && !args.includes("--method")) {
         return {
@@ -454,10 +463,13 @@ describe("GitLab review publication", () => {
 
   it("publishes only the created draft using GitLab's individual publish endpoint", async () => {
     mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => ({
-      stdout: args.some((arg) => arg.endsWith("/draft_notes")) ? '{"id":123}' : "",
+      stdout: args.some((arg) => arg.endsWith("/draft_notes"))
+        ? '{"id":123}'
+        : isReadback(args[1]) ? readbackOfAllDrafts(mocks.exec.mock.calls, { id: 7, username: "hodor-bot" }) : "",
       stderr: "",
     }));
     mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (answerVersion(args[1], APP_VERSION)) return answerVersion(args[1], APP_VERSION);
       if (args.includes("user")) return { id: 7, username: "hodor-bot" };
       if (args.some((arg) => arg.includes("merge_requests/42")) && !args.includes("--method")) {
         return {
@@ -883,6 +895,10 @@ describe("bodies written without a review key", () => {
     resolved_findings: [EARLIER_FINGERPRINT],
   };
 
+  function escapeRegExp(text: string): string {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
   function writtenBodies(): Record<string, string> {
     const bodies: Record<string, string> = {};
     for (const call of [...mocks.exec.mock.calls, ...mocks.execJson.mock.calls]) {
@@ -902,6 +918,7 @@ describe("bodies written without a review key", () => {
     mocks.execJson.mockReset();
     mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
       if (args.some((arg) => arg.endsWith("/draft_notes"))) return { stdout: '{"id":1}', stderr: "" };
+      if (isReadback(args[1])) return { stdout: readbackOfAllDrafts(mocks.exec.mock.calls, BOT), stderr: "" };
       if (args.some((arg) => arg.includes("/discussions?"))) {
         return {
           stdout: JSON.stringify([{
@@ -936,7 +953,9 @@ describe("bodies written without a review key", () => {
       }
       return { stdout: "", stderr: "" };
     });
+    const version = addedFileVersion({ base_sha: "a".repeat(40), head_sha: HEAD, start_sha: "c".repeat(40) }, "src/app.ts", 20);
     mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (answerVersion(args[1], version)) return answerVersion(args[1], version);
       if (args.includes("user")) return BOT;
       if (args.some((arg) => arg.includes("merge_requests/42"))) {
         return { diff_refs: { base_sha: "a".repeat(40), head_sha: HEAD, start_sha: "c".repeat(40) } };
@@ -972,9 +991,11 @@ describe("bodies written without a review key", () => {
         `<!-- hodor:fixed:${EARLIER_FINGERPRINT}:${HEAD} -->`,
         "Fixed in `01234567`. Resolve this thread if you agree.",
       ].join("\n"),
-      "projects/acme%2Fapp/merge_requests/42/draft_notes": [
+      // Only the per-draft delivery marker varies between runs.
+      "projects/acme%2Fapp/merge_requests/42/draft_notes": expect.stringMatching(new RegExp(`^${escapeRegExp([
         "<!-- hodor-review -->",
         `<!-- hodor:finding:${REPORTED_FINGERPRINT} -->`,
+      ].join("\n"))}\\n<!-- hodor:delivery:[0-9a-f-]{36} -->\\n${escapeRegExp([
         "**[P1] Preserve authorization**",
         "",
         "The new path skips the ownership check.",
@@ -982,7 +1003,7 @@ describe("bodies written without a review key", () => {
         "```suggestion:-0+1",
         "if (!owner) return deny();",
         "```",
-      ].join("\n"),
+      ].join("\n"))}$`)),
       "projects/acme%2Fapp/merge_requests/42/notes": [
         `<!-- hodor:sha:${HEAD} -->`,
         CACHE,

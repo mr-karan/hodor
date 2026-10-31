@@ -9,6 +9,7 @@ import {
 } from "./render.js";
 import { getDiscussionFingerprint, getFixedMarker } from "./review-state.js";
 import { belongsToReviewKey, withReviewKey, type ReviewKey } from "./review-key.js";
+import { parseGitlabDiffVersion, type GitlabFileDiff, type GitlabLinePosition } from "./gitlab-diff-position.js";
 
 export { HODOR_REVIEW_MARKER, HODOR_SUMMARY_MARKER };
 
@@ -528,13 +529,56 @@ export async function getGitlabMrDiffRefs(
   return { base_sha, head_sha, start_sha };
 }
 
+/**
+ * Fetch the file diffs of the MR diff version whose refs equal `diffRefs`, so
+ * positions are computed against the exact diff GitLab validates them with.
+ */
+export async function fetchGitlabDiffFiles(
+  owner: string,
+  repo: string,
+  mrNumber: number | string,
+  host: string | null | undefined,
+  diffRefs: DiffRefs,
+): Promise<GitlabFileDiff[]> {
+  const versionsEndpoint = `projects/${encodedProjectPath(owner, repo)}/merge_requests/${mrNumber}/versions`;
+  const env = glabEnv(host);
+  try {
+    // Newest first. The version for the current diff refs is normally the first one.
+    const versions = await execJson<unknown>("glab", ["api", `${versionsEndpoint}?per_page=20`], { env });
+    // Versions with equal refs have equal diffs, so the newest such one serves.
+    const version = Array.isArray(versions)
+      ? versions.find((item) => isRecord(item) && sameDiffRefs(item, diffRefs))
+      : undefined;
+    const versionId = isRecord(version) ? version.id : undefined;
+    if (typeof versionId !== "number" || !Number.isSafeInteger(versionId)) {
+      throw new Error("no diff version matches the MR diff refs");
+    }
+    const detail = await execJson<unknown>("glab", ["api", `${versionsEndpoint}/${versionId}`], { env });
+    if (!isRecord(detail) || !sameDiffRefs(detail, diffRefs)) {
+      throw new Error(`diff version ${versionId} does not match the MR diff refs`);
+    }
+    return parseGitlabDiffVersion(detail);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new GitLabAPIError(`Failed to fetch the diff of MR !${mrNumber}: ${msg}`);
+  }
+}
+
+function sameDiffRefs(version: Record<string, unknown>, diffRefs: DiffRefs): boolean {
+  return (
+    version.base_commit_sha === diffRefs.base_sha &&
+    version.head_commit_sha === diffRefs.head_sha &&
+    version.start_commit_sha === diffRefs.start_sha
+  );
+}
+
 export async function createGitlabDraftNote(
   owner: string,
   repo: string,
   mrNumber: number | string,
   body: string,
   host?: string | null,
-  opts?: { filePath?: string; line?: number; diffRefs?: DiffRefs },
+  opts?: { position?: GitlabLinePosition; diffRefs?: DiffRefs },
 ): Promise<{ id: number | null }> {
   const encoded = encodedProjectPath(owner, repo);
   const env = glabEnv(host);
@@ -544,15 +588,17 @@ export async function createGitlabDraftNote(
     note: body,
   };
 
-  if (opts?.filePath && typeof opts.line === "number" && opts.diffRefs) {
+  if (opts?.position && opts.diffRefs) {
+    const { oldPath, newPath, anchor } = opts.position;
     payload.position = {
       base_sha: opts.diffRefs.base_sha,
       head_sha: opts.diffRefs.head_sha,
       start_sha: opts.diffRefs.start_sha,
       position_type: "text",
-      old_path: opts.filePath,
-      new_path: opts.filePath,
-      new_line: opts.line,
+      old_path: oldPath,
+      new_path: newPath,
+      ...(anchor.kind === "context" ? { old_line: anchor.oldLine } : {}),
+      new_line: anchor.newLine,
     };
   }
 
@@ -608,6 +654,95 @@ export async function publishGitlabDraftNote(
     const msg = err instanceof Error ? err.message : String(err);
     throw new GitLabAPIError(`Failed to publish draft note ${draftNoteId} for MR !${mrNumber}: ${msg}`);
   }
+}
+
+export interface PersistedDiffNote {
+  /** Null when GitLab returned no positive integer id. */
+  id: number | null;
+  body: string;
+  /** Null when the position is missing or any of its fields is malformed. */
+  position: PersistedDiffPosition | null;
+}
+
+export interface PersistedDiffPosition {
+  diffRefs: DiffRefs;
+  positionType: string;
+  oldPath: string | null;
+  newPath: string | null;
+  oldLine: number | null;
+  newLine: number | null;
+}
+
+/** Notes read back after publication. GitLab's maximum page size. */
+const PERSISTED_NOTE_READBACK_LIMIT = 100;
+
+/**
+ * Read the newest diff notes the publishing identity wrote on the MR. One
+ * bounded page: notes published moments ago are among the newest, and a note
+ * pushed past this page counts as unverified rather than triggering a full scan.
+ */
+export async function listRecentGitlabDiffNotes(
+  owner: string,
+  repo: string,
+  mrNumber: number | string,
+  host: string | null | undefined,
+  identity: GitlabPublisherIdentity,
+): Promise<PersistedDiffNote[]> {
+  const endpoint =
+    `projects/${encodedProjectPath(owner, repo)}/merge_requests/${mrNumber}/notes` +
+    `?sort=desc&order_by=created_at&per_page=${PERSISTED_NOTE_READBACK_LIMIT}`;
+  let notes: unknown;
+  try {
+    const { stdout } = await exec("glab", ["api", endpoint], { env: glabEnv(host) });
+    notes = JSON.parse(stdout.trim());
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new GitLabAPIError(`Failed to read back notes on MR !${mrNumber}: ${msg}`);
+  }
+  if (!Array.isArray(notes)) {
+    throw new GitLabAPIError(`Failed to read back notes on MR !${mrNumber}: response is not a list`);
+  }
+  return notes.flatMap((note): PersistedDiffNote[] => {
+    if (!isRecord(note) || note.type !== "DiffNote" || !isPublisherNote(note, identity) || typeof note.body !== "string") {
+      return [];
+    }
+    // Malformed notes stay in the list, so they still count against a marker and verify nothing.
+    return [{
+      id: isPositiveSafeInteger(note.id) ? note.id : null,
+      body: note.body,
+      position: parsePersistedPosition(note.position),
+    }];
+  });
+}
+
+/** Absent or null coordinates mean "not on this side"; any other non-line value is malformed. */
+function parsePersistedPosition(position: unknown): PersistedDiffPosition | null {
+  if (!isRecord(position)) return null;
+  const { base_sha, start_sha, head_sha, position_type, old_path, new_path, old_line, new_line } = position;
+  if (
+    typeof base_sha !== "string" ||
+    typeof start_sha !== "string" ||
+    typeof head_sha !== "string" ||
+    typeof position_type !== "string" ||
+    !(old_path == null || typeof old_path === "string") ||
+    !(new_path == null || typeof new_path === "string") ||
+    !(old_line == null || isPositiveSafeInteger(old_line)) ||
+    !(new_line == null || isPositiveSafeInteger(new_line))
+  ) {
+    return null;
+  }
+  return {
+    diffRefs: { base_sha, start_sha, head_sha },
+    positionType: position_type,
+    oldPath: old_path ?? null,
+    newPath: new_path ?? null,
+    oldLine: old_line ?? null,
+    newLine: new_line ?? null,
+  };
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
 type GitlabCommitStatusState = "pending" | "running" | "success" | "failed" | "canceled";

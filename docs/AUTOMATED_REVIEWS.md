@@ -118,7 +118,7 @@ GitLab supports three review styles:
 | Style | Summary note | Inline comments | Use when |
 | --- | --- | --- | --- |
 | `hybrid` | New note per review; older ones collapse to a link | Yes | Default. Inline findings plus compact cumulative status. |
-| `inline` | Only for clean reviews | Yes | Diff comments without a persistent status note when findings exist. |
+| `inline` | Only for clean reviews or when a finding was not delivered inline | Yes | Diff comments without a persistent status note when findings exist. |
 | `summary` | New note per review; older ones collapse to a link | No | Inline comments are not wanted or not supported. |
 
 Example:
@@ -128,9 +128,29 @@ hodor "$MR_URL" --post --review-style inline
 ```
 
 Hodor posts a new summary note on each review and collapses older ones to a link.
-The note shows cumulative open-finding counts, the latest review explanation, any
-finding that GitLab could not anchor inline, and collapsed model and run metrics.
-Successful inline findings are not repeated in the summary.
+The note shows cumulative open-finding counts, the latest review explanation, a
+table of every finding from this review, including those delivered inline, and
+collapsed model and run metrics.
+
+Hodor anchors each inline comment on an added or unchanged line of GitLab's own
+MR diff version. A finding on a line GitLab cannot anchor, such as a line outside
+every hunk or in a collapsed file, appears only in the summary, and the review
+still counts as delivered.
+
+After it publishes its drafts, Hodor reads the newest 100 MR notes once. An inline
+comment counts as delivered only when exactly one note by the Hodor account carries
+its delivery marker, starts with the matching finding and review key markers, and
+sits at the requested position on the same diff version. A comment Hodor cannot
+confirm this way is unverified, not proven missing: it can be outside that page or
+appear late. When a comment is unverified or the MR diff cannot be read, Hodor
+still posts the full summary, but without the reviewed-SHA and cache markers, and
+reports delivery as failed. The next run at the same HEAD then reviews and
+delivers again instead of reusing the review.
+
+Releases before this check could cache a review whose inline comments never
+persisted. Hodor reuses such a cached review without posting inline comments again.
+Run `--full` on that MR to review it and deliver again; this makes a new model
+request.
 
 The Code Quality report and commit status combine new findings with unresolved
 Hodor discussions from earlier pushes, in every review mode including `--full`.
