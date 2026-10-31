@@ -33,7 +33,10 @@ describe("GitLab review publication", () => {
   beforeEach(() => {
     mocks.exec.mockReset();
     mocks.execJson.mockReset();
-    mocks.exec.mockResolvedValue({ stdout: "", stderr: "" });
+    mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => ({
+      stdout: args.some((arg) => arg.endsWith("/draft_notes")) ? '{"id":1}' : "",
+      stderr: "",
+    }));
     mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
       if (args.includes("user")) return { id: 7, username: "hodor-bot" };
       if (args.some((arg) => arg.includes("merge_requests/42")) && !args.includes("--method")) {
@@ -101,6 +104,7 @@ describe("GitLab review publication", () => {
     const { getFindingFingerprint } = await import("../src/review-state.js");
     const fingerprint = getFindingFingerprint(finding, "/workspace");
     mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.some((arg) => arg.endsWith("/draft_notes"))) return { stdout: '{"id":1}', stderr: "" };
       if (args.some((arg) => arg.includes("/discussions?"))) {
         return {
           stdout: JSON.stringify([
@@ -132,7 +136,6 @@ describe("GitLab review publication", () => {
     });
     mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
       if (args.includes("user")) return { id: 7, username: "hodor-bot" };
-      if (args.some((arg) => arg.endsWith("/draft_notes"))) return { id: 1 };
       if (args.some((arg) => arg.includes("merge_requests/42"))) {
         return {
           diff_refs: {
@@ -404,13 +407,17 @@ describe("GitLab review publication", () => {
     expect(result.success).toBe(true);
     expect(result.inlineCreated).toBe(0);
     expect(
-      mocks.execJson.mock.calls.some((call) =>
+      mocks.exec.mock.calls.some((call) =>
         (call[1] as string[]).some((arg) => arg.includes("/draft_notes")),
       ),
     ).toBe(false);
   });
 
   it("falls back to the summary when an inline note cannot be created", async () => {
+    mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.some((arg) => arg.endsWith("/draft_notes"))) throw new Error("position is not on the current diff");
+      return { stdout: "", stderr: "" };
+    });
     mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
       if (args.includes("user")) return { id: 7, username: "hodor-bot" };
       if (args.some((arg) => arg.includes("merge_requests/42")) && !args.includes("--method")) {
@@ -421,9 +428,6 @@ describe("GitLab review publication", () => {
             start_sha: "c".repeat(40),
           },
         };
-      }
-      if (args.some((arg) => arg.endsWith("/draft_notes"))) {
-        throw new Error("position is not on the current diff");
       }
       return {};
     });
@@ -448,7 +452,11 @@ describe("GitLab review publication", () => {
     );
   });
 
-  it("publishes drafts individually when GitLab bulk publishing fails", async () => {
+  it("publishes only the created draft using GitLab's individual publish endpoint", async () => {
+    mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => ({
+      stdout: args.some((arg) => arg.endsWith("/draft_notes")) ? '{"id":123}' : "",
+      stderr: "",
+    }));
     mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
       if (args.includes("user")) return { id: 7, username: "hodor-bot" };
       if (args.some((arg) => arg.includes("merge_requests/42")) && !args.includes("--method")) {
@@ -460,14 +468,7 @@ describe("GitLab review publication", () => {
           },
         };
       }
-      if (args.some((arg) => arg.endsWith("/draft_notes"))) return { id: 123 };
       return {};
-    });
-    mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
-      if (args.some((arg) => arg.endsWith("/draft_notes/bulk_publish"))) {
-        throw new Error("500 Internal Server Error");
-      }
-      return { stdout: "", stderr: "" };
     });
     const { postReviewStructured } = await import("../src/publisher.js");
 
@@ -480,11 +481,16 @@ describe("GitLab review publication", () => {
 
     expect(result.success).toBe(true);
     expect(result.draftsPublished).toBe(true);
+    expect(mocks.exec).toHaveBeenCalledWith(
+      "glab",
+      ["api", "projects/acme%2Fapp/merge_requests/42/draft_notes/123/publish", "--method", "PUT"],
+      expect.anything(),
+    );
     expect(
       mocks.exec.mock.calls.some((call) =>
-        (call[1] as string[]).some((arg) => arg.endsWith("/draft_notes/123/publish")),
+        (call[1] as string[]).some((arg) => arg.endsWith("/draft_notes/bulk_publish")),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   function mockNotesApi(opts: { failPut?: boolean } = {}): void {
@@ -630,6 +636,7 @@ describe("GitLab verified fixes", () => {
 
   function mockThread(notes: unknown[]): void {
     mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.some((arg) => arg.endsWith("/draft_notes"))) return { stdout: '{"id":1}', stderr: "" };
       if (args.some((arg) => arg.includes("/discussions?"))) {
         return { stdout: JSON.stringify([{ id: "thread-1", notes }]), stderr: "" };
       }
@@ -679,7 +686,6 @@ describe("GitLab verified fixes", () => {
     mocks.execJson.mockReset();
     mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
       if (args.includes("user")) return BOT;
-      if (args.some((arg) => arg.endsWith("/draft_notes"))) return { id: 1 };
       if (args.some((arg) => arg.includes("merge_requests/42"))) {
         return { diff_refs: { base_sha: "a".repeat(40), head_sha: HEAD, start_sha: "c".repeat(40) } };
       }
@@ -895,6 +901,7 @@ describe("bodies written without a review key", () => {
     mocks.exec.mockReset();
     mocks.execJson.mockReset();
     mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args.some((arg) => arg.endsWith("/draft_notes"))) return { stdout: '{"id":1}', stderr: "" };
       if (args.some((arg) => arg.includes("/discussions?"))) {
         return {
           stdout: JSON.stringify([{
@@ -931,7 +938,6 @@ describe("bodies written without a review key", () => {
     });
     mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
       if (args.includes("user")) return BOT;
-      if (args.some((arg) => arg.endsWith("/draft_notes"))) return { id: 1 };
       if (args.some((arg) => arg.includes("merge_requests/42"))) {
         return { diff_refs: { base_sha: "a".repeat(40), head_sha: HEAD, start_sha: "c".repeat(40) } };
       }

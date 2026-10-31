@@ -3,7 +3,6 @@ import { logger } from "./utils/logger.js";
 import { relativizeWorkspacePath } from "./utils/path.js";
 import { postGiteaPrComment } from "./gitea.js";
 import {
-  bulkPublishGitlabDraftNotes,
   createGitlabDraftNote,
   fetchGitlabPublisherIdentity,
   getGitlabMrDiffRefs,
@@ -343,7 +342,7 @@ export async function postReviewStructured(opts: {
   let inlineCreated = 0;
   let inlineFailed = 0;
   let inlineDeduplicated = 0;
-  const draftNoteIds: Array<number | string> = [];
+  const draftNoteIds: number[] = [];
   const failedFindings: ReviewFinding[] = [];
   if (reviewStyle !== "summary" && !skipInline) {
     for (const finding of review.findings) {
@@ -384,10 +383,14 @@ export async function postReviewStructured(opts: {
             diffRefs,
           },
         );
-        if (typeof draftNote.id === "number" || typeof draftNote.id === "string") {
-          draftNoteIds.push(draftNote.id);
-        }
         inlineCreated++;
+        if (draftNote.id !== null) {
+          draftNoteIds.push(draftNote.id);
+        } else {
+          const message = `draft publish: created draft note for ${finding.title} has no valid id`;
+          errors.push(message);
+          logger.warn(message);
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         errors.push(`inline note for ${finding.title}: ${message}`);
@@ -404,46 +407,28 @@ export async function postReviewStructured(opts: {
       `${inlineFailed > 0 ? ` (${inlineFailed} failed)` : ""}`,
   );
 
-  let draftsPublished = false;
-  if (inlineCreated > 0) {
+  // GitLab bulk_publish publishes all pending drafts of this user, including other runs.
+  let individuallyPublished = 0;
+  for (const draftNoteId of draftNoteIds) {
     try {
-      await bulkPublishGitlabDraftNotes(
+      await publishGitlabDraftNote(
         parsed.owner,
         parsed.repo,
         parsed.prNumber,
+        draftNoteId,
         parsed.host,
       );
-      draftsPublished = true;
+      individuallyPublished++;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logger.warn(`Failed to bulk publish draft notes: ${message}`);
-      if (draftNoteIds.length === inlineCreated) {
-        let individuallyPublished = 0;
-        for (const draftNoteId of draftNoteIds) {
-          try {
-            await publishGitlabDraftNote(
-              parsed.owner,
-              parsed.repo,
-              parsed.prNumber,
-              draftNoteId,
-              parsed.host,
-            );
-            individuallyPublished++;
-          } catch (publishError) {
-            const publishMessage =
-              publishError instanceof Error ? publishError.message : String(publishError);
-            errors.push(`draft publish: ${publishMessage}`);
-            logger.warn(`Failed to publish draft note ${draftNoteId}: ${publishMessage}`);
-          }
-        }
-        draftsPublished = individuallyPublished === inlineCreated;
-        if (draftsPublished) {
-          logger.info(`Published ${individuallyPublished} draft note(s) individually`);
-        }
-      } else {
-        errors.push(`draft publish: ${message}`);
-      }
+      errors.push(`draft publish: ${message}`);
+      logger.warn(`Failed to publish draft note ${draftNoteId}: ${message}`);
     }
+  }
+  const draftsPublished = inlineCreated > 0 && individuallyPublished === inlineCreated;
+  const inlineDeliveryComplete = inlineCreated === 0 || draftsPublished;
+  if (individuallyPublished > 0) {
+    logger.info(`Published ${individuallyPublished} draft note(s) individually`);
   }
 
   let summaryPosted = false;
@@ -475,8 +460,11 @@ export async function postReviewStructured(opts: {
       fixedAwaiting,
       asOf: new Date(),
     });
-    if (headSha) summaryBody = `<!-- hodor:sha:${headSha} -->\n${summaryBody}`;
-    if (cacheMarker) summaryBody = summaryBody.replace("\n", `\n${cacheMarker}\n`);
+    // Neither cached reuse nor an empty incremental diff may skip undelivered drafts.
+    if (inlineDeliveryComplete) {
+      if (headSha) summaryBody = `<!-- hodor:sha:${headSha} -->\n${summaryBody}`;
+      if (cacheMarker) summaryBody = summaryBody.replace("\n", `\n${cacheMarker}\n`);
+    }
     summaryBody = withReviewKey(summaryBody, reviewKey);
     summaryBody = appendReviewDetails(summaryBody, model, metricsFooter);
     try {
@@ -505,10 +493,9 @@ export async function postReviewStructured(opts: {
     reviewStyle === "summary"
       ? summaryPosted || shouldSkipSummary
       : reviewStyle === "hybrid"
-        ? (summaryPosted || shouldSkipSummary) &&
-          (inlineCreated === 0 || draftsPublished)
+        ? (summaryPosted || shouldSkipSummary) && inlineDeliveryComplete
         : (inlineFailed === 0 || summaryPosted) &&
-          (inlineCreated === 0 || draftsPublished) &&
+          inlineDeliveryComplete &&
           (review.findings.length > 0 || summaryPosted);
   const success = baseDeliveryComplete && (!commitStatus || commitStatusPosted) && fixedReplyResult.errors.length === 0;
 

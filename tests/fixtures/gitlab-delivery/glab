@@ -1,0 +1,76 @@
+#!/usr/bin/env bun
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+const path = process.env.HODOR_TEST_STATE;
+if (!path) throw new Error('missing synthetic test state');
+const state = JSON.parse(readFileSync(path, 'utf8'));
+const args = process.argv.slice(2);
+const endpoint = args[1];
+const methodIndex = args.indexOf('--method');
+const method = methodIndex < 0 ? 'GET' : args[methodIndex + 1];
+const root = 'projects/acme%2Fapp/merge_requests/42';
+const bot = { id: 7, username: 'review-bot' };
+state.calls.push({ endpoint, method });
+function save() { writeFileSync(path, JSON.stringify(state)); }
+function finish(value) { save(); if (value !== undefined) process.stdout.write(JSON.stringify(value)); process.exit(0); }
+function fail(message) { save(); process.stderr.write(message); process.exit(1); }
+const payload = args.includes('--input') ? JSON.parse(await Bun.stdin.text()) : {};
+if (endpoint === 'user' && method === 'GET') finish(bot);
+if (endpoint === root && method === 'GET') finish({ title: 'Synthetic MR', target_branch: 'main', diff_refs: { base_sha: 'a'.repeat(40), start_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40) } });
+if (endpoint === `${root}/draft_notes` && method === 'POST') {
+  if (state.failCreate) fail('400 invalid position');
+  const id = state.nextId++;
+  state.pending[id] = payload.note;
+  if (state.parkFirst && id === 501) {
+    save();
+    writeFileSync(`${path}.ready`, 'ready');
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(`${path}.release`)) {
+      if (Date.now() > deadline) { process.stderr.write('test gate timed out'); process.exit(1); }
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    process.stdout.write(JSON.stringify({ id }));
+    process.exit(0);
+  }
+  if (state.response === 'empty' || state.response === 'invalid-json' || (state.response === 'invalid-first' && id === 501)) {
+    save(); process.stdout.write(state.response === 'empty' ? '' : '{"id":'); process.exit(0);
+  }
+  if (state.response === 'null') finish(null);
+  finish({ id: state.response === 'string' ? String(id) : id });
+}
+if (endpoint === `${root}/draft_notes/bulk_publish` && method === 'POST') {
+  state.publishAttempts.push('bulk');
+  if (state.failBulk) fail('500 bulk failed');
+  for (const [id, body] of Object.entries(state.pending)) state.published.push({ id: Number(id), body });
+  state.pending = {};
+  finish();
+}
+const match = new RegExp(`^${root}/draft_notes/(\\d+)/publish$`).exec(endpoint);
+if (match && method === 'PUT') {
+  const id = Number(match[1]);
+  state.publishAttempts.push(id);
+  if (state.failPublish.includes(id)) fail('500 publish failed');
+  if (!(id in state.pending)) fail('404 not found');
+  state.published.push({ id, body: state.pending[id] });
+  delete state.pending[id];
+  finish();
+}
+if (endpoint === `${root}/discussions?per_page=100` && method === 'GET') {
+  // Multiple concatenated pages exercise the real pagination parser.
+  const discussions = state.published.map(({ id, body }) => ({ id: `discussion-${id}`, notes: [{ id, body, author: bot, resolvable: true, resolved: false }] }));
+  save(); process.stdout.write(JSON.stringify(discussions) + '[]'); process.exit(0);
+}
+if ((endpoint === `${root}/notes?per_page=100` || endpoint === `${root}/notes`) && method === 'GET') finish(state.notes);
+if (endpoint === `${root}/notes` && method === 'POST') {
+  if (state.failSummary) fail('500 summary failed');
+  const id = 1000 + state.notes.length;
+  state.notes.push({ id, body: payload.body, author: bot, created_at: '2026-10-01T00:00:00Z' });
+  finish({ id });
+}
+const noteMatch = new RegExp(`^${root}/notes/(\\d+)$`).exec(endpoint);
+if (noteMatch && method === 'PUT') {
+  const note = state.notes.find(note => note.id === Number(noteMatch[1]));
+  if (!note) fail('404 summary not found');
+  note.body = payload.body;
+  finish(note);
+}
+fail(`unexpected fake endpoint ${method} ${endpoint}`);

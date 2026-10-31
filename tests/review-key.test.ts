@@ -132,6 +132,7 @@ function serveGitlabMr(state: { notes?: unknown[]; discussions?: unknown[]; newN
   mocks.execJson.mockReset();
   mocks.exec.mockImplementation(async (_cmd: string, args: string[]) => {
     const endpoint = args[1] ?? "";
+    if (endpoint.endsWith("/draft_notes")) return { stdout: '{"id":1}', stderr: "" };
     if (endpoint.includes("/discussions?")) return { stdout: JSON.stringify(state.discussions ?? []), stderr: "" };
     if (endpoint.includes("/notes?per_page=100")) return { stdout: JSON.stringify(state.notes ?? []), stderr: "" };
     if (endpoint.endsWith("/merge_requests/42/notes") && args.includes("POST")) {
@@ -141,7 +142,6 @@ function serveGitlabMr(state: { notes?: unknown[]; discussions?: unknown[]; newN
   });
   mocks.execJson.mockImplementation(async (_cmd: string, args: string[]) => {
     if (args.includes("user")) return BOT;
-    if (args.some((arg) => arg.endsWith("/draft_notes"))) return { id: 1 };
     if (args.some((arg) => arg.endsWith("/merge_requests/42"))) {
       return { diff_refs: { base_sha: "a".repeat(40), head_sha: HEAD, start_sha: "c".repeat(40) } };
     }

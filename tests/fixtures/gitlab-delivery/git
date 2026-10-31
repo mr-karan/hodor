@@ -1,0 +1,16 @@
+#!/usr/bin/env bun
+import { appendFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+if (process.env.HODOR_TEST_GIT_CALLS) appendFileSync(process.env.HODOR_TEST_GIT_CALLS, JSON.stringify(args) + '\n');
+const output = value => { process.stdout.write(value); process.exit(0); };
+if (args.includes('ls-files')) output('src/app.ts\0');
+if (args[0] === 'remote') output('https://gitlab.example.com/acme/app.git\n');
+if (args[0] === 'fetch' || args[0] === 'ls-tree') output('');
+if (args[0] === 'cat-file') output('commit\n');
+if (args[0] === 'merge-base') output(args.includes('--is-ancestor') ? '' : 'a'.repeat(40) + '\n');
+if (args[0] === 'rev-parse') output((args.includes('--end-of-options') ? 'c' : 'b').repeat(40) + '\n');
+if (args.includes('diff')) {
+  if (args.includes('--name-status')) output('M\0src/app.ts\0');
+  output('diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-const value = 1;\n+const value = 2;\n');
+}
+throw new Error(`unexpected synthetic git command: ${JSON.stringify(args)}`);
