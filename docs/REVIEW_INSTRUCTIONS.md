@@ -57,6 +57,8 @@ The bundled [security instructions](../templates/security-review-instructions.md
 
 Hodor reads the template shipped with the installed package or container, not a file from the repository under review. The profile is the first additive instruction: baseline criteria and accepted repository guidance remain, then profile defaults, explicit files in supplied order, focus, and the fixed protocol. Later explicit files override the profile, and focus overrides those files. The read-only restrictions, changed-delta scope, priority mapping, and submission format always remain in force. Without `--profile`, prompt contents and review behavior are unchanged. The only accepted profile name is `security`; other names fail before review setup.
 
+The evaluation runner accepts the same profile flag: `bun run eval -- --profile security --cases /path/to/cases --out results.jsonl`. It uses the same bundled loader and composition as the CLI, and records `profile: "security"` on each JSONL row. Runs without a profile keep their existing output fields. Use `--list --profile security` to validate profile loading without model calls.
+
 Profiles do not select a review key or isolate prior notes, incremental review state, statuses, or Code Quality issues. Use `--review-key security` when running a second job next to the main review. See [Run a second review job](./AUTOMATED_REVIEWS.md#run-a-second-review-job). Existing company instruction files are not replaced or changed by this option.
 
 ## Extra instruction files
