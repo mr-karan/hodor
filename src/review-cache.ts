@@ -2,7 +2,13 @@ import { createHash } from "node:crypto";
 import { gzipSync, gunzipSync } from "node:zlib";
 import { validateReviewOutput } from "./review.js";
 import { relativizeWorkspacePath } from "./utils/path.js";
-import type { Platform, ReviewOutput, TrustedHodorNote, UntrustedNote } from "./types.js";
+import type {
+  Platform,
+  ReviewFinding,
+  ReviewOutput,
+  TrustedHodorNote,
+  UntrustedNote,
+} from "./types.js";
 
 // Bumped when the review prompt or cache key changes, so older markers never match.
 export const REVIEW_PROMPT_VERSION = "2026-10-07.2";
@@ -70,7 +76,7 @@ export function buildReviewCacheMarker(
   const portableReview: ReviewOutput = {
     ...review,
     findings: review.findings.map((finding) => ({
-      ...finding,
+      ...withoutSourceSnippet(finding),
       code_location: {
         ...finding.code_location,
         absolute_file_path: `/workspace/${relativizeWorkspacePath(
@@ -104,11 +110,23 @@ export function findCachedReview(
         gunzipSync(Buffer.from(encoded, "base64url"), { maxOutputLength: 1_000_000 }).toString("utf-8"),
       ) as Partial<ReviewCachePayload>;
       if (payload.key !== key || !payload.review) continue;
-      return validateReviewOutput(payload.review);
+      const review = validateReviewOutput(payload.review);
+      return { ...review, findings: review.findings.map(withoutSourceSnippet) };
     } catch {
       // Ignore malformed or obsolete markers and perform a fresh review.
     }
   }
 
   return null;
+}
+
+/**
+ * `existing_code` is source text the model copied to anchor a finding. It is
+ * consumed by location resolution before the marker is built, and the marker
+ * is posted in a note, so it must not carry source the review flagged, such
+ * as a committed credential. Markers written before this change still hold it.
+ */
+function withoutSourceSnippet(finding: ReviewFinding): ReviewFinding {
+  const { existing_code: _existingCode, ...rest } = finding;
+  return rest;
 }
