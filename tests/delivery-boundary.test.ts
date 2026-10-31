@@ -10,6 +10,7 @@ import { buildReviewCacheMarker, findCachedReview, getReviewCacheKey } from "../
 import { getHodorReviewShaCandidates } from "../src/review-diff.js";
 import { parseReviewKey, type ReviewKey } from "../src/review-key.js";
 import type { NoteEntry, ReviewFinding, ReviewOutput } from "../src/types.js";
+import { findExecutable } from "../src/utils/exec.js";
 
 interface State {
   nextId: number;
@@ -58,7 +59,14 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "hodor-delivery-boundary-"));
   stateFile = join(root, "state.json");
   process.env.HODOR_TEST_STATE = stateFile;
-  process.env.PATH = `${fixture}${delimiter}${originalPath ?? ""}`;
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  // The confined git child has neither the caller's PATH nor test-only env vars.
+  // Run the Node-compatible fixture with the runtime already executing this harness.
+  const command = [process.execPath, join(fixture, "git")]
+    .map(value => `'${value.replaceAll("'", "'\\''")}'`).join(" ");
+  writeFileSync(join(bin, "git"), `#!/bin/sh\nexec ${command} "$@"\n`, { mode: 0o755 });
+  process.env.PATH = `${bin}${delimiter}${fixture}${delimiter}${originalPath ?? ""}`;
   const state: State = {
     nextId: 501,
     pending: { "411": "A manually parked draft", "412": "<!-- hodor-review -->\n<!-- hodor:key:security -->\nForeign security draft", "413": "<!-- hodor-review -->\nForeign default draft" },
@@ -107,6 +115,18 @@ function expectNoCompletionMarkers(reviewKey: ReviewKey | null = null): void {
 }
 
 describe("draft delivery across the real subprocess and CLI cache boundaries", () => {
+  it.each(["/usr/local/bin:/usr/bin:/bin", ""])("runs synthetic git with child PATH=%j", path => {
+    const git = findExecutable("git");
+    if (!git) throw new Error("synthetic git was not found on the test PATH");
+    const result = spawnSync(git, ["ls-files", "-z", "--cached"], {
+      cwd: root, encoding: "utf8", timeout: 5000, env: { PATH: path },
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("src/app.ts\0");
+  });
+
   it.each([
     { parkedKey: "security", activeKey: null },
     { parkedKey: null, activeKey: "security" },
