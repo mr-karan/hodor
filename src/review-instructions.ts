@@ -64,6 +64,15 @@ export function loadReviewInstructionsFile(filePath: string, cwd = process.cwd()
   return validateReviewInstructions(content, source);
 }
 
+/** Load an opt-in bundled profile as additive instructions, before explicit files. */
+export function loadReviewProfileInstructions(profile?: string): string[] {
+  if (profile === undefined) return [];
+  if (profile !== "security") {
+    throw new Error("--profile must be one of: security");
+  }
+  return [loadReviewInstructionsFile(getTemplatePath("security-review-instructions.md"))];
+}
+
 export function loadDefaultReviewInstructions(): string {
   return loadReviewInstructionsFile(getTemplatePath("default-review-instructions.md"));
 }

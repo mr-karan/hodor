@@ -14,6 +14,7 @@ export {
   validateInstructionsBudget,
   validateReviewInstructions,
   loadReviewInstructionsFile,
+  loadReviewProfileInstructions,
   loadDefaultReviewInstructions,
 } from "./review-instructions.js";
 export type { RepositoryGuidanceFile } from "./repository-guidance.js";

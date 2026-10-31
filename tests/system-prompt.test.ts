@@ -1,8 +1,33 @@
 import { describe, expect, it } from "vitest";
-import { loadDefaultReviewInstructions, MAX_TOTAL_INSTRUCTIONS_BYTES } from "../src/review-instructions.js";
-import { buildReviewSystemPrompt } from "../src/system-prompt.js";
+import { loadDefaultReviewInstructions, loadReviewProfileInstructions, MAX_TOTAL_INSTRUCTIONS_BYTES } from "../src/review-instructions.js";
+import { buildReviewSystemPrompt, HODOR_REVIEW_PROTOCOL } from "../src/system-prompt.js";
 
 describe("review system prompt", () => {
+  it("preserves the default prompt bytes when no profile is selected", () => {
+    const expected = `<BASELINE_REVIEW_CRITERIA>\n${loadDefaultReviewInstructions()}\n</BASELINE_REVIEW_CRITERIA>\n\n<HODOR_REVIEW_PROTOCOL>\n${HODOR_REVIEW_PROTOCOL}\n</HODOR_REVIEW_PROTOCOL>`;
+    expect(buildReviewSystemPrompt()).toBe(expected);
+    expect(buildReviewSystemPrompt({ instructions: loadReviewProfileInstructions() })).toBe(expected);
+  });
+
+  it("puts security defaults before explicit files and focus without replacing the protocol", () => {
+    const [security] = loadReviewProfileInstructions("security");
+    const prompt = buildReviewSystemPrompt({
+      repositoryGuidance: [{ path: "AGENTS.md", directory: "", content: "PROJECT_RULE" }],
+      instructions: [...loadReviewProfileInstructions("security"), "FIRST_RULE", "SECOND_RULE"],
+      focus: "FOCUS_RULE",
+    });
+    expect(prompt).toContain(loadDefaultReviewInstructions());
+    expect(prompt).toContain(security);
+    const positions = ["<BASELINE_REVIEW_CRITERIA>", "PROJECT_RULE", "# Security Review", "FIRST_RULE", "SECOND_RULE", "<FOCUS>", "<HODOR_REVIEW_PROTOCOL>"].map((text) => prompt.indexOf(text));
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    expect(prompt).toContain("later explicit instructions win conflicts, and focus wins conflicts");
+    expect(prompt.endsWith(`${HODOR_REVIEW_PROTOCOL}\n</HODOR_REVIEW_PROTOCOL>`)).toBe(true);
+    expect(prompt).toContain("Report new findings only from the changed delta");
+    expect(prompt).toContain("Do not build, compile, run tests");
+    expect(prompt).toContain("one concise natural-language paragraph");
+  });
+
   it("retains the bundled criteria when explicit instructions narrow reporting", () => {
     const prompt = buildReviewSystemPrompt({ instructions: ["Report only security findings."] });
     expect(prompt).toContain(loadDefaultReviewInstructions());
